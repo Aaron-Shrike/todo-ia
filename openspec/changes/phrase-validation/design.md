@@ -1301,8 +1301,9 @@ Greenfield: everything is **Create**. Grouped by slice below rather than listed 
 
 ## Delivery Plan (400-line review budget)
 
-`delivery_strategy: ask-on-risk`. Feature Branch Chain: PR #1 targets the tracker branch, each later
-PR targets the previous one. Every slice is independently revertible and ships its own tests.
+`delivery_strategy: ask-on-risk`, `chain_strategy: stacked-to-main` (user-confirmed): every PR
+merges to `main` in order, so `main` keeps a linear history. Every slice is independently
+revertible and ships its own tests.
 
 | # | Slice (conventional commit) | Est. lines |
 | --- | --- | --- |
@@ -1450,7 +1451,7 @@ a code change: raise `SIMILARITY_THRESHOLD` toward 1.0 to make validation effect
 | **A UI label narrates work that already happened** (a "Guardando..." after the 201) | Low | removed: labels exist only while a request is in flight; after a 201 the machine is `idle`; ADR-005 states the rule and the label-order component test enforces it |
 | A running `torch` forward pass cannot be cancelled after `EmbeddingTimeout` | Med | bounded executor + semaphore: a stuck call keeps its slot and later requests fail fast instead of piling up threads; controllable-slow-fake test; documented limit |
 | The save waits indefinitely on a stuck advisory-lock holder | Low | `SET LOCAL lock_timeout` (`LOCK_TIMEOUT_MS`), mapped to 500 `INTERNAL_ERROR`, nothing persisted |
-| 21 slices is a long chain to keep rebased | Med | each slice is self-contained and test-gated; retarget/rebase per the Feature Branch Chain rule; 2b is the most droppable link if the chain needs shortening (slices must still stay <= 400, so merging others is not free) |
+| 21 slices is a long chain to keep rebased | Med | each slice is self-contained and test-gated; retarget/rebase per the stacked-to-main rule; 2b is the most droppable link if the chain needs shortening (slices must still stay <= 400, so merging others is not free) |
 
 ## Open Questions
 
