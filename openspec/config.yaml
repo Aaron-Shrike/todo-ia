@@ -1,0 +1,58 @@
+schema: spec-driven
+
+context: |
+  Project: todo-ia (greenfield, no application code yet). Planned stack, per docs/Reto-Tecnico-Fullstack-AI.md.
+  Stack: React or Vue frontend; Python + FastAPI backend; PostgreSQL; Hugging Face embeddings (semantic duplicate detection).
+  Architecture: clean, layered (UI, business, data, AI integration). REST API with consistent response/error shape.
+  Testing: pytest (backend) and vitest (frontend), both planned and not yet installed. Strict TDD enabled.
+  Style: English artifacts; conventional commits; env-var configuration; SQL migrations required.
+
+strict_tdd: true
+
+testing:
+  status: planned   # nothing installed yet; re-detect after scaffolding
+  strict_tdd: true
+  backend:
+    runner: pytest
+    command: "pytest"
+    coverage: "pytest --cov (pytest-cov, planned)"
+    integration: "httpx / FastAPI TestClient (planned)"
+    linter: "ruff (suggested)"
+    type_checker: "mypy or pyright (suggested)"
+    formatter: "ruff format (suggested)"
+  frontend:
+    runner: vitest
+    command: "vitest run"
+    coverage: "vitest --coverage (planned)"
+    integration: "@testing-library/* (planned)"
+    linter: "eslint (suggested)"
+    type_checker: "tsc (suggested, if TypeScript)"
+    formatter: "prettier (suggested)"
+  e2e: none
+
+rules:
+  proposal:
+    - Include rollback plan for risky changes
+  specs:
+    - Use Given/When/Then for scenarios
+    - Use RFC 2119 keywords (MUST, SHALL, SHOULD, MAY)
+    - Define API contracts, acceptance cases, and edge cases before implementation
+  design:
+    - Document architecture decisions with rationale
+    - Keep AI integration behind a port/interface so the embedding model is swappable and mockable
+    - Similarity threshold MUST be configurable via environment variable
+  tasks:
+    - Group by phase, use hierarchical numbering
+    - Keep tasks completable in one session
+    - Forecast against the 400-line review budget
+  apply:
+    - Follow existing code patterns
+    - Write failing test first (RED-GREEN-REFACTOR)
+    tdd: true
+    test_command: ""   # set once pytest/vitest are installed
+  verify:
+    test_command: ""
+    build_command: ""
+    coverage_threshold: 0
+  archive:
+    - Warn before merging destructive deltas
