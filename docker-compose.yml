@@ -1,0 +1,36 @@
+# Root compose file, one command, no `-f` flag (design.md "Repository
+# Layout"). `api`/`web` arrive in Unit 14; this ships `db` + `migrate` only.
+# Values default to the `.env.example` placeholders (apply-progress.md, Unit
+# 0 note) so this works before a real `.env` exists. Copy `.env.example` to
+# `.env` to override.
+services:
+  db:
+    image: pgvector/pgvector:pg16
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-todo_ia}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-todo_ia}
+      POSTGRES_DB: ${POSTGRES_DB:-todo_ia}
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      - ./infra/db/init.sql:/docker-entrypoint-initdb.d/init.sql:ro
+    ports:
+      - "5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-todo_ia} -d ${POSTGRES_DB:-todo_ia}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  migrate:
+    build:
+      context: ./services/api
+      target: migrate
+    environment:
+      DATABASE_URL: ${DATABASE_URL:-postgresql+psycopg://todo_ia:todo_ia@db:5432/todo_ia}
+    depends_on:
+      db:
+        condition: service_healthy
+    restart: "no"
+
+volumes:
+  pgdata:
