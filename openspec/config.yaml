@@ -10,24 +10,26 @@ context: |
 strict_tdd: true
 
 testing:
-  status: planned   # nothing installed yet; re-detect after scaffolding
+  status: installed   # scaffolded in Unit 0 (chore/pv-00-scaffold): pytest + vitest wired and green
   strict_tdd: true
   backend:
     runner: pytest
     command: "pytest"
-    coverage: "pytest --cov (pytest-cov, planned)"
-    integration: "httpx / FastAPI TestClient (planned)"
-    linter: "ruff (suggested)"
-    type_checker: "mypy or pyright (suggested)"
+    version: "9.1.1"   # detected in services/api/.venv during Unit 0
+    coverage: "pytest-cov (installed, not yet wired into a coverage gate)"
+    integration: "httpx / FastAPI TestClient (planned, lands with Unit 6+)"
+    linter: "ruff (installed, 0.16.8)"
+    type_checker: "mypy (installed, 2.3.1)"
     formatter: "ruff format (suggested)"
   frontend:
     runner: vitest
     command: "vitest run"
+    version: "5.0.1"   # detected in apps/web/node_modules during Unit 0
     coverage: "vitest --coverage (planned)"
-    integration: "@testing-library/* (planned)"
-    linter: "eslint (suggested)"
-    type_checker: "tsc (suggested, if TypeScript)"
-    formatter: "prettier (suggested)"
+    integration: "@testing-library/* (planned, lands with Unit 10+)"
+    linter: "eslint (installed, 10.11.0, no ruleset configured yet)"
+    type_checker: "typescript (installed, 7.0.2)"
+    formatter: "prettier (installed, 3.9.8)"
   e2e: none
 
 rules:
@@ -49,10 +51,10 @@ rules:
     - Follow existing code patterns
     - Write failing test first (RED-GREEN-REFACTOR)
     tdd: true
-    test_command: ""   # set once pytest/vitest are installed
+    test_command: "make test-unit"
   verify:
-    test_command: ""
-    build_command: ""
+    test_command: "make test-unit"
+    build_command: ""   # stays empty until Unit 10 (web build) / Unit 4 (docker build)
     coverage_threshold: 0
   archive:
     - Warn before merging destructive deltas

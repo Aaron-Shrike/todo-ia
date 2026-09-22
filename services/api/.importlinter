@@ -1,0 +1,63 @@
+; Boundary contracts for the modular hexagonal `app` package, per
+; openspec/changes/phrase-validation/design.md ("API Module Structure and Boundaries").
+;
+; Modules referenced below (app.modules.similarity.*, app.modules.phrases.*) are created
+; incrementally starting in Unit 1/2. Until then these contracts simply have nothing to scan and
+; pass trivially; they exist now so every later unit is checked from the first line of domain code.
+
+[importlinter]
+root_package = app
+include_external_packages = True
+
+[importlinter:contract:similarity-independence]
+name = similarity module MUST NOT import phrases
+type = forbidden
+source_modules =
+    app.modules.similarity
+forbidden_modules =
+    app.modules.phrases
+
+[importlinter:contract:phrases-only-similarity-contracts]
+name = phrases MAY import only similarity.contracts, never similarity internals
+; similarity has no api/ layer (see design.md "API Module Structure and Boundaries"; it has no
+; transport of its own), so only its domain/ and adapters/ internals need guarding here.
+type = forbidden
+source_modules =
+    app.modules.phrases
+forbidden_modules =
+    app.modules.similarity.domain
+    app.modules.similarity.adapters
+
+[importlinter:contract:domain-purity]
+name = domain layers MUST NOT import the framework/runtime
+type = forbidden
+source_modules =
+    app.modules.similarity.domain
+    app.modules.phrases.domain
+forbidden_modules =
+    fastapi
+    sqlalchemy
+    torch
+    sentence_transformers
+
+[importlinter:contract:application-no-adapters-or-api]
+name = application layers MUST NOT import adapters or api
+; only `phrases` publishes an application/ layer today (see design.md "API Module Structure");
+; `similarity` has no use cases of its own.
+type = forbidden
+source_modules =
+    app.modules.phrases.application
+forbidden_modules =
+    app.modules.similarity.adapters
+    app.modules.phrases.adapters
+    app.modules.phrases.api
+
+[importlinter:contract:composition-root-owns-adapters]
+name = only main.py and */container.py may import adapters (api layers stay adapter-agnostic)
+; only `phrases` publishes an api/ layer today; `similarity` has no transport of its own.
+type = forbidden
+source_modules =
+    app.modules.phrases.api
+forbidden_modules =
+    app.modules.similarity.adapters
+    app.modules.phrases.adapters
