@@ -21,13 +21,16 @@ Chain strategy: stacked-to-main
 
 Notes:
 - "Decision needed before apply: No" because the ask-on-risk question was already asked and answered (stacked-to-main). Do not mix strategies afterwards.
-- **Supersedes** the design's Delivery Plan wording "Feature Branch Chain / PR #1 targets the tracker branch": the user chose stacked-to-main, so there is NO tracker branch; every PR targets `main`. Slice order, scope and estimates from the design are unchanged.
+- **Supersedes** the design's Delivery Plan wording "Feature Branch Chain / PR #1 targets the tracker branch": the user chose stacked-to-main, so there is NO tracker branch; every PR targeted `main` through Unit 3.
+- **Branch strategy change effective Unit 4 (decided 2026-09-22):** every PR from Unit 4 onward targets `develop`, not `main`. `develop` is an integration branch currently identical to `main`; CI/CD (`.github/workflows/ci.yml`) only fires on push/PR against `main`, not `develop`, to save CI minutes while units land frequently. Promoting `develop` into `main` is a separate, manual step the user triggers when they want a CI-validated checkpoint (e.g. before a milestone or the eventual `sdd-archive`) — it is NOT part of any individual unit's task list. Units B.0 through 3d already merged to `main` before this decision and are left as historical record below; do not retarget them.
 - The repo has no commits. Untracked `.atl/`, `docs/`, `openspec/` exist. Task B.0 below makes the root commit (planning artifacts only, no code, exempt from the code budget). Confirm whether `.atl/` should be git-ignored (default: ignore it).
 - Budget is `additions + deletions`. Generated files (`docs/openapi.json`, `apps/web/src/types/api.ts`, lockfiles) are excluded from the count only if the reviewer agrees; otherwise commit lockfiles with the unit that adds the dependency and check with `git diff --stat` before opening the PR. If a unit exceeds 400, split at the seam named in its Notes instead of asking for `size:exception`.
 
-### PR chain (stacked-to-main)
+### PR chain (stacked-to-main through Unit 3, stacked-to-develop from Unit 4)
 
-Rule: branch N is cut from `main` after PR N-1 has merged (or from branch N-1 when authoring ahead, then rebased onto `main` and retargeted to `main` the moment N-1 merges). PR base is ALWAYS `main`; a diff that shows the previous unit's changes means the base is wrong. Each PR body carries a dependency diagram with the current PR marked with the pin emoji, plus start, end, prior dependencies, follow-ups and out-of-scope.
+Rule through Unit 3 (historical): branch N was cut from `main` after PR N-1 merged (or from branch N-1 when authoring ahead, then rebased onto `main` and retargeted the moment N-1 merged). PR base was ALWAYS `main`.
+
+Rule from Unit 4 onward: branch N is cut from `develop` after PR N-1 has merged into `develop` (or from branch N-1 when authoring ahead, then rebased onto `develop` and retargeted to `develop` the moment N-1 merges). PR base is ALWAYS `develop`; a diff that shows the previous unit's changes means the base is wrong. `develop` is never merged into by anything except these unit PRs; promoting `develop` -> `main` is a separate manual action outside this table. Each PR body carries a dependency diagram with the current PR marked with the pin emoji, plus start, end, prior dependencies, follow-ups and out-of-scope.
 
 | PR | Branch | Base | Unit | Est. lines |
 |----|--------|------|------|-----------|
@@ -42,21 +45,21 @@ Rule: branch N is cut from `main` after PR N-1 has merged (or from branch N-1 wh
 | 3b | `feat/pv-03b-list-matches` | `feat/pv-03a-validate`* | list-matches use case | ~140 |
 | 3c | `feat/pv-03c-save` | `feat/pv-03b-list-matches`* | save use case | ~390 |
 | 3d | `feat/pv-03d-cache-interplay` | `feat/pv-03c-save`* | cache-interplay tests | ~125 |
-| 4 | `feat/pv-04-schema-migrations` | `main` | schema + compose db/migrate | ~340 |
-| 5a | `feat/pv-05a-find-matches` | `main` | exact keyset `find_matches` | ~330 |
-| 5b | `feat/pv-05b-nearest-uow` | `main` | `find_nearest`, exact, UoW, lock | ~350 |
-| 6 | `feat/pv-06-api-foundation` | `main` | settings, errors, CORS | ~300 |
-| 6b | `feat/pv-06b-validate-health` | `main` | validate + `/health` | ~250 |
-| 7 | `feat/pv-07-save-list-matches` | `main` | save, list, matches | ~380 |
-| 8 | `feat/pv-08-embeddings-image` | `main` | ST adapter, bounded, wiring, image | ~380 |
-| 9 | `test/pv-09-calibration` | `main` | ES/EN fixture + evidence | ~150 |
-| 10 | `feat/pv-10-web-scaffold` | `main` | web scaffold + client | ~300 |
-| 11 | `feat/pv-11-web-machine-form` | `main` | state machine + form | ~360 |
-| 12 | `feat/pv-12-web-duplicate-alert` | `main` | alert + infinite scroll | ~310 |
-| 13 | `feat/pv-13-web-list-copy` | `main` | list, badges, copy | ~290 |
-| 14 | `feat/pv-14-compose-wiring` | `main` | full compose | ~200 |
-| 15 | `docs/pv-15-readme-architecture` | `main` | README + architecture | ~300 |
-| 16 | `docs/pv-16-decision-log` | `main` | ADRs | ~340 |
+| 4 | `feat/pv-04-schema-migrations` | `develop` | schema + compose db/migrate | ~340 |
+| 5a | `feat/pv-05a-find-matches` | `develop` | exact keyset `find_matches` | ~330 |
+| 5b | `feat/pv-05b-nearest-uow` | `develop` | `find_nearest`, exact, UoW, lock | ~350 |
+| 6 | `feat/pv-06-api-foundation` | `develop` | settings, errors, CORS | ~300 |
+| 6b | `feat/pv-06b-validate-health` | `develop` | validate + `/health` | ~250 |
+| 7 | `feat/pv-07-save-list-matches` | `develop` | save, list, matches | ~380 |
+| 8 | `feat/pv-08-embeddings-image` | `develop` | ST adapter, bounded, wiring, image | ~380 |
+| 9 | `test/pv-09-calibration` | `develop` | ES/EN fixture + evidence | ~150 |
+| 10 | `feat/pv-10-web-scaffold` | `develop` | web scaffold + client | ~300 |
+| 11 | `feat/pv-11-web-machine-form` | `develop` | state machine + form | ~360 |
+| 12 | `feat/pv-12-web-duplicate-alert` | `develop` | alert + infinite scroll | ~310 |
+| 13 | `feat/pv-13-web-list-copy` | `develop` | list, badges, copy | ~290 |
+| 14 | `feat/pv-14-compose-wiring` | `develop` | full compose | ~200 |
+| 15 | `docs/pv-15-readme-architecture` | `develop` | README + architecture | ~300 |
+| 16 | `docs/pv-16-decision-log` | `develop` | ADRs | ~340 |
 
 *3b/3c/3d are cut authoring-ahead from the immediately preceding sub-unit's branch (same pattern
 already used for 2/2d/2c/2b against an unmerged `feat/pv-02-ports-inmemory`) and MUST be rebased

@@ -57,6 +57,7 @@ Priority test targets: semantic validation flow and save flow; API contracts, ac
 - Artifacts and code in English.
 - Spec-Driven Development: behavior defined before implementation.
 - Review budget: 400 changed lines per PR.
+- Branch strategy (effective 2026-09-22, phrase-validation Unit 4 onward): all unit PRs target `develop`, not `main`. `develop` is an integration branch, currently identical to `main`. CI/CD (`.github/workflows/ci.yml`) fires only on push/PR against `main` to save CI minutes; `develop` never triggers CI. Promoting `develop` into `main` is a separate, manual, user-triggered action, not part of any unit's task list.
 
 ## Skills
 
