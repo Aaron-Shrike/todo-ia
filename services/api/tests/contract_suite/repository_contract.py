@@ -18,8 +18,6 @@ from __future__ import annotations
 from datetime import UTC, datetime
 
 import pytest
-from tests.contract_suite.vectors import PROBE
-from tests.contract_suite.vectors import vector_at_distance as _vector_at_distance
 
 from app.modules.phrases.contracts import (
     Isolation,
@@ -29,6 +27,8 @@ from app.modules.phrases.contracts import (
     ValidationStatus,
 )
 from app.modules.similarity.contracts import Vector
+from tests.contract_suite.vectors import PROBE
+from tests.contract_suite.vectors import vector_at_distance as _vector_at_distance
 
 
 def _new_phrase(text: str, embedding: Vector) -> NewPhrase:

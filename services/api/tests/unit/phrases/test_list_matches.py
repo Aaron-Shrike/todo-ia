@@ -7,7 +7,6 @@ from __future__ import annotations
 from datetime import UTC, datetime
 
 import pytest
-from tests.contract_suite.vectors import PROBE, vector_at_distance
 
 from app.modules.phrases.adapters.in_memory_repository import InMemoryUnitOfWorkFactory
 from app.modules.phrases.application.list_matches import ListMatches
@@ -16,6 +15,7 @@ from app.modules.phrases.domain.cursor import InvalidCursor, encode_cursor
 from app.modules.similarity.adapters.caching import CachingEmbeddingProvider
 from app.modules.similarity.adapters.fake import FakeEmbedder
 from app.modules.similarity.contracts import SimilarityPolicy
+from tests.contract_suite.vectors import PROBE, vector_at_distance
 
 _QUERY_TEXT = "query text"
 _POLICY = SimilarityPolicy(threshold=0.80)

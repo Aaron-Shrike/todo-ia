@@ -9,8 +9,6 @@ import random
 from datetime import UTC, datetime
 
 import pytest
-from tests.contract_suite.vectors import PROBE, vector_at_distance
-from tests.unit.phrases._uow_spies import ProxyUnitOfWorkFactory, WrongNearestRepo
 
 from app.modules.phrases.adapters.in_memory_repository import InMemoryUnitOfWorkFactory
 from app.modules.phrases.application.validate_phrase import ValidatePhrase
@@ -23,6 +21,8 @@ from app.modules.similarity.contracts import (
     EmbeddingUnavailable,
     SimilarityPolicy,
 )
+from tests.contract_suite.vectors import PROBE, vector_at_distance
+from tests.unit.phrases._uow_spies import ProxyUnitOfWorkFactory, WrongNearestRepo
 
 _QUERY_TEXT = "query text"
 _POLICY = SimilarityPolicy(threshold=0.80)
