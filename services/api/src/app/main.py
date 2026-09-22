@@ -20,7 +20,7 @@ from starlette.requests import Request
 from starlette.responses import JSONResponse
 from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
-from app.modules.phrases.api.router import build_validate_router
+from app.modules.phrases.api.router import build_phrases_router, build_validate_router
 from app.platform.errors import ERROR_REGISTRY, build_error_response, error_envelope
 from app.platform.health import HealthState
 from app.platform.health import router as health_router
@@ -190,6 +190,12 @@ def create_app(settings: Settings) -> FastAPI:
 
     app.include_router(
         build_validate_router(
+            phrase_max_length=settings.phrase_max_length,
+            matches_page_size=settings.matches_page_size,
+        )
+    )
+    app.include_router(
+        build_phrases_router(
             phrase_max_length=settings.phrase_max_length,
             matches_page_size=settings.matches_page_size,
         )

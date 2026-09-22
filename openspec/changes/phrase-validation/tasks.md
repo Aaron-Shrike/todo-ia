@@ -50,7 +50,8 @@ Rule from Unit 4 onward: branch N is cut from `develop` after PR N-1 has merged 
 | 5b | `feat/pv-05b-nearest-uow` | `develop` | `find_nearest`, exact, UoW, lock | ~350 |
 | 6 | `feat/pv-06-api-foundation` | `develop` | settings, errors, CORS | ~300 |
 | 6b | `feat/pv-06b-validate-health` | `develop` | validate + `/health` | ~250 |
-| 7 | `feat/pv-07-save-list-matches` | `develop` | save, list, matches | ~380 |
+| 7 | `feat/pv-07-save-list-matches` | `develop` | save, matches (list deferred) | ~380 |
+| 7b | `feat/pv-07b-list-openapi` | `develop`* | GET /phrases + OpenAPI snapshot | ~250 |
 | 8 | `feat/pv-08-embeddings-image` | `develop` | ST adapter, bounded, wiring, image | ~380 |
 | 9 | `test/pv-09-calibration` | `develop` | ES/EN fixture + evidence | ~150 |
 | 10 | `feat/pv-10-web-scaffold` | `develop` | web scaffold + client | ~300 |
@@ -219,14 +220,37 @@ Covers: POST /phrases/validate x8 (Duplicate found, Empty store, Page 1 carries 
 - Verify: `pytest tests/contract/test_validate_health.py -q`.
 - **`size:exception`**: 468 changed lines (466 insertions / 2 deletions, 6 files) after a genuine 5-round trim pass from 580 (~19% real cut, including removing a whole speculative Unit-8 production-wiring subsystem that no test exercised), no split seam named for this unit. Accepted by explicit user sign-off after the mandatory stop-and-report step; see apply-progress.md's Unit 6b section for the full trim log and the declined-split analysis.
 
-## Unit 7: Save, list and match paging endpoints (~380)
+## Unit 7: Save, list and match paging endpoints (~380) -- SHIPPED (`size:exception`, user-approved)
+
+**Resolution**: the user explicitly accepted the 566-line overrun (554 insertions / 12 deletions, 6
+files) as `size:exception` (single PR, not the proposed 7a/7c split) after reading this section's
+original "review-budget STOP" report below. This unit's own named seam (move `GET /phrases` + the
+OpenAPI snapshot to a follow-up Unit 7b) WAS applied first -- unlike some prior over-budget units,
+this one had a real seam to use -- but it was not sufficient alone (890 -> 851 -> 570 -> 566, still
+~42% over the 400 cap after the seam and two trim rounds). Committed and shipped as a single squashed
+RED+GREEN commit, per Strict TDD convention. Unit 7b remains a real, deferred, NOT STARTED unit (see
+below) -- it is unaffected by this resolution.
 
 Commit: `feat(api): save, list and match paging endpoints`. Rollback: revert (validate/health remain). Seam if over 400: move GET /phrases + OpenAPI snapshot to a follow-up unit 7b.
-Covers: POST /phrases/matches x8; POST /phrases x5 (Created unique, Conflict shape, Created confirmed, Strict boolean flag, Text stored normalized); GET /phrases x3 (List shape, Empty, Hard cap); phrase-management List phrases x3 (Newest first, Empty list, Metadata exposed) and Persistence: Unique/Confirmed metadata (over HTTP); Explicit flag: Non-boolean flag; 409 payload: Payload completeness, Large match set on 409 (120-match fixture, `next_cursor` accepted by `/phrases/matches`); Failures never save (HTTP: 503/504, DB down -> 500 `INTERNAL_ERROR`); Concurrency: Unique violation maps to 409 never 500 (HTTP); OpenAPI documentation x4 (Endpoints documented, Error responses documented, Pagination documented, Every code documented).
-- [ ] 7.1 RED then GREEN `phrases/application/list_phrases.py` and routes `POST /phrases` (`StrictBool` `confirm_duplicate`, 201 body, 409 `DUPLICATE_CONFIRMATION_REQUIRED` with validate-shaped `details`), `POST /phrases/matches` (`cursor` required, `400 INVALID_CURSOR`), `GET /phrases` (no params, cap `PHRASES_LIST_LIMIT`, newest first).
-- [ ] 7.2 Contract tests `tests/contract/test_phrases_endpoints.py` and `tests/contract/test_openapi.py`: every error code in OpenAPI, ids typed `string` documented opaque, `limit` optional and bounded on both endpoints, snapshot `docs/openapi.json` (regenerate via `make types`).
-- [ ] 7.3 Integration test `tests/integration/test_endpoints_pgvector.py`: same happy paths against real Postgres (one 201, one 409, one concurrent-identical-save pair -> exactly one 201 and one 409).
-- Verify: `pytest tests/contract tests/integration/test_endpoints_pgvector.py -q`.
+Covers: POST /phrases/matches x8; POST /phrases x5 (Created unique, Conflict shape, Created confirmed, Strict boolean flag, Text stored normalized); GET /phrases x3 (List shape, Empty, Hard cap); phrase-management List phrases x3 (Newest first, Empty list, Metadata exposed) and Persistence: Unique/Confirmed metadata (over HTTP); Explicit flag: Non-boolean flag; 409 payload: Payload completeness, Large match set on 409 (120-match fixture, `next_cursor` accepted by `/phrases/matches`); Failures never save (HTTP: 503/504, DB down -> 500 `INTERNAL_ERROR`); Concurrency: Unique violation maps to 409 never 500 (HTTP); OpenAPI documentation x4 (Endpoints documented, Error responses documented, Pagination documented, Every code documented). **Scope actually shipped in Unit 7**: everything above except `GET /phrases` x3, phrase-management List phrases x3, and OpenAPI documentation x4 -- all three deferred to Unit 7b.
+- [x] 7.1 RED then GREEN routes `POST /phrases` (`StrictBool` `confirm_duplicate`, 201 body, 409 `DUPLICATE_CONFIRMATION_REQUIRED` with validate-shaped `details`), `POST /phrases/matches` (`cursor` required, `400 INVALID_CURSOR`) -- done. `phrases/application/list_phrases.py` and `GET /phrases` (no params, cap `PHRASES_LIST_LIMIT`, newest first) **deferred to Unit 7b** — see below.
+- [x] 7.2 Contract tests `tests/contract/test_phrases_endpoints.py` (POST /phrases + POST /phrases/matches only) -- done. `tests/contract/test_openapi.py` (every error code in OpenAPI, ids typed `string` documented opaque, `limit` optional and bounded on both endpoints, snapshot `docs/openapi.json`) **deferred to Unit 7b**.
+- [x] 7.3 Integration test `tests/integration/test_endpoints_pgvector.py`: same happy paths against real Postgres (one 201, one 409, one concurrent-identical-save pair -> exactly one 201 and one 409) -- done; nothing in 7.3 itself is deferred.
+- Verify: `pytest tests/contract tests/integration/test_endpoints_pgvector.py -q` -- 50 passed (excludes `test_openapi.py`, deferred to Unit 7b).
+- **`size:exception`**: 566 changed lines (554 insertions / 12 deletions, 6 files) after applying the
+  unit's own named seam (moving `GET /phrases` + the OpenAPI snapshot to Unit 7b) and two genuine trim
+  rounds (890 -> 851 -> 570 -> 566). Accepted by explicit user sign-off after the mandatory
+  split-or-escalate step; see apply-progress.md's Unit 7 section for the full trim log, the proposed
+  7a/7c further-split analysis, and why it was declined in favour of the exception.
+
+### Unit 7b: `GET /phrases` and OpenAPI documentation (deferred from Unit 7, review-budget seam) — NOT STARTED
+
+Commit: `feat(api): list phrases endpoint and openapi documentation`. Rollback: revert (POST /phrases and POST /phrases/matches remain, from Unit 7).
+Covers: GET /phrases x3 (List shape, Empty, Hard cap); phrase-management List phrases x3 (Newest first, Empty list, Metadata exposed); OpenAPI documentation x4 (Endpoints documented, Error responses documented, Pagination documented, Every code documented).
+- [ ] 7b.1 RED then GREEN `phrases/application/list_phrases.py` and route `GET /phrases` (no params, cap `PHRASES_LIST_LIMIT`, newest first); wire `ListPhrases` into `phrases/container.py`.
+- [ ] 7b.2 Contract tests: `GET /phrases` scenarios folded into `tests/contract/test_phrases_endpoints.py`; new `tests/contract/test_openapi.py` (every error code in OpenAPI, ids typed `string` documented opaque, `limit` optional and bounded on both paginated endpoints, `cursor` documented as opaque) snapshotting `docs/openapi.json` (regenerate via `app.openapi()` directly -- no `make types` target produces the backend snapshot itself yet; that target only regenerates `apps/web/src/types/api.ts` FROM this file, see Unit 10).
+- Verify: `pytest tests/contract -q` (includes `test_openapi.py`).
+- Needs: Unit 7 (POST /phrases, POST /phrases/matches) merged, so the OpenAPI snapshot documents the full `/phrases` surface, not a partial one.
 
 ## Unit 8: sentence-transformers adapter, bounded provider, cache wiring, image bake (~380)
 

@@ -1211,3 +1211,150 @@ Every "folded" mapping above was independently confirmed by reading the actual t
 PASS WITH WARNINGS
 
 All 2 tasks complete, all 15 named spec scenarios have a passing, independently-reconfirmed covering test, all quality gates (pytest x2, ruff, mypy, lint-imports) reproduce exactly as documented, the from __future__ import annotations omission and the "not wired to production" deviation are both genuine and honestly disclosed (verified by direct experiment and code reading, not by trusting the write-up), and no AI/Claude co-authorship appears in either commit. The three WARNINGs are all documentation-accuracy issues in apply-progress.md/tasks.md/PR #21 (a wrong test-count sentence, a 1-line-off size:exception measurement, and a stale docstring referencing a since-removed lifespan hook) -- none of them affect the actual shipped behavior, test coverage, or the substantive size:exception decision, which remains valid either way (467 or 468 total, both ~17% over the 400-line cap).
+
+## Verification Report - Unit 7
+
+**Change**: phrase-validation
+**Version**: N/A
+**Mode**: Strict TDD
+**Scope**: POST /phrases, POST /phrases/matches (tasks 7.1-7.3). GET /phrases and OpenAPI documentation were deliberately deferred to Unit 7b via tasks.md named seam -- confirmed accurately recorded, not re-litigated as a gap.
+
+### Completeness
+| Metric | Value |
+|--------|-------|
+| Unit 7 tasks total | 3 (7.1, 7.2, 7.3) |
+| Unit 7 tasks complete | 3/3, all checked |
+| Unit 7b tasks total | 2 (7b.1, 7b.2) |
+| Unit 7b tasks complete | 0/2, both unchecked -- confirmed genuinely NOT started: git ls-files shows no tracked list_phrases.py, test_list_phrases.py, test_openapi.py, or docs/openapi.json; only stale __pycache__ bytecode remnants exist from the documented build-then-delete cycle, no source. |
+
+### Build and Tests Execution (independently re-run, not trusted from apply-progress.md)
+**Unit own Verify command**:
+```
+$ cd services/api && .venv/Scripts/python.exe -m pytest tests/contract tests/integration/test_endpoints_pgvector.py -q
+50 passed, 2 warnings in ~2.0s
+```
+Re-run 3 times consecutively -> 50 passed every time. Also re-run with tests/integration/test_endpoints_pgvector.py FIRST and tests/contract SECOND (reversed collection order, see DATABASE_URL trace below) -> 50 passed, no change in outcome.
+
+**Full regression**:
+```
+$ pytest -m "not integration and not slow" -q
+232 passed, 35 deselected, 2 warnings
+```
+
+**Full integration** (real Postgres, todo-ia-db-1 already healthy):
+```
+$ pytest -m integration -q
+35 passed, 232 deselected, 2 warnings in ~43s
+```
+
+**Concurrency test isolation -- 5/5 standalone runs** (per this session Unit 5b flakiness precedent, a single green run was treated as insufficient evidence):
+```
+$ pytest tests/integration/test_endpoints_pgvector.py::test_concurrent_identical_saves_yield_exactly_one_201_and_one_409 -q
+Run 1: 1 passed  |  Run 2: 1 passed  |  Run 3: 1 passed  |  Run 4: 1 passed  |  Run 5: 1 passed
+```
+All exact counts (50 / 232 / 35) match tasks.md and apply-progress.md claims exactly.
+
+**Quality gates**:
+```
+$ ruff check src tests        -> All checks passed!
+$ mypy src                    -> Success: no issues found in 38 source files
+$ lint-imports                -> Contracts: 5 kept, 0 broken.
+```
+
+### Spec Compliance Matrix (Unit 7 shipped scope only)
+| Requirement | Scenario | Test | Result |
+|-------------|----------|------|--------|
+| api-contract POST /phrases | Created unique | test_save_created_unique_records_null_metadata_and_normalizes_text | COMPLIANT |
+| api-contract POST /phrases | Conflict shape | test_save_conflict_shape_and_payload_completeness | COMPLIANT |
+| api-contract POST /phrases | Created confirmed | test_save_created_confirmed_records_score_and_neighbor | COMPLIANT |
+| api-contract POST /phrases | Strict boolean flag | test_save_non_boolean_confirm_duplicate_rejected (yes, 1, true) | COMPLIANT |
+| api-contract POST /phrases | Text is stored normalized | test_save_created_unique_records_null_metadata_and_normalizes_text (whitespace/zero-width input -> Hola) | COMPLIANT |
+| phrase-management Persistence | Unique phrase metadata (over HTTP) | test_save_created_unique_records_null_metadata_and_normalizes_text | COMPLIANT |
+| phrase-management Persistence | Confirmed duplicate metadata (over HTTP) | test_save_created_confirmed_records_score_and_neighbor | COMPLIANT |
+| duplicate-confirmation Explicit flag | Non-boolean flag | test_save_non_boolean_confirm_duplicate_rejected | COMPLIANT |
+| duplicate-confirmation 409 payload | Payload completeness | test_save_conflict_shape_and_payload_completeness (3-match fixture, score-desc order, has_more=false) | COMPLIANT |
+| duplicate-confirmation 409 payload | Large match set on 409 | test_save_large_match_set_on_409_next_cursor_usable_with_matches (120-fixture, 50/50/20 walk) | COMPLIANT |
+| duplicate-confirmation Failures never save | Model down (503/504) | test_save_provider_failure_never_persists (parametrized EmbeddingUnavailable/EmbeddingTimeout) | COMPLIANT |
+| duplicate-confirmation Failures never save | DB down -> 500 | test_save_database_unreachable_is_500_and_persists_nothing | COMPLIANT |
+| phrase-management Concurrency | Unique violation maps to 409, never 500 (HTTP) | test_save_unique_violation_on_insert_maps_to_409_never_500 (unit-level) plus test_concurrent_identical_saves_yield_exactly_one_201_and_one_409 (real Postgres, real thread race) | COMPLIANT |
+| api-contract POST /phrases/matches | 8 named cursor/pagination/schema scenarios | test_matches_pagination_walk_from_validate, test_matches_response_has_no_verdict_fields, test_matches_invalid_cursor_is_400 (x4), test_matches_schema_violations_are_422 (x3) | COMPLIANT |
+
+**Compliance summary**: every scenario in Unit 7 own Covers line for the shipped scope has a passing, independently-reconfirmed covering test. GET /phrases (List shape, Empty, Hard cap), phrase-management "List phrases" (Newest first, Empty list, Metadata exposed), and OpenAPI documentation (x4) are correctly absent -- deferred to Unit 7b, not a Unit 7 gap.
+
+### Correctness (Static + Runtime Evidence) -- targeted deep-dive items
+
+**1. Import-linter fix (409 envelope built inline vs. error_envelope helper) -- no format drift found.**
+Compared byte-for-byte with a direct interpreter check:
+```python
+inline  = {"error": {"code": "DUPLICATE_CONFIRMATION_REQUIRED", "message": "msg", "details": {"a": 1}}}
+helper  = error_envelope("DUPLICATE_CONFIRMATION_REQUIRED", "msg", {"a": 1})
+inline == helper  # True
+list(inline["error"]) == list(helper["error"]) == ["code", "message", "details"]  # True
+```
+router.py inline dict for the 409 body (error/code/message/details, details built via _verdict_details) produces the exact same key set and key order as platform/errors.py error_envelope for the case where details is not None (which is always true here, since _verdict_details never returns None). The import-linter finding and its fix are both genuine and correctly documented -- platform.errors does transitively import similarity.domain.errors, confirmed by reading errors.py own docstring and imports; lint-imports output (5 kept, 0 broken) confirms the fix holds today.
+
+**2. Concurrent-save integration test is a genuine race, not a false negative waiting to happen.**
+Read test_concurrent_identical_saves_yield_exactly_one_201_and_one_409: two ThreadPoolExecutor(max_workers=2) futures both call client.post("/phrases", ...) against the SAME TestClient/engine, with no barrier, event, or ordering primitive forcing a winner. save_phrase is a plain def handler (not async def), so Starlette run_in_threadpool genuinely dispatches each call to a separate worker thread, and both race for the same Postgres advisory lock inside SavePhrase. 5/5 standalone runs passed; 3 additional runs of the full combined Verify command passed; a reversed-collection-order run also passed. No flakiness observed across 8 total executions of the specific assertion path.
+
+**3. os.environ.setdefault("DATABASE_URL", ...) in test_endpoints_pgvector.py does not reintroduce the Unit 6 cross-file pollution bug, and does not shadow a developer-set custom DATABASE_URL.**
+Traced both mutation mechanisms together:
+- tests/contract/conftest.py sets a FAKE placeholder (contract:contract@...) only if DATABASE_URL is absent, and deletes it in pytest_collection_finish (which fires after ALL collection, including test_endpoints_pgvector.py import) only if the value is still exactly that placeholder.
+- test_endpoints_pgvector.py uses setdefault with the SAME real default every sibling integration file (test_nearest_and_uow.py, test_find_matches.py, test_schema.py) already falls back to independently -- it never overwrites an existing value, fake or real.
+- If a developer has a custom DATABASE_URL already exported, conftest.py detects the var is already set and does not touch it, and does not delete it afterward -- the developer value survives untouched through both mechanisms.
+- Verified empirically: running the exact Verify command (tests/contract then tests/integration/test_endpoints_pgvector.py) and the REVERSED order both pass 50/50. In the reversed order, test_endpoints_pgvector.py setdefault fires first (setting the real default, since nothing was set yet), then conftest.py detects the var already present and neither overwrites it with the placeholder NOR ever deletes it afterward. This is a real, order-dependent difference in final env state (real-default value persists for the whole session vs. being deleted after collection), but it is harmless in practice: contract tests never read Settings.database_url for anything that touches a real database (they use InMemoryUnitOfWorkFactory/fakes exclusively), and Settings() never attempts a DB connection at construction. No functional divergence was observed in either order. Flagged as WARNING (fragility/coupling between two independently-authored env-mutation mechanisms whose interaction depends on collection order), not CRITICAL, since it does not currently cause incorrect behavior in either order and both fallback values are identical, legitimate real defaults -- see Issues below.
+
+**4. 409 payload Payload completeness / Large match set on 409 reuse Unit 3 shared machinery, not a reimplementation.**
+SavePhrase._conflict (unchanged from Unit 3, services/api/src/app/modules/phrases/application/save_phrase.py) calls uow.repo.find_matches(...) then build_matches_page(page, self._policy, comparison=comparison) -- the exact same shared helper from phrases/application/_shared.py used by ValidatePhrase/ListMatches. router.py _verdict_details only maps the resulting VerdictView to a wire dict; it performs no independent pagination or match-scoring logic. Confirmed no drift risk.
+
+**5. StrictBool on confirm_duplicate genuinely rejects non-boolean truthy values.**
+_SaveRequest.confirm_duplicate: StrictBool = False in router.py. test_save_non_boolean_confirm_duplicate_rejected is parametrized over "yes", 1, "true" and asserts 422 with field=confirm_duplicate, reason=invalid_type, plus confirms nothing was persisted. Re-ran this test in isolation -- passes; pydantic StrictBool does not coerce truthy non-bool values, confirmed both by static typing and the passing test.
+
+**6. Text stored normalized confirmed both by test and by code path.**
+test_save_created_unique_records_null_metadata_and_normalizes_text posts a phrase with leading/trailing whitespace plus an embedded zero-width space and asserts data.text equals the normalized form "Hola". SavePhrase.__call__ calls normalize_and_check_length (shared helper, same one used since earlier units) to produce (display, comparison), and _phrase_out maps phrase.text (the persisted display form) into the response -- the returned text is the normalized display form, not the raw input, both by test assertion and by tracing the code path.
+
+### Coherence (Design)
+| Decision | Followed? | Notes |
+|----------|-----------|-------|
+| design.md 409 body = full validate-shaped payload | Yes | _verdict_details produces exactly threshold/score/most_similar/matches/next_cursor/has_more, matching design.md line 950 |
+| design.md confirm_duplicate StrictBool, yes/1/true -> 422 invalid_type | Yes | Matches design.md line 939 verbatim, confirmed by test |
+| design.md POST /phrases/matches cursor required, limit optional strict-bounded | Yes | Matches design.md line 938 |
+| design.md exact-scan (find_nearest_exact) under advisory lock for save, never HNSW | Yes | SavePhrase._attempt unchanged from Unit 3, calls find_nearest_exact |
+| size:exception documentation accurate across artifacts | Yes | See size verification below |
+
+### Size-exception verification (independently re-measured, not trusted from apply-progress.md)
+```
+$ git diff --numstat ea0a2c4 f12c23e -- <the 6 listed files>
+7/1    main.py
+134/5  router.py
+23/6   container.py
+280/0  test_phrases_endpoints.py
+1/0    test_validate_health.py
+109/0  test_endpoints_pgvector.py
+-> 554 insertions / 12 deletions = 566 changed lines
+```
+This matches tasks.md, apply-progress.md, and PR #22 body EXACTLY -- no off-by-one discrepancy this time (unlike an earlier Unit size measurement flagged as a WARNING in a prior section of this report). Full branch diff (ea0a2c4..f454132, both commits, including openspec/ doc updates) independently measured at 919 insertions / 19 deletions (938 total), matching the batch context reported "919 additions / 19 deletions across 2 commits" exactly. The seam (moving GET /phrases + OpenAPI to Unit 7b) and the two trim rounds (890 -> 851 -> 570 -> 566) are consistently described in tasks.md Unit 7 Notes line, apply-progress.md Review-budget section, and PR #22 body -- all three agree on the numbers, the seam, and the declined 7a/7c split.
+
+### Git and PR hygiene
+- git show -s on both f12c23e and f454132: author Aaron Rojas (Aaron-Shrike GitHub account) on both, no Co-Authored-By trailer, no AI/Claude attribution in either commit message body. Clean.
+- PR #22 (gh pr view 22): baseRefName develop, state OPEN, additions 919, deletions 19 -- matches the branch diff exactly. Body carries the size:exception callout, trim log, declined-split table, dependency diagram, and exact Verify output, all consistent with tasks.md/apply-progress.md.
+
+### Unit 7b spot-check
+tasks.md Unit 7b section (lines 246-253): Commit/Rollback lines present, Covers line lists exactly the 3+3+4 scenarios deferred from Unit 7 (GET /phrases x3, phrase-management List phrases x3, OpenAPI x4), both sub-tasks unchecked, "Needs: Unit 7 merged" dependency correctly stated. Confirmed genuinely unstarted (no tracked source files, see Completeness table above) -- not silently half-done.
+
+### Issues Found
+
+**CRITICAL**: None.
+
+**WARNING**:
+
+1. Order-dependent interaction between tests/contract/conftest.py DATABASE_URL placeholder/cleanup mechanism and test_endpoints_pgvector.py new os.environ.setdefault guard. When tests/contract collects before tests/integration/test_endpoints_pgvector.py (the documented Verify command order), the placeholder wins during collection and is cleaned up afterward, and the new guard is a no-op. When the order is reversed, the new guard real-default value is set first, and conftest.py own cleanup logic silently no-ops instead (since the var is already set), leaving the real-default value in os.environ for the rest of the session instead of being cleaned up. Verified empirically that both orders currently pass 50/50 with no functional divergence (contract tests never read Settings.database_url for real I/O), but the two mechanisms were authored independently and neither is aware of the other existence -- a future third file doing something similar could produce a genuinely surprising env state depending on collection order. Not a regression of the Unit 6 fake-placeholder-leak bug (both fallback values here are the same real default, never a fake one), but worth a one-line cross-reference comment in one or both files for future maintainers.
+
+**SUGGESTION**:
+
+1. Given list_phrases.py, test_list_phrases.py, test_openapi.py, and docs/openapi.json were all fully written and verified green before being deleted for the review-budget seam, consider committing them to a throwaway branch or gist before deleting in future similar seams (rather than relying purely on the prose reproduction notes in apply-progress.md) -- the notes here are unusually thorough and probably sufficient, but a literal diff/patch would remove any residual risk of Unit 7b implementer re-deriving something subtly different from what was already proven to work.
+
+### Verdict
+
+**PASS WITH WARNINGS**
+
+All 3 Unit 7 tasks (7.1-7.3) are complete and independently re-confirmed: every named scenario in Unit 7 shipped Covers line has a passing covering test (re-run live, not trusted from the report), all three exact Verify commands reproduce their documented counts precisely (50/232/35 passed), all quality gates (ruff, mypy, lint-imports) are clean, the import-linter workaround introduces no format drift in the 409 envelope (verified byte-for-byte), the concurrent-save test is a genuine unsynchronized two-thread race that passed 5/5 standalone runs plus 3 more combined-command runs with zero flakiness, the DATABASE_URL defensive guard does not reintroduce the Unit 6 fake-placeholder pollution bug (traced through both mechanisms, verified empirically in both collection orders), the size:exception (566 changed lines) is accurately and consistently documented across tasks.md/apply-progress.md/PR #22 with an exact independent re-measurement match, no AI/Claude co-authorship appears in either commit, and Unit 7b is genuinely unstarted with no silent partial progress. The single WARNING is a latent (currently harmless) ordering fragility between two independently-written test-env-mutation mechanisms, not a functional defect.

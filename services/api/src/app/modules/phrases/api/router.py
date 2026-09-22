@@ -1,19 +1,34 @@
 # NOTE: NO `from __future__ import annotations` here on purpose.
-# `_ValidateRequest` is nested inside `build_validate_router()` so its
+# Every request model below is nested inside its factory function so its
 # field bounds close over the caller's settings; postponed evaluation would
 # turn those into unresolved strings FastAPI can't reach via closure locals
 # -- the exact bug the Unit 6 fix-pass found (see test_framework_errors.py).
-"""`POST /phrases/validate` (tasks.md 6b.1, design.md's Data Flow /
-"Request shapes"). Reads its `ValidatePhrase` off `request.app.state.phrases`
-(assembled by `phrases/container.py`) -- imports no adapter (import-linter's
+"""`POST /phrases/validate` (tasks.md 6b.1) plus `POST /phrases` and
+`POST /phrases/matches` (tasks.md 7.1, design.md's Data Flow / "Request
+shapes"). `GET /phrases` and the OpenAPI documentation pass are deferred to
+Unit 7b (tasks.md's Unit 7 seam note: over budget even after a trim pass).
+Every route reads its use case off `request.app.state.phrases` (assembled
+by `phrases/container.py`) -- imports no adapter (import-linter's
 `composition-root-owns-adapters` contract forbids it for `phrases.api`).
 """
 
+from datetime import datetime
+from typing import Annotated
+
 from fastapi import APIRouter, Request
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field, StrictBool
+from starlette.responses import JSONResponse
 
 from app.modules.phrases.api.schemas import PhraseId, page_limit, raw_phrase_text
+from app.modules.phrases.application._shared import VerdictView
 from app.modules.phrases.container import PhrasesContainer
+from app.modules.phrases.contracts import Phrase
+
+# NOTE: the error envelope is built inline below, NOT via
+# `app.platform.errors.error_envelope`: that module imports
+# `similarity.domain.errors`, and import-linter checks the FULL transitive
+# chain -- `phrases.api -> platform.errors -> similarity.domain` would break
+# the `phrases-only-similarity-contracts` contract.
 
 
 class _ScoredPhrase(BaseModel):
@@ -22,6 +37,55 @@ class _ScoredPhrase(BaseModel):
     id: PhraseId
     text: str
     score: float
+
+
+class _ValidationOut(BaseModel):
+    status: str
+    score: float | None
+    most_similar_phrase_id: PhraseId | None
+    validated_at: datetime
+
+
+class _PhraseOut(BaseModel):
+    """The 201 body of `POST /phrases`."""
+
+    id: PhraseId
+    text: str
+    created_at: datetime
+    validation: _ValidationOut
+
+
+def _phrase_out(phrase: Phrase) -> _PhraseOut:
+    return _PhraseOut(
+        id=phrase.id,
+        text=phrase.text,
+        created_at=phrase.created_at,
+        validation=_ValidationOut(
+            status=phrase.validation_status.value,
+            score=phrase.similarity_score,
+            most_similar_phrase_id=phrase.most_similar_phrase_id,
+            validated_at=phrase.validated_at,
+        ),
+    )
+
+
+def _verdict_details(verdict: VerdictView) -> dict[str, object]:
+    """The validate-shaped 409 `details` payload (design.md: "The 409 body
+    carries a complete validate response")."""
+    most_similar = (
+        _ScoredPhrase(**vars(verdict.most_similar)).model_dump(mode="json")
+        if verdict.most_similar is not None
+        else None
+    )
+    matches = [_ScoredPhrase(**vars(m)).model_dump(mode="json") for m in verdict.matches]
+    return {
+        "threshold": verdict.threshold,
+        "score": verdict.score,
+        "most_similar": most_similar,
+        "matches": matches,
+        "next_cursor": verdict.next_cursor,
+        "has_more": verdict.has_more,
+    }
 
 
 class _ValidateData(BaseModel):
@@ -67,6 +131,71 @@ def build_validate_router(*, phrase_max_length: int, matches_page_size: int) -> 
                 matches=matches,
                 next_cursor=verdict.next_cursor,
                 has_more=verdict.has_more,
+            )
+        )
+
+    return router
+
+
+class _MatchesData(BaseModel):
+    matches: list[_ScoredPhrase]
+    next_cursor: str | None
+    has_more: bool
+
+
+class _MatchesResponse(BaseModel):
+    data: _MatchesData
+
+
+class _PhraseResponse(BaseModel):
+    data: _PhraseOut
+
+
+def build_phrases_router(*, phrase_max_length: int, matches_page_size: int) -> APIRouter:
+    """`POST /phrases`, `POST /phrases/matches` (tasks.md 7.1)."""
+    router = APIRouter()
+
+    class _SaveRequest(BaseModel):
+        model_config = ConfigDict(extra="ignore")
+
+        text: raw_phrase_text(phrase_max_length)  # type: ignore[valid-type]
+        confirm_duplicate: StrictBool = False
+
+    class _MatchesRequest(BaseModel):
+        model_config = ConfigDict(extra="ignore")
+
+        text: raw_phrase_text(phrase_max_length)  # type: ignore[valid-type]
+        cursor: Annotated[str, Field(description="Opaque; clients MUST NOT parse it.")]
+        limit: page_limit(matches_page_size) | None = None  # type: ignore[valid-type]
+
+    @router.post("/phrases", status_code=201, response_model=_PhraseResponse)
+    def save_phrase(body: _SaveRequest, request: Request) -> _PhraseResponse | JSONResponse:
+        container: PhrasesContainer = request.app.state.phrases
+        result = container.save_phrase(body.text, confirm_duplicate=body.confirm_duplicate)
+        if result.conflict is not None:
+            return JSONResponse(
+                status_code=409,
+                content={
+                    "error": {
+                        "code": "DUPLICATE_CONFIRMATION_REQUIRED",
+                        "message": "a similar phrase already exists; confirm to save it anyway",
+                        "details": _verdict_details(result.conflict),
+                    }
+                },
+            )
+        assert result.phrase is not None
+        return _PhraseResponse(data=_phrase_out(result.phrase))
+
+    @router.post("/phrases/matches", response_model=_MatchesResponse)
+    def list_matches(body: _MatchesRequest, request: Request) -> _MatchesResponse:
+        container: PhrasesContainer = request.app.state.phrases
+        limit = body.limit if body.limit is not None else matches_page_size
+        page = container.list_matches(body.text, cursor=body.cursor, limit=limit)
+        return _MatchesResponse(
+            data=_MatchesData(
+                matches=[_ScoredPhrase(**vars(m)) for m in page.matches],
+                next_cursor=page.next_cursor,
+                has_more=page.has_more,
             )
         )
 
