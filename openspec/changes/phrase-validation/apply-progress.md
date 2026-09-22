@@ -6,6 +6,10 @@ started in that batch.
 Scope of batch 2 (this append): Unit 1 (normalization, clamped score, similarity policy) only, per
 the orchestrator's explicit instructions. Units 2+ are NOT started.
 
+Scope of batch 3 (this append): Unit 2d (`find_matches` keyset, restored from Unit 2's
+review-budget split) only, per the orchestrator's explicit instructions. Units 2b, 2c, 3+ are NOT
+started.
+
 ## Unit B.0: Bootstrap commit (planning artifacts)
 
 - [x] B.0.1 — **No new commit created.** `git status` was already clean at the start of this
@@ -682,3 +686,214 @@ problem), anonymous/no-tenant-scoping (design.md D5, intentional), and `find_mat
 - **Layers used**: Unit (7), Unit marked `contract` (1)
 - **Approval tests**: None — findings 1/2/4 are new invariants, not refactors of passing behaviour
 - **Pure functions / guards created**: `_validate_paired_metadata` (module-level, pure), `FailingEmbedder._is_down` (pure given the instance's configured `fail_times`)
+
+---
+
+## Unit 2d: `find_matches` keyset (restored from Unit 2's review-budget split)
+
+Branch `feat/pv-02d-find-matches`. **Authoring-ahead base**: cut from `feat/pv-02-ports-inmemory`
+(commit `83ea5f4`, the tip carrying Unit 2's reviewed-and-fixed content), per the CONTEXT's explicit
+instruction — PR #5 (retargeting `feat/pv-02-ports-inmemory` from `feat/pv-01-domain-policy` onto
+`main`) is open but **not yet merged**. Same authoring-ahead pattern already used for Unit 2 itself
+(stacked on an unmerged base, pre-approved). **This branch/PR MUST be rebased onto `main` and
+retargeted once PR #5 merges** — see "PR status" below.
+
+Restored `find_matches`, `Match`, `Page`, `MatchCursor` per tasks.md's Unit 2d (2d.1–2d.3), reading
+this file's own Unit 2 section (the "deferred, deleted-but-verified-working" implementation note)
+as the primary source rather than re-deriving from scratch, per the CONTEXT's explicit instruction.
+
+- [x] 2d.1 Added `Match`, `Page`, `MatchCursor` to `services/api/src/app/modules/phrases/contracts.py`
+  and `find_matches` to the `PhraseRepository` Protocol. Restored near-verbatim from this file's Unit
+  2 section ("bucket = floor(distance / KEY_EPSILON), max_distance filter, sort by (bucket, id),
+  cursor continuation, limit + 1 has-more probe"), with one resolved scoping decision design.md's
+  own code sample left open (it types `cursor: MatchCursor | None` but never gives the class body):
+  **`MatchCursor` carries only `distance`/`id`**, not the wire cursor's full `{v,t,d,i,th}` envelope.
+  Rationale, documented in the type's own docstring: design.md's "Cursor format" section states
+  `ListMatches`'s step order is "decode -> validate fields -> compare `t` and `th` -> embed ->
+  query" — the `t` (comparison-form) and `th` (threshold) binding checks happen in the application
+  layer *before* any repository call, using the codec's own decoded envelope; `find_matches`'s D16
+  keyset math only ever needs the last delivered row's raw `distance` and `id`. Unit 2c's codec and
+  Unit 3's use cases will decode the full envelope themselves and construct this narrower
+  `MatchCursor` only after the `t`/`th` checks pass. This keeps the repository port's cursor type as
+  narrow as its own contract, and avoids repeating fields it has no use for.
+  Also **re-added `KEY_EPSILON` to `similarity/contracts.py`'s `__all__`** (was deliberately left out
+  of `__all__` in Unit 2 with a note to re-add it "in the same PR that wires that consumer" — this
+  PR is that PR) and **updated `phrases/contracts.py`'s module docstring** to remove the now-stale
+  "review-budget split... deferred to an immediate follow-up PR" language (the deferral is resolved),
+  replacing it with the `MatchCursor` scoping-decision note above. This is the "single source of
+  truth" docstring the Unit 2 fix pass consolidated the deferral note into — updating it here, rather
+  than leaving it stale, was called out explicitly in the CONTEXT for this batch.
+  Structural (frozen dataclasses + one Protocol method, no branching in the types themselves) — same
+  GREEN-only precedent as Unit 2's 2.1: correctness of the actual keyset LOGIC is locked by real
+  assertions in 2d.2/2d.3's tests below, not by this task in isolation. Confirmed the new symbols
+  import cleanly before writing any adapter code.
+- [x] 2d.2 RED then GREEN — `find_matches` on `InMemoryPhraseRepository`
+  (`services/api/src/app/modules/phrases/adapters/in_memory_repository.py`). RED: two new tests in
+  `tests/unit/phrases/test_in_memory_repository.py`
+  (`test_find_matches_filters_by_max_distance_and_orders_by_bucket_then_id`,
+  `test_find_matches_limit_plus_one_probe_and_cursor_continuation`) written first, confirmed failing
+  with `AttributeError: 'InMemoryPhraseRepository' object has no attribute 'find_matches'` (the
+  method genuinely did not exist — this repo, unlike a Fake-It scenario, had zero prior
+  `find_matches` code on this branch; the "restore from apply-progress" instruction describes
+  restoring KNOWLEDGE of a working design, not skipping RED). GREEN: implemented `find_matches` —
+  computes `cosine_distance` per stored row, filters `distance <= max_distance`, computes
+  `bucket = floor(distance / KEY_EPSILON)` via a small module-level `_bucket()` helper, sorts
+  candidates by `(bucket, id)`, applies the cursor continuation predicate
+  `(bucket, id) > (floor(cursor.distance / KEY_EPSILON), cursor.id)` when a cursor is supplied, takes
+  `limit + 1` rows to decide `has_more`, and returns `Page(items=..., next_cursor=..., has_more=...)`
+  with `next_cursor` set to a new `MatchCursor(distance=last_item.distance, id=last_item.id)` iff
+  `has_more` and the page is non-empty. Both new tests passed on the first implementation attempt.
+- [x] 2d.3 RED then GREEN — the deferred contract-suite scenarios, added to
+  `tests/contract_suite/repository_contract.py` (so pgvector, Unit 5a/5b, is held to the same
+  contract; this is why the deferral was seamed there and not into an in-memory-only test file):
+  - `test_bit_identical_ties_split_cleanly_across_a_page_boundary`: 5 phrases with a **bit-identical**
+    embedding (equal raw distance -> the same bucket), ids 1..5, `limit=2` -> asserts pages
+    `[1,2]`, `[3,4]`, `[5]` concatenate to exactly `[1,2,3,4,5]` (spec's "Tie scores across a page
+    boundary").
+  - `test_displayed_ties_are_ordered_by_raw_distance`: id "a" at raw score 0.90001 (distance
+    0.09999) and id "b" at raw score 0.90004 (distance 0.09996) — both round to the displayed 0.9000
+    — asserts `["b", "a"]` order (spec's "Displayed ties are ordered by raw distance": the smaller
+    raw distance precedes, even though the 4-decimal display is identical).
+  - `test_500_matches_page_through_completely_with_no_gaps_or_repeats`: 500 phrases at distinct,
+    evenly-spread distances (`0.001 + i * 0.0013`, deliberately not clean multiples of `1e-6` so no
+    fixture distance sits on a grid edge), page size 50 -> asserts exactly 10 pages, 500 distinct
+    ids collected, and the collected id set equals the seeded id set (spec's "Paging beyond the
+    former approximate-index window").
+  - `test_perturbed_vector_paging_does_not_repeat_or_skip`: 7 phrases at distances spread ~0.013
+    apart (`0.011` .. `0.091`, far from any `1e-6` grid edge), page size 3; **every page after the
+    first** re-issues `find_matches` with the query vector perturbed by `+1e-7` per component (models
+    a re-embedded query vector drifting by a tiny numerical amount between pages — cache eviction or
+    another worker recomputing it, per design.md's D16/ADR-007) — asserts the concatenated ids across
+    all pages equal the seeded id list exactly, in order, with nothing repeated or skipped (spec's
+    "Vector drift does not repeat or skip"). Note: this in-memory test simulates numerical drift with
+    a fixed `+1e-7` offset rather than true float32-ulp arithmetic (there is no float32 vector type in
+    this Python-side fixture); the pgvector adapter's own Unit 5a/5b integration test is where a real
+    float32-ulp perturbation is exercised end-to-end, per design.md's own note that this unit test's
+    purpose is the *keyset math's* tolerance, not float32 fidelity.
+  All four scenarios passed **on the first run** against the 2d.2 implementation with no further
+  production changes — this is legitimate TDD triangulation (the 2d.2 implementation was already a
+  real, generalized `(bucket, id)` keyset computation, not a Fake-It hardcode, so these additional
+  cases confirm the generalization holds rather than forcing a hardcode to become real logic; per
+  strict-tdd.md, triangulation confirming an already-correct generalization is a valid outcome, not a
+  skipped step — each test was still written BEFORE being run, and each genuinely exercises a
+  distinct code path (tie handling, raw-distance ordering, large-N paging, cursor-vs-drift
+  robustness)).
+  Also removed the stale "review-budget deferral" pointer from `repository_contract.py`'s module
+  docstring (it pointed at `phrases/contracts.py`'s now-resolved deferral note) and replaced it with
+  a description of the four scenarios actually shipped here, per the CONTEXT's explicit instruction
+  not to leave a stale "deferred" note once un-deferred.
+
+**Ruff fix-up**: two lines in the new `repository_contract.py` tests exceeded the 100-column limit
+(`ruff` E501); wrapped the offending list-comprehension assignments across two lines each. No
+behavior change.
+
+**Verify (confirmed on `feat/pv-02d-find-matches`)**:
+- `cd services/api && .venv/bin/python -m pytest tests/unit tests/contract_suite -q` ->
+  `58 passed` (52 prior from Unit 2 + fix pass, unchanged, + 6 new: 2 in
+  `test_in_memory_repository.py`, 4 in `repository_contract.py`).
+- `cd services/api && .venv/bin/lint-imports` -> `Contracts: 5 kept, 0 broken.` (no new
+  cross-module import edges — `find_matches`/`Match`/`Page`/`MatchCursor` stay entirely inside
+  `phrases.contracts`/`phrases.adapters`, so no `.importlinter` change was needed this unit).
+- `cd services/api && .venv/bin/ruff check .` -> `All checks passed!`
+- `cd services/api && .venv/bin/mypy src` -> `Success: no issues found in 22 source files`
+- `make test-unit` (root) -> backend 58 passed, frontend (unchanged) 1 passed.
+
+**Commit**: `feat(domain): find_matches keyset pagination (restored from Unit 2 budget split)`
+**SHA**: `411384b97c4beaeab62217cdef806bf253020c90` — recorded in a small follow-up docs commit
+(same chicken-and-egg reason Unit 0/1/2 used a separate `docs(sdd): record commit SHA...` commit:
+the hash cannot be known and self-referenced inside the same commit it belongs to).
+**Branch**: `feat/pv-02d-find-matches`
+**Base**: `feat/pv-02-ports-inmemory` at `83ea5f4` (authoring-ahead). **Verified current PR/branch
+state via `gh pr list`/`gh pr view` before opening this PR** (correcting this file's own earlier,
+now-stale assumptions written before that check): PR #3 (Unit 1, `feat/pv-01-domain-policy` ->
+`main`) is **MERGED** (`28d70a1`); PR #4 (Unit 2, `feat/pv-02-ports-inmemory` ->
+`feat/pv-01-domain-policy`) is **MERGED** (`a9b4719`) -- but into the `feat/pv-01-domain-policy`
+branch, not `main` directly, because PR #4's base was that branch, not `main`. Since PR #3 had
+already merged `feat/pv-01-domain-policy`'s Unit-1-only state into `main` *before* PR #4 added Unit
+2 on top of that same branch, `main` (`28d70a1`) still lacks Unit 2's commits. **PR #5**
+(`feat/pv-01-domain-policy` -> `main`, i.e. "retarget Unit 2 onto main") is the one still **OPEN**
+and not yet merged — <https://github.com/Aaron-Shrike/todo-ia/pull/5>. **This PR (Unit 2d) must be
+rebased onto `main` and retargeted from `feat/pv-02-ports-inmemory` to `main` directly the moment
+PR #5 merges** — same pattern already used for PR #4 against PR #3 while PR #3 was still open.
+**Lines changed**: 328 insertions / 23 deletions, 5 files — well under the 400-line budget (the
+~150-200 estimate in tasks.md's Unit 2d Notes line held).
+
+### TDD Cycle Evidence (Unit 2d)
+
+| Task | Test File | Layer | Safety Net | RED | GREEN | TRIANGULATE | REFACTOR |
+|------|-----------|-------|------------|-----|-------|-------------|----------|
+| 2d.1 | N/A (structural; `Match`/`Page`/`MatchCursor` are frozen dataclasses, `find_matches` is a Protocol stub) | Unit | N/A (new symbols) | N/A — purely structural, no branching; triangulation/RED skipped per strict-tdd.md's explicit skip rule, same precedent as Unit 2's 2.1 | ✅ Imports/instantiates cleanly (confirmed by direct `python -c` import check before writing 2d.2) | Triangulation skipped: purely structural, ONE possible output per field; real behavioral coverage is 2d.2/2d.3 | ➖ None needed |
+| 2d.2 | `tests/unit/phrases/test_in_memory_repository.py` | Unit | ✅ 58 pre-2d.2 tests passing before this task (52 from Unit 2 + fix pass unchanged) | ✅ Written — `AttributeError: 'InMemoryPhraseRepository' object has no attribute 'find_matches'` (confirmed by execution, not assumed) | ✅ Passed on first implementation (`2 passed`) | ✅ 2 cases: max_distance filter + bucket/id ordering; limit+1 has-more probe + cursor continuation across two pages | ➖ None needed — implementation already minimal (one helper, one method) |
+| 2d.3 | `tests/contract_suite/repository_contract.py` | Unit (marked `contract`) | ✅ 60 pre-2d.3 tests passing (58 after 2d.2, prior to these 4 additions — see note) | ✅ Written — all 4 tests written before being run once against the 2d.2 GREEN implementation | ✅ All 4 passed on first execution (see "legitimate TDD triangulation" note under 2d.3 above) | ✅ 4 distinct scenarios: bit-identical tie, displayed-tie raw-distance ordering, 500-match paging, perturbed-vector drift tolerance | ➖ None needed; only a ruff line-length wrap (no behavior change) |
+
+### Test Summary (Unit 2d)
+- **Total tests written and passing at final commit**: 6 new (58 total: 52 pre-existing from Unit 2
+  + fix pass, unchanged, + 6 new: 2 unit + 4 contract-suite)
+- **Layers used**: Unit (2), Unit marked `contract` (4), Integration (0), E2E (0)
+- **Approval tests** (refactoring): None — `find_matches` is new production code on this branch, not
+  a refactor of passing behaviour
+- **Pure functions created**: `_bucket()` (module-level helper, pure) and
+  `InMemoryPhraseRepository.find_matches` itself (pure given the repository's read view — no
+  mutation, no side effects)
+
+## PR status (Unit 2d)
+
+**Opened.** `gh auth status` confirmed an active session; pushed the branch and opened the PR
+myself, per the CONTEXT's explicit instruction.
+
+- `git push -u origin feat/pv-02d-find-matches` → pushed cleanly.
+- `gh pr create --repo Aaron-Shrike/todo-ia --base feat/pv-02-ports-inmemory --head
+  feat/pv-02d-find-matches ...` → PR opened, head `feat/pv-02d-find-matches`, base
+  `feat/pv-02-ports-inmemory` (correct per the authoring-ahead note above — NOT `main`, since PR #5
+  (bringing Unit 2 into `main`) has not merged yet; retarget to `main` once it does).
+- PR body follows the established convention from PR #2/#3/#4 (dependency-diagram code block, the
+  chain pinned at Unit 2d, Start/End/Prior dependencies/Follow-ups/Out of scope, the `MatchCursor`
+  scoping-decision note, Verification section with exact command output) plus a prominent
+  "⚠️ Stacked on an unmerged PR (#5)" section explaining the retarget-on-merge dependency.
+
+## Deviations from design.md / tasks.md (Unit 2d)
+
+1. **`MatchCursor`'s field scope is an apply-time decision, not literally specified in design.md** —
+   design.md's `contracts.py` code sample types the `cursor: MatchCursor | None` parameter but never
+   gives the class body (unlike `Match`, `Neighbor`, `Page[Match]`'s usage, which are named/typed
+   directly). Chose `distance`/`id` only (not the wire cursor's `t`/`th`) — see task 2d.1's note
+   above for the full rationale. This is a genuine gap-fill, not a contradiction of anything design.md
+   states; flagging it for the eventual Unit 2c (cursor codec) and Unit 3 (`ListMatches`) authors to
+   confirm or revise when they build the layer that actually validates `t`/`th`.
+2. **The perturbed-vector contract-suite test uses a fixed `+1e-7`-per-component offset**, not true
+   float32-ulp arithmetic, since this fixture is pure double-precision Python with no float32 vector
+   type — see task 2d.3's note above. The real float32-ulp case is Unit 5a/5b's integration-test
+   responsibility (pgvector stores `vector(384)` as float32 natively).
+3. **No `.importlinter` change was needed** (unlike Unit 2's 2.1, which needed four `ignore_imports`
+   entries for the `similarity.contracts` re-export edge) — `find_matches`/`Match`/`Page`/
+   `MatchCursor` are added entirely within `phrases.contracts` and `phrases.adapters`, introducing no
+   new cross-module import edge.
+
+## Remaining Tasks (as of the end of batch 3)
+
+- [ ] Close the `.env.example` gap (human action or a session with `.env*` write permission) — still
+  open from batch 1.
+- [ ] Review and merge PR #5 (retargets Unit 2, already merged into `feat/pv-01-domain-policy` via
+  PR #4, onto `main`); once PR #5 merges, rebase and retarget `feat/pv-02d-find-matches` (this
+  unit's branch/PR) from `feat/pv-02-ports-inmemory` onto `main` directly. (PR #3 and PR #4 are
+  already merged — see the corrected "Commit" note above; only PR #5 remains open.)
+- [x] Unit 2d: `find_matches` keyset (tasks 2d.1–2d.3) — done this batch, see above. Unit 3
+  (`ValidatePhrase`/`ListMatches`/`SavePhrase`) is now unblocked on `find_matches`'s availability,
+  though Unit 3 also needs Unit 2b (caching) and 2c (cursor codec) per tasks.md's dependency notes.
+- [ ] Unit 2b: caching embedding provider — not started.
+- [ ] Unit 2c: opaque cursor codec — not started (needed before Unit 3's `ListMatches`, which is the
+  actual consumer of the `t`/`th` cursor-binding checks this unit's `MatchCursor` scoping decision
+  deferred to it).
+- [ ] Unit 6 (or earlier, if convenient): resolve the shared `DomainError` base class question noted
+  in the Unit 1 section above.
+
+## Status (as of the end of batch 3)
+
+5/5 units substantially complete across all batches so far: B.0 (no-op, already satisfied), Unit 0
+(merged via PR #2), Unit 1 (3/3 sub-tasks, PR #3 **merged** into `main`), Unit 2 (2.1/2.2/2.3 now all
+`[x]` — the `find_matches` deferral is resolved by this unit — fix pass folded in, PR #4 **merged**
+into `feat/pv-01-domain-policy`, not yet in `main` -- see PR #5), Unit 2d (2d.1/2d.2/2d.3, 3/3, this
+batch, PR open, base `feat/pv-02-ports-inmemory`, pending PR #5's merge for retarget to `main`).
+58/58 tests green across `tests/unit` + `tests/contract_suite`, all lint/type/import checks green,
+328/23 changed lines (well under the 400-line budget). Per the CONTEXT's explicit instruction, this
+batch stops here — Unit 2b and beyond are NOT started.

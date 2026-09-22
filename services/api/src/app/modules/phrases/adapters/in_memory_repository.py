@@ -10,8 +10,12 @@ re-reads the live store on every call. Writes are buffered locally and
 applied to the shared store only on `commit()`; `rollback()` (or exiting
 the context manager without a commit) discards them.
 
-`find_matches`: see `phrases/contracts.py`'s module docstring (review-budget
-deferral note lives there only).
+`find_matches` (tasks.md 2d.2) implements the same `(bucket, id)` keyset
+ordering as design.md's pgvector SQL (`floor(distance / KEY_EPSILON)`),
+filtered by the caller-supplied `max_distance` (the widened SQL bound) and
+probed with `limit + 1` rows to decide `has_more` -- see
+`phrases/contracts.py`'s `MatchCursor` docstring for why the cursor this
+method consumes carries only `distance`/`id`.
 """
 
 from __future__ import annotations
@@ -19,17 +23,25 @@ from __future__ import annotations
 from collections.abc import Callable
 from datetime import UTC, datetime
 from itertools import count
+from math import floor
 
 from app.modules.phrases.contracts import (
     DuplicateTextConflict,
     Isolation,
+    Match,
+    MatchCursor,
     Neighbor,
     NewPhrase,
+    Page,
     Phrase,
     ValidationStatus,
 )
 from app.modules.phrases.domain.errors import PhraseMetadataInvariantViolation
-from app.modules.similarity.contracts import Vector, cosine_distance
+from app.modules.similarity.contracts import KEY_EPSILON, Vector, cosine_distance
+
+
+def _bucket(distance: float) -> int:
+    return floor(distance / KEY_EPSILON)
 
 
 def _validate_paired_metadata(phrase: NewPhrase) -> None:
@@ -147,7 +159,31 @@ class InMemoryPhraseRepository:
     def lock_for_write(self) -> None:
         return None
 
-    # `find_matches`: see this module's docstring.
+    def find_matches(
+        self, q: Vector, max_distance: float, limit: int, cursor: MatchCursor | None
+    ) -> Page[Match]:
+        candidates: list[tuple[int, int, float, str]] = []
+        for row in self._rows():
+            distance = cosine_distance(row.embedding, q)
+            if distance > max_distance:
+                continue
+            candidates.append((_bucket(distance), row.id, distance, row.text))
+        candidates.sort(key=lambda c: (c[0], c[1]))
+
+        if cursor is not None:
+            position = (_bucket(cursor.distance), cursor.id)
+            candidates = [c for c in candidates if (c[0], c[1]) > position]
+
+        window = candidates[: limit + 1]
+        has_more = len(window) > limit
+        page_rows = window[:limit]
+        items = [Match(id=c[1], text=c[3], distance=c[2]) for c in page_rows]
+        next_cursor = (
+            MatchCursor(distance=items[-1].distance, id=items[-1].id)
+            if has_more and items
+            else None
+        )
+        return Page(items=items, next_cursor=next_cursor, has_more=has_more)
 
 
 class InMemoryUnitOfWork:
