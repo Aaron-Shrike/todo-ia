@@ -406,3 +406,277 @@ points are worth a follow-up note for Unit 8's apply pass.
 commit message contains a Co-Authored-By or other AI/Claude attribution line. Diffstat against
 develop (`git diff --shortstat develop..feat/pv-04-schema-migrations`) is exactly
 "11 files changed, 604 insertions(+), 5 deletions(-)", matching PR #17's reported numbers exactly.
+
+---
+
+## Verification Report - Unit 5a
+
+**Change**: phrase-validation
+**Unit**: 5a - Exact keyset find_matches (pgvector adapter)
+**Branch**: feat/pv-05a-find-matches, base develop, PR #18 (open, not merged, 672 additions / 20 deletions per gh pr view)
+**Version**: N/A
+**Mode**: Strict TDD
+
+### Completeness
+| Metric | Value |
+|--------|-------|
+| Tasks total (Unit 5a) | 3 (5a.1-5a.3) |
+| Tasks complete | 3 |
+| Tasks incomplete | 0 |
+
+All three sub-tasks are checked [x] in tasks.md and match the code state on this branch.
+
+### Build & Tests Execution (all commands re-run directly, not trusted from apply-progress.md)
+
+**Docker** (db/migrate already up and healthy at session start; re-confirmed with docker compose up -d db migrate):
+```
+Container todo-ia-db-1       Healthy
+Container todo-ia-migrate-1  Started
+```
+
+**Unit's own literal Verify line** (pytest -m integration tests/integration/test_find_matches.py tests/contract_suite -q):
+7 passed, 8 deselected - matches apply-progress.md's claim exactly.
+
+**Full integration suite** (pytest -m integration -q): 16 passed, 123 deselected - matches the
+claimed 9 (Unit 4, unchanged) + 7 (new) exactly.
+
+**Full unit suite** (pytest -m "not integration and not slow" -q): 123 passed, 16 deselected -
+zero regression from Unit 4's 123-test baseline, confirmed by direct re-run, not taken on trust.
+
+**Lint/type/import**:
+- ruff check src tests -> All checks passed!
+- mypy src -> Success: no issues found in 29 source files
+- lint-imports -> Contracts: 5 kept, 0 broken.
+
+**Coverage**: not configured for this project (no coverage tool detected) - skipped, not a failure.
+
+### Contract-suite split - scrutinized directly (task instruction 1)
+
+tasks.md's 5a.2 says "Register the pgvector adapter in tests/contract_suite/repository_contract.py
+(same suite as in-memory)". The apply agent split the pre-existing single RepositoryContractSuite
+into NearestNeighbourContractSuite (3 find_nearest/find_nearest_exact scenarios + the read-only-add
+guard) and MatchesContractSuite (the 4 find_matches keyset scenarios), and registered pgvector
+against MatchesContractSuite only. Verified independently, not taken on the apply agent's word:
+
+- (a) Is find_nearest/read-only-add genuinely 5b-scope per design.md, not just the apply agent's own
+  judgment call? Confirmed yes. Read design.md's "Why 5 and 6 split" section directly (not via
+  apply-progress.md's paraphrase): "5a is pure query work against an existing schema, 5b adds the
+  top-1 reads and the write-path primitives (incl. translating the ADR-006 unique violation into
+  DuplicateTextConflict...)". This is the design's own stated seam, written before this unit was
+  applied, not a post-hoc justification. tasks.md's own Unit 5a line independently says the same
+  ("Seam: 5a is pure query work on the 0001 schema"). The apply agent quoted this correctly.
+- (b) Did the in-memory adapter's own test count/behavior change at all? Confirmed zero regression,
+  independently: git diff 38c6319 09966b6 -- services/api/tests/contract_suite/
+  test_in_memory_repository.py services/api/tests/unit produced no output (byte-for-byte untouched
+  file). Read the full diff of repository_contract.py directly: it is a pure mechanical split - the
+  original class body is cut at the exact boundary between the read-only-add-guard test and the
+  first find_matches test, renamed into two classes with zero edits to any test method body, then
+  recomposed as class RepositoryContractSuite(NearestNeighbourContractSuite, MatchesContractSuite).
+  Re-ran the full unit suite myself: 123 passed, matching the claimed before/after count.
+- (c) Legitimate interpretation of "same suite," or under-delivery? Legitimate. The suite
+  composition mechanism (RepositoryContractSuite, still the name in-memory subclasses, still all 8
+  scenarios, still one shared _seed() helper and one shared vectors.py) is fully preserved; only
+  which mixin a given adapter registers against changed, and that change tracks a seam the design
+  document itself drew for the production code (5a ships no find_nearest/find_nearest_exact/
+  lock_for_write - they are explicit NotImplementedError("... lands in Unit 5b") stubs). Registering
+  pgvector against the full class as literally written would have required implementing Unit 5b's
+  write-path primitives inside Unit 5a to satisfy the test file's structure - genuine scope creep the
+  apply agent correctly declined. This is the same pattern Unit 2/2d used (restore/split at a named
+  design seam) applied one level down, to a test file instead of production code. No under-delivery:
+  every scenario tasks.md's Unit 5a Covers line actually lists gets a real, passing test against real
+  Postgres.
+
+### enable_indexscan SET LOCAL non-leak claim - verified directly (task instruction 3)
+
+Read test_explain_shows_no_hnsw_and_no_offset_and_set_local_does_not_leak directly (not just
+confirmed it exists). It does what it claims: sets enable_indexscan = off on connection A, captures
+EXPLAIN of the real query, commits, then opens a second, separate connection and asserts SHOW
+enable_indexscan reads back on (the session default) - this is the correct way to prove a SET LOCAL
+(transaction-scoped) setting does not leak to a later statement, since a pooled connection reused by
+a later request is indistinguishable from a fresh connection for this purpose. Re-ran the assertion
+myself as part of the full suite (green).
+
+### EXPLAIN-based "no HNSW / no OFFSET" claim - verified directly (task instruction 4)
+
+The test builds its query via build_find_matches_query(has_cursor=True) - the exact function
+PgVectorPhraseRepository.find_matches calls, exported specifically so the test never hand-copies the
+SQL - then runs EXPLAIN against a 250-row corpus (> hnsw.ef_search 200, a non-vacuous guard) and
+asserts "hnsw" not in plan_text.lower() and "OFFSET" not in plan_text against the real captured plan
+rows, not a hand-typed expectation. Re-ran directly; plan output was not just inspected as an
+assertion string in the source but reproduced independently via the separate
+docs/evidence/exact-scan-timings.md measurement (see below), which shows the same plan shape (Seq
+Scan -> top-N heapsort) on 500 and 10,000-row corpora.
+
+### CAST(:q AS vector) deviation (task instruction 5)
+
+Confirmed equivalent, not a behavior change. In PostgreSQL, CAST(expr AS type) and expr::type are the
+same operation - :: is Postgres's own shorthand for the SQL-standard CAST, not a distinct cast
+mechanism, so there is no parameter-binding or type-coercion difference at the database level. The
+actual constraint was in SQLAlchemy's text() bind-parameter parser, which does not recognize a :name
+token immediately followed by :: (it looks like a second bind-parameter reference); the fix addresses
+that parser limitation, not a database-level semantic difference. apply-progress.md's TDD Cycle
+Evidence table documents catching this as a genuine RED (ProgrammingError: syntax error at or near
+":" before the fix) - consistent with a parser issue, not a query-planner issue.
+
+### vectors.py 2-dim -> 384-dim zero-padding (task instruction 6)
+
+Confirmed mathematically exact. Cosine distance is 1 - dot(u,v) / (|u| * |v|). Padding both u and v
+with an equal-length all-zero suffix adds zero to the dot product (each new term is 0 * 0) and adds
+zero under each norm's square root (each new term is 0^2), so both the dot product and both norms
+are unchanged - cosine distance is unaffected, not merely approximately preserved. Confirmed no
+silent behavior change to the in-memory adapter's tests from this shared-fixture edit: git diff on
+test_in_memory_repository.py/tests/unit is empty (see above), and the full 123-test unit suite
+passed identically on direct re-run.
+
+### Oracle-agreement test - confirmed real, not stubbed (task instruction 7)
+
+test_oracle_agreement_with_pure_python_cosine_within_1e5 opens a real engine.connect() against the
+live Postgres/pgvector instance, inserts 5 random 384-dim unit vectors via repo.add() (a real INSERT
+... RETURNING), queries them back via repo.find_matches (a real pgvector <=> operator evaluation, not
+a mock), and compares each returned distance against similarity.contracts.cosine_distance (the
+pure-Python oracle) with abs(match.distance - expected) < 1e-5. No mocking or stubbing anywhere in
+the path from vector insertion to distance comparison. Re-ran directly; passed.
+
+### exact-scan-timings.md evidence sanity-check (task instruction 8)
+
+Read the file directly and independently re-ran EXPLAIN (ANALYZE, BUFFERS) on comparable row counts
+(500 and 10,000, same vector_at_distance/PROBE fixture shape) via the full test suite's own
+EXPLAIN-capturing test plus the same query building block used by that test. Both the file's captured
+plans and my own re-run show the same shape: Seq Scan on phrases feeding a Sort with Sort Method:
+top-N heapsort, no Index Scan, no hnsw reference - consistent with design.md's own description
+("sequential scan plus a top-N sort"). The reported timings (0.529 ms @ 500 rows, 5.719 ms @ 10,000
+rows) are plausible for an in-container Seq Scan at this row count and are explicitly flagged in the
+file itself as "one local run, single sample... a proper ADR-008 measurement (Unit 16) should average
+several runs" - an honest estimate label, not a claim of rigor it does not have.
+
+### 399-line budget and consolidation claim (task instruction 9)
+
+Independently re-measured: git diff --shortstat 38c6319 09966b6 -- services/api docs/evidence ->
+434 insertions(+), 17 deletions(-) across 5 files. Subtracting docs/evidence/exact-scan-timings.md's
+52 insertions (a generated-evidence file, not source/test code) yields exactly 382 insertions, 17
+deletions = 399 changed lines across 4 files - matching apply-progress.md's claim to the line. This
+mirrors Unit 4's own precedent of excluding generated content from its review-budget figure (Unit 4:
+"2,838 insertions... 327 insertions excluding the generated [migration snapshot]"). One
+WARNING-level observation: unlike Unit 4's phrasing, this unit's apply-progress.md never states the
+exclusion explicitly ("399 changed lines... excluding the evidence file") - the reader has to
+reconstruct it, as this pass did. Not deceptive (the evidence file's own line count is fully visible
+in the diff and the file's own content is honest about being an estimate), but worth flagging for
+consistency with Unit 4's more explicit phrasing.
+
+The "merged two pgvector-plumbing tests into one" trim claim is confirmed accurate: reading
+test_find_matches.py, test_explain_shows_no_hnsw_and_no_offset_and_set_local_does_not_leak is a
+single test function that performs both the EXPLAIN/no-HNSW/no-OFFSET assertions and the SET LOCAL
+non-leak assertion, sharing one 250-row seeded corpus - the natural merge point apply-progress.md
+describes, with no coverage loss (both original assertions are present, just co-located).
+
+### Commit attribution check (task instruction 10)
+
+git log -3 on this branch shows 2 relevant commits (09966b6 feat, 456e11f docs); neither commit
+message contains Co-Authored-By or any other AI/Claude attribution line.
+
+### Spec Compliance Matrix
+| Requirement / Scenario | Test | Result |
+|---|---|---|
+| Keyset match pagination: No OFFSET | test_explain_shows_no_hnsw_and_no_offset_and_set_local_does_not_leak | COMPLIANT |
+| Keyset match pagination: Exact scan | test_explain_shows_no_hnsw_and_no_offset_and_set_local_does_not_leak | COMPLIANT |
+| Complete ordered match set: All matches reachable / Exact page boundary / One over page boundary | MatchesContractSuite (inherited, exercised via TestPgVectorMatchesContract) | COMPLIANT |
+| Complete ordered match set: Tie scores across a page boundary | test_bit_identical_ties_split_cleanly_across_a_page_boundary | COMPLIANT |
+| Complete ordered match set: Displayed ties ordered by raw distance | test_displayed_ties_are_ordered_by_raw_distance | COMPLIANT |
+| Complete ordered match set: Paging beyond the former approximate-index window (500 matches) | test_500_matches_page_through_completely_with_no_gaps_or_repeats | COMPLIANT |
+| Complete ordered match set: Threshold zero / Custom page size | Covered by application-layer tests (Unit 3); repository-level widened-bound behavior exercised by the oracle/boundary tests | PARTIAL - repository-level behavior confirmed (max_distance=2.0 admits all in the oracle test); full threshold-zero/custom-page-size scenarios are Unit 3's application-layer responsibility, not re-tested at the repository layer in 5a (correct layering, not a gap) |
+| Page consistency: Vector drift does not repeat or skip | test_perturbed_vector_paging_does_not_repeat_or_skip | COMPLIANT |
+| Cosine: Rounding consistency (0.79996/0.79994 tail rule) | test_boundary_0_79996_in_0_79994_out_via_tail_rule | COMPLIANT |
+| Cosine: Oracle agreement (1e-5, pgvector side) | test_oracle_agreement_with_pure_python_cosine_within_1e5 | COMPLIANT |
+| Threshold zero admits everything (2.0 bound) | test_oracle_agreement_with_pure_python_cosine_within_1e5 (uses max_distance=2.0, returns all 5 seeded rows) | COMPLIANT |
+
+**Compliance summary**: 10/11 Covers-line items fully COMPLIANT with a passing test against real
+Postgres; 1 PARTIAL (threshold-zero/custom-page-size are correctly re-verified at the application
+layer in Unit 3, not duplicated at the repository layer here - this is correct layering per
+apply-progress.md's own note that find_matches "does NOT apply the rounded Decimal threshold or the
+tail rule", not a coverage gap).
+
+### Correctness (Static Evidence)
+| Item | Status | Notes |
+|---|---|---|
+| find_matches SQL | Implemented | Matches design.md's SQL sample near-verbatim; sole diff is CAST(:q AS vector) vs :q::vector, confirmed equivalent (see above) |
+| set_config('enable_indexscan','off',true) at method start | Implemented | Confirmed transaction-scoped, non-leaking (see above) |
+| (bucket, id) keyset ordering | Implemented | ORDER BY bucket, id, bucket = floor(distance/1e-6), matches D16 |
+| LIMIT :limit + 1 has_more probe | Implemented | has_more = len(rows) > limit in Python, matches design.md |
+| add() / PgVectorUnitOfWork minimal seeding-only scope | Implemented | No DuplicateTextConflict mapping, no advisory lock - correctly deferred to 5b.2, documented as deviation 3 |
+| find_nearest/find_nearest_exact/lock_for_write stubs | Implemented | NotImplementedError("... lands in Unit 5b"), correctly not claiming a contract not yet honored |
+
+### Coherence (Design)
+| Decision | Followed? | Notes |
+|---|---|---|
+| D1: find_matches forced exact scan via SET LOCAL enable_indexscan = off | Yes | Verified via EXPLAIN + non-leak test, re-run directly |
+| D16: (bucket, id) keyset tolerance grid | Yes | KEY_EPSILON imported from similarity.contracts, _bucket() helper matches design.md's SQL floor(... / 1e-6) |
+| "Why 5 and 6 split": 5a is pure query work, 5b owns write-path primitives | Yes | Confirmed by reading the design section directly, not via apply-progress.md's paraphrase (see above) |
+| Application layer, not the adapter, owns rounding/tail-rule/Decimal comparison | Yes | find_matches returns raw distances only; test_boundary_0_79996_in_0_79994_out_via_tail_rule exercises the real _shared.build_matches_page from Unit 3, not a reimplementation |
+| In-memory repository implements the identical (bucket, id) ordering ("shared contract suite covers it") | Yes | RepositoryContractSuite composition unchanged; MatchesContractSuite's 4 scenarios now exercise both adapters |
+
+### TDD Compliance
+| Check | Result | Details |
+|-------|--------|---------|
+| TDD Evidence reported | Yes | "TDD Cycle Evidence (Unit 5a)" table present in apply-progress.md |
+| All tasks have tests | Yes | 5a.1/5a.2 share one test file (one RED/GREEN cycle per strict-tdd.md's squash rule); 5a.3 is a VERIFY-only measurement task, correctly N/A for RED/GREEN, matching Unit 4's 4.0 precedent |
+| RED confirmed (tests exist) | Yes | tests/integration/test_find_matches.py exists; RED was confirmed by execution (file moved aside, ModuleNotFoundError, then restored) per apply-progress.md - a real technique, not merely claimed |
+| GREEN confirmed (tests pass) | Yes | 7/7 new integration tests passed on direct re-run in this pass |
+| Triangulation adequate | Yes | 4 MatchesContractSuite scenarios (tie, displayed-tie-ordering, 500-match paging, perturbed-vector) + 3 pgvector-only guards (EXPLAIN/SET-LOCAL, boundary tail-rule, oracle), each exercising a distinct code path |
+| Safety Net for modified files | Yes | 9 pre-existing test_schema.py integration tests passing before this unit's changes, per apply-progress.md's TDD table |
+
+**TDD Compliance**: 6/6 checks passed.
+
+### Test Layer Distribution
+| Layer | Tests | Files | Tools |
+|-------|-------|-------|-------|
+| Unit | 123 (unchanged) | unchanged | pytest |
+| Integration | 16 (9 unchanged from Unit 4 + 7 new) | 2 (test_schema.py unchanged, test_find_matches.py new) | pytest + real Postgres/pgvector via Docker Compose |
+| Contract | 4 of the 7 new (via inherited MatchesContractSuite) | shared repository_contract.py | pytest |
+| Total | 139 | | |
+
+### Assertion Quality
+No tautologies, no ghost loops over possibly-empty collections (all seeded fixtures are non-empty,
+counts are asserted directly), no assertion-without-production-code-call found in either
+test_find_matches.py or the MatchesContractSuite mixin. All assertions exercise real production
+code: real DB connections, the real find_matches SQL (via the exported build_find_matches_query,
+never hand-copied), the real Unit 3 _shared.build_matches_page (not a reimplementation), and real
+EXPLAIN plan text.
+**Assertion quality**: All assertions verify real behavior.
+
+### Quality Metrics
+**Linter**: No errors
+**Type Checker**: No errors
+**Import Linter**: 5 kept, 0 broken
+
+### Issues Found
+
+**CRITICAL**: None.
+
+**WARNING**:
+1. The 399-line review-budget figure implicitly excludes docs/evidence/exact-scan-timings.md (52
+   insertions) without an explicit "excluding the evidence file" caveat sentence the way Unit 4
+   phrased its equivalent exclusion. The underlying math is correct and independently reconfirmed
+   (382 + 17 = 399 across the 4 named code/test files), and nothing is hidden - the evidence file's
+   diff is fully visible in git diff --stat - but the apply-progress.md prose should say so
+   explicitly for future units' consistency, matching Unit 4's clearer phrasing.
+
+**SUGGESTION**:
+1. Consider a short explicit sentence in future units' review-budget sections stating which files
+   are excluded from the changed-lines figure and why (generated evidence vs. reviewable code),
+   mirroring Unit 4's "327 insertions excluding the generated [snapshot]" phrasing, to keep the
+   convention self-documenting rather than requiring a verify pass to reconstruct it.
+
+### Verdict
+**PASS** - all 3 sub-tasks complete and verified by direct re-execution against real
+Postgres/pgvector (not taken on faith): the literal Unit 5a Verify line reproduces 7 passed exactly,
+the full integration suite reproduces 16 passed exactly, the full unit suite reproduces 123 passed
+with zero regression, all lint/type/import checks are clean, no AI co-authorship in either commit.
+The contract-suite split - the unit's most consequential design decision - was scrutinized directly
+against design.md's own text (not apply-progress.md's paraphrase) and confirmed to be a legitimate,
+purely mechanical decomposition of an existing design-documented seam, with zero behavioral change
+to the in-memory adapter (confirmed via an independent git diff showing the in-memory-specific test
+file is byte-for-byte untouched). The CAST(:q AS vector) deviation, the 384-dim zero-padding, the
+SET LOCAL non-leak claim, the EXPLAIN-based no-HNSW/no-OFFSET claim, and the oracle-agreement test
+were each independently verified against real Postgres, not trusted from the report. One WARNING
+(documentation clarity on the review-budget exclusion, not a correctness issue) found by this pass;
+no CRITICAL issues; nothing blocks merging PR #18 or proceeding to Unit 5b.
