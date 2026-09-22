@@ -20,3 +20,17 @@ class PhraseTooLong(Exception):
     def __init__(self, *, max_length: int) -> None:
         super().__init__(f"phrase text exceeds the maximum length of {max_length} code points")
         self.max_length = max_length
+
+
+class PhraseMetadataInvariantViolation(ValueError):
+    """A `NewPhrase` violates one of migration 0001's paired-metadata CHECK
+    constraints. Raised by `PhraseRepository.add` implementations BEFORE any
+    write, so every adapter (in-memory now, pgvector in 5a/5b) fails the
+    same way instead of relying on the database to catch it:
+
+    - `phrases_metadata_paired`: `similarity_score IS NULL` iff
+      `most_similar_phrase_id IS NULL` (score and neighbour are recorded as
+      a pair or not at all).
+    - `phrases_confirmed_has_neighbor`: a `duplicate_confirmed` row MUST
+      carry both `similarity_score` and `most_similar_phrase_id`.
+    """

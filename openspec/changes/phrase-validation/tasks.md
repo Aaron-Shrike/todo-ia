@@ -93,10 +93,19 @@ Covers (phrase-management): Text normalization x7 (Trim and NFC; Zero-width and 
 
 Commit: `feat(domain): ports, unit of work, fake embedder and in-memory repository`. Rollback: revert (no consumers yet). If over 400, split the `find_matches` keyset out of the contract suite.
 Covers: Embedding via a swappable port (Domain isolation, Swap without domain change), Keyset ordering: Tie scores across a page boundary, Displayed ties ordered by raw distance, Vector drift does not repeat or skip (in-memory), All matches reachable, Exact page boundary, One over page boundary (contract suite), Complete ordered match set: Custom page size.
-- [ ] 2.1 `modules/similarity/contracts.py` (`EmbeddingProvider`, `Vector`, `SimilarityPolicy`, errors) and `modules/phrases/contracts.py` (`PhraseRepository` with `find_nearest`, `find_nearest_exact`, `find_matches`, `insert`, `list`; `UnitOfWork`; `Phrase`, `Match`, `Page`, `NewPhrase`, `DuplicateTextConflict`).
-- [ ] 2.2 RED then GREEN `similarity/adapters/fake.py` (`FakeEmbedder`, `call_count`, same vector object for tied texts) and `failing.py` (one-shot and permanent failure modes).
-- [ ] 2.3 RED then GREEN `phrases/adapters/in_memory_repository.py` and an in-memory `UnitOfWork`; shared suite `tests/contract_suite/repository_contract.py` parametrized by adapter (only in-memory registered now; pgvector registered in 5a/5b): empty -> `None`, below-threshold neighbour, distance tie -> lowest id, `(floor(d/1e-6), id)` keyset, bit-identical tie fixture, displayed-tie fixture (0.90001 vs 0.90004), 500-match paging, perturbed-vector paging on a fixture away from grid edges.
+- [~] 2.1 `modules/similarity/contracts.py` (`EmbeddingProvider`, `Vector`, `SimilarityPolicy`, errors) and `modules/phrases/contracts.py` (`PhraseRepository` with `find_nearest`, `find_nearest_exact`, `insert`(`add`), `list`(`list_recent`); `UnitOfWork`; `Phrase`, `NewPhrase`, `DuplicateTextConflict`) — done. **`find_matches`, `Match`, `Page` deferred** to the follow-up PR below (review-budget split).
+- [x] 2.2 RED then GREEN `similarity/adapters/fake.py` (`FakeEmbedder`, `call_count`, same vector object for tied texts) and `failing.py` (one-shot and permanent failure modes) — done.
+- [~] 2.3 RED then GREEN `phrases/adapters/in_memory_repository.py` and an in-memory `UnitOfWork`; shared suite `tests/contract_suite/repository_contract.py` parametrized by adapter (only in-memory registered now; pgvector registered in 5a/5b) — `find_nearest`/`find_nearest_exact` scenarios done (empty -> `None`, below-threshold neighbour, distance tie -> lowest id). **`find_matches` and its keyset scenarios deferred** (`(floor(d/1e-6), id)` keyset, bit-identical tie fixture, displayed-tie fixture (0.90001 vs 0.90004), 500-match paging, perturbed-vector paging) — see Unit 2d below.
+- Verify: `pytest tests/unit tests/contract_suite -q`; `lint-imports` — passing for the scope actually shipped in this PR.
+
+### Unit 2d: `find_matches` keyset (deferred from Unit 2, review-budget split)
+
+Unit 2's actual diff (contracts + 2 adapters + full contract-suite machinery, all new files) measured ~730 lines even after applying this unit's own "split `find_matches` out" escape hatch down to `find_nearest`/`find_nearest_exact` only — the ~340 estimate undersold the ports+adapter+contract-suite scope similarly to (worse than) Unit 1's. Remaining, NOT YET implemented, needed before Unit 3 (`ValidatePhrase`/`ListMatches`/`SavePhrase`'s rejection path all call `find_matches`):
+- [ ] 2d.1 Add back `Match`, `Page`, `MatchCursor` to `modules/phrases/contracts.py` and `find_matches` to the `PhraseRepository` Protocol (signature already designed, see design.md's Interfaces section — code is written and was verified working before being reverted for budget; can be restored near-verbatim from apply-progress.md's Unit 2 section).
+- [ ] 2d.2 RED then GREEN: restore `find_matches` on `InMemoryPhraseRepository` (`(floor(d/1e-6), id)` keyset, `max_distance` filter, `limit+1` has-more probe).
+- [ ] 2d.3 RED then GREEN: the deferred contract-suite scenarios — bit-identical tie fixture / ties across a page boundary (already written and passing before deferral), displayed-tie fixture (0.90001 vs 0.90004), 500-match paging, perturbed-vector paging on a fixture away from grid edges.
 - Verify: `pytest tests/unit tests/contract_suite -q`; `lint-imports`.
+- Suggested branch: `feat/pv-02d-find-matches`, based on `feat/pv-02-ports-inmemory` (stacked-to-main once merged), estimated ~150-200 lines.
 
 ## Unit 2b: Caching embedding provider (~180)
 
