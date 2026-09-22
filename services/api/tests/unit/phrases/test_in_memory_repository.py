@@ -12,8 +12,6 @@ from __future__ import annotations
 from datetime import UTC, datetime
 
 import pytest
-from tests.contract_suite.vectors import PROBE
-from tests.contract_suite.vectors import vector_at_distance as _vector_at_distance
 
 from app.modules.phrases.adapters.in_memory_repository import InMemoryUnitOfWorkFactory
 from app.modules.phrases.contracts import (
@@ -24,6 +22,8 @@ from app.modules.phrases.contracts import (
     ValidationStatus,
 )
 from app.modules.phrases.domain.errors import PhraseMetadataInvariantViolation
+from tests.contract_suite.vectors import PROBE
+from tests.contract_suite.vectors import vector_at_distance as _vector_at_distance
 
 
 def _phrase(

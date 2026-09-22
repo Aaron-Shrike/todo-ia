@@ -9,9 +9,6 @@ from __future__ import annotations
 
 from datetime import UTC, datetime
 
-from tests.contract_suite.vectors import PROBE, vector_at_distance
-from tests.unit.phrases._uow_spies import CountingRepo, ProxyUnitOfWorkFactory
-
 from app.modules.phrases.adapters.in_memory_repository import InMemoryUnitOfWorkFactory
 from app.modules.phrases.application.list_matches import ListMatches
 from app.modules.phrases.application.save_phrase import SavePhrase
@@ -20,6 +17,8 @@ from app.modules.phrases.contracts import NewPhrase, ValidationStatus
 from app.modules.similarity.adapters.caching import CachingEmbeddingProvider
 from app.modules.similarity.adapters.fake import FakeEmbedder
 from app.modules.similarity.contracts import SimilarityPolicy
+from tests.contract_suite.vectors import PROBE, vector_at_distance
+from tests.unit.phrases._uow_spies import CountingRepo, ProxyUnitOfWorkFactory
 
 _TEXT = "comprar leche"
 _POLICY = SimilarityPolicy(threshold=0.80)

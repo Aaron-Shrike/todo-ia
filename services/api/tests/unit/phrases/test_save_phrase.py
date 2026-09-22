@@ -9,8 +9,6 @@ from __future__ import annotations
 from datetime import UTC, datetime
 
 import pytest
-from tests.contract_suite.vectors import PROBE, vector_at_distance
-from tests.unit.phrases._uow_spies import ConflictRepo, CountingRepo, ProxyUnitOfWorkFactory
 
 from app.modules.phrases.adapters.in_memory_repository import InMemoryUnitOfWorkFactory
 from app.modules.phrases.application.save_phrase import SavePhrase
@@ -23,6 +21,8 @@ from app.modules.similarity.contracts import (
     EmbeddingUnavailable,
     SimilarityPolicy,
 )
+from tests.contract_suite.vectors import PROBE, vector_at_distance
+from tests.unit.phrases._uow_spies import ConflictRepo, CountingRepo, ProxyUnitOfWorkFactory
 
 _TEXT = "comprar leche"
 _POLICY = SimilarityPolicy(threshold=0.80)
