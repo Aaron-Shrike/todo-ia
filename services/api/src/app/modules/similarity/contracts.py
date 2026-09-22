@@ -11,10 +11,9 @@ EmbeddingProvider, Vector, SimilarityPolicy, errors" list:
 "using the domain cosine" (design.md), and the boundary above forbids it
 from reaching `similarity.domain.cosine` directly.
 
-`KEY_EPSILON` is defined here now (per design.md's own code sample) but
-deliberately left OUT of `__all__`: its only consumer is the deferred
-`find_matches` (see `phrases/contracts.py`'s docstring). Re-add it to
-`__all__` in the same PR that wires that consumer (Unit 2d).
+`KEY_EPSILON` (design.md's own code sample, D16's keyset tolerance grid) is
+now in `__all__`: Unit 2d wires its consumer, `find_matches`'s
+`(bucket, id)` ordering, in `phrases/adapters/in_memory_repository.py`.
 """
 
 from __future__ import annotations
@@ -29,6 +28,7 @@ from .domain.vector import Vector
 KEY_EPSILON = 1e-6  # keyset tolerance grid (D16), domain constant
 
 __all__ = [
+    "KEY_EPSILON",
     "ROUNDING_DECIMALS",
     "ROUNDING_UNIT",
     "EmbeddingProvider",

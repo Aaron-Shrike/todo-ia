@@ -1,7 +1,10 @@
 """Unit tests for the in-memory `PhraseRepository`/`UnitOfWork` beyond what
 `tests/contract_suite/repository_contract.py` covers: enum values,
 `list_recent`, `DuplicateTextConflict`, transaction buffering
-(commit/rollback) and `REPEATABLE READ` snapshot isolation (tasks.md 2.3).
+(commit/rollback), `REPEATABLE READ` snapshot isolation and `find_matches`'
+`(bucket, id)` keyset basics (tasks.md 2.3/2d.2 -- the deferred contract-
+suite scenarios for `find_matches` live in `repository_contract.py`
+instead, since they must also bind the future pgvector adapter).
 """
 
 from __future__ import annotations
@@ -9,11 +12,14 @@ from __future__ import annotations
 from datetime import UTC, datetime
 
 import pytest
+from tests.contract_suite.vectors import PROBE
+from tests.contract_suite.vectors import vector_at_distance as _vector_at_distance
 
 from app.modules.phrases.adapters.in_memory_repository import InMemoryUnitOfWorkFactory
 from app.modules.phrases.contracts import (
     DuplicateTextConflict,
     Isolation,
+    MatchCursor,
     NewPhrase,
     ValidationStatus,
 )
@@ -172,6 +178,84 @@ def test_add_rejects_a_confirmed_duplicate_without_a_neighbour() -> None:
     )
     with factory() as uow, pytest.raises(PhraseMetadataInvariantViolation):
         uow.repo.add(unconfirmed_neighbor)
+
+
+def test_find_matches_filters_by_max_distance_and_orders_by_bucket_then_id() -> None:
+    # `_phrase()` always embeds at [1.0, 0.0] (distance 0 from PROBE), so
+    # these seeds use explicit distance-controlled `NewPhrase`s instead.
+    factory = InMemoryUnitOfWorkFactory()
+    with factory() as uow:
+        near = NewPhrase(
+            text="near",
+            normalized_text="near",
+            embedding=_vector_at_distance(0.05),
+            similarity_score=None,
+            most_similar_phrase_id=None,
+            validation_status=ValidationStatus.UNIQUE,
+            validated_at=datetime.now(UTC),
+        )
+        mid = NewPhrase(
+            text="mid",
+            normalized_text="mid",
+            embedding=_vector_at_distance(0.15),
+            similarity_score=None,
+            most_similar_phrase_id=None,
+            validation_status=ValidationStatus.UNIQUE,
+            validated_at=datetime.now(UTC),
+        )
+        far = NewPhrase(
+            text="far",
+            normalized_text="far",
+            embedding=_vector_at_distance(0.90),  # excluded: above max_distance
+            similarity_score=None,
+            most_similar_phrase_id=None,
+            validation_status=ValidationStatus.UNIQUE,
+            validated_at=datetime.now(UTC),
+        )
+        uow.repo.add(near)
+        uow.repo.add(mid)
+        uow.repo.add(far)
+        uow.commit()
+
+    with factory(read_only=True) as uow:
+        page = uow.repo.find_matches(PROBE, max_distance=0.2, limit=10, cursor=None)
+
+    assert [match.text for match in page.items] == ["near", "mid"]
+    assert page.has_more is False
+    assert page.next_cursor is None
+
+
+def test_find_matches_limit_plus_one_probe_and_cursor_continuation() -> None:
+    factory = InMemoryUnitOfWorkFactory()
+    with factory() as uow:
+        for i, distance in enumerate([0.01, 0.02, 0.03], start=1):
+            uow.repo.add(
+                NewPhrase(
+                    text=f"p{i}",
+                    normalized_text=f"p{i}",
+                    embedding=_vector_at_distance(distance),
+                    similarity_score=None,
+                    most_similar_phrase_id=None,
+                    validation_status=ValidationStatus.UNIQUE,
+                    validated_at=datetime.now(UTC),
+                )
+            )
+        uow.commit()
+
+    with factory(read_only=True) as uow:
+        page1 = uow.repo.find_matches(PROBE, max_distance=1.0, limit=2, cursor=None)
+        assert [m.text for m in page1.items] == ["p1", "p2"]
+        assert page1.has_more is True
+        assert page1.next_cursor is not None
+        assert isinstance(page1.next_cursor, MatchCursor)
+        assert page1.next_cursor.id == page1.items[-1].id
+
+        page2 = uow.repo.find_matches(
+            PROBE, max_distance=1.0, limit=2, cursor=page1.next_cursor
+        )
+        assert [m.text for m in page2.items] == ["p3"]
+        assert page2.has_more is False
+        assert page2.next_cursor is None
 
 
 def test_add_accepts_a_valid_paired_neighbor_on_a_unique_row() -> None:
