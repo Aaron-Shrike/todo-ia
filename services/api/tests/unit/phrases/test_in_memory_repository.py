@@ -1,0 +1,194 @@
+"""Unit tests for the in-memory `PhraseRepository`/`UnitOfWork` beyond what
+`tests/contract_suite/repository_contract.py` covers: enum values,
+`list_recent`, `DuplicateTextConflict`, transaction buffering
+(commit/rollback) and `REPEATABLE READ` snapshot isolation (tasks.md 2.3).
+"""
+
+from __future__ import annotations
+
+from datetime import UTC, datetime
+
+import pytest
+
+from app.modules.phrases.adapters.in_memory_repository import InMemoryUnitOfWorkFactory
+from app.modules.phrases.contracts import (
+    DuplicateTextConflict,
+    Isolation,
+    NewPhrase,
+    ValidationStatus,
+)
+from app.modules.phrases.domain.errors import PhraseMetadataInvariantViolation
+
+
+def _phrase(
+    text: str,
+    normalized: str,
+    *,
+    status: ValidationStatus = ValidationStatus.UNIQUE,
+    similarity_score: float | None = None,
+    most_similar_phrase_id: int | None = None,
+) -> NewPhrase:
+    return NewPhrase(
+        text=text,
+        normalized_text=normalized,
+        embedding=[1.0, 0.0],
+        similarity_score=similarity_score,
+        most_similar_phrase_id=most_similar_phrase_id,
+        validation_status=status,
+        validated_at=datetime.now(UTC),
+    )
+
+
+def test_validation_status_and_isolation_match_the_db_and_sql_literals() -> None:
+    assert ValidationStatus.UNIQUE.value == "unique"
+    assert ValidationStatus.DUPLICATE_CONFIRMED.value == "duplicate_confirmed"
+    assert Isolation.READ_COMMITTED.value == "READ COMMITTED"
+    assert Isolation.REPEATABLE_READ.value == "REPEATABLE READ"
+
+
+def test_list_recent_returns_newest_first_and_respects_limit() -> None:
+    factory = InMemoryUnitOfWorkFactory()
+    with factory() as uow:
+        uow.repo.add(_phrase("one", "one"))
+        uow.repo.add(_phrase("two", "two"))
+        uow.repo.add(_phrase("three", "three"))
+        uow.commit()
+
+    with factory(read_only=True) as uow:
+        recent = uow.repo.list_recent(2)
+    assert [p.text for p in recent] == ["three", "two"]
+
+
+def test_add_raises_duplicate_conflict_unless_confirmed() -> None:
+    # ADR-006: the partial unique index excludes duplicate_confirmed rows.
+    factory = InMemoryUnitOfWorkFactory()
+    with factory() as uow:
+        uow.repo.add(_phrase("Comprar leche", "comprar leche"))
+        uow.commit()
+
+    with factory() as uow, pytest.raises(DuplicateTextConflict):
+        uow.repo.add(_phrase("COMPRAR LECHE", "comprar leche"))
+
+    with factory() as uow:
+        # phrases_confirmed_has_neighbor: a duplicate_confirmed row always
+        # carries both similarity_score and most_similar_phrase_id.
+        confirmed = uow.repo.add(
+            _phrase(
+                "Comprar leche",
+                "comprar leche",
+                status=ValidationStatus.DUPLICATE_CONFIRMED,
+                similarity_score=0.95,
+                most_similar_phrase_id=1,
+            )
+        )
+        uow.commit()
+    assert confirmed.validation_status is ValidationStatus.DUPLICATE_CONFIRMED
+
+
+def test_writes_are_invisible_until_commit_and_discarded_on_rollback() -> None:
+    factory = InMemoryUnitOfWorkFactory()
+
+    with factory() as uow:
+        uow.repo.add(_phrase("ghost", "ghost"))
+        uow.rollback()
+    with factory() as uow:
+        uow.repo.add(_phrase("also-ghost", "also-ghost"))
+        # no commit() -- __exit__ must roll back too.
+
+    with factory(read_only=True) as uow:
+        assert uow.repo.list_recent(10) == []
+
+
+def test_repeatable_read_does_not_see_a_write_committed_after_it_opened() -> None:
+    factory = InMemoryUnitOfWorkFactory()
+    with factory() as uow:
+        uow.repo.add(_phrase("before", "before"))
+        uow.commit()
+
+    with factory(isolation=Isolation.REPEATABLE_READ, read_only=True) as snapshot_uow:
+        with factory() as writer_uow:
+            writer_uow.repo.add(_phrase("after", "after"))
+            writer_uow.commit()
+        assert [p.text for p in snapshot_uow.repo.list_recent(10)] == ["before"]
+
+    with factory(read_only=True) as fresh_uow:
+        assert {p.text for p in fresh_uow.repo.list_recent(10)} == {"before", "after"}
+
+
+def test_lock_for_write_is_a_no_op() -> None:
+    with InMemoryUnitOfWorkFactory()() as uow:
+        uow.repo.lock_for_write()  # must not raise
+        uow.commit()
+
+
+def test_read_committed_sees_a_write_committed_after_it_opened() -> None:
+    # Converse of test_repeatable_read_does_not_see_a_write_committed_after_it_opened:
+    # READ_COMMITTED's `read_view` is a live method reference (`self._store.snapshot`),
+    # not a frozen closure, so every call re-reads the current store.
+    factory = InMemoryUnitOfWorkFactory()
+    with factory() as uow:
+        uow.repo.add(_phrase("before", "before"))
+        uow.commit()
+
+    with factory(isolation=Isolation.READ_COMMITTED, read_only=True) as live_uow:
+        assert [p.text for p in live_uow.repo.list_recent(10)] == ["before"]
+        with factory() as writer_uow:
+            writer_uow.repo.add(_phrase("after", "after"))
+            writer_uow.commit()
+        # Same still-open UnitOfWork, same repo -- sees the write committed
+        # by the OTHER transaction after this one opened.
+        assert {p.text for p in live_uow.repo.list_recent(10)} == {"before", "after"}
+
+
+def test_add_rejects_a_new_phrase_that_breaks_the_paired_metadata_invariant() -> None:
+    # phrases_metadata_paired: similarity_score and most_similar_phrase_id
+    # must be NULL together or non-NULL together.
+    factory = InMemoryUnitOfWorkFactory()
+    unpaired = NewPhrase(
+        text="orphan score",
+        normalized_text="orphan score",
+        embedding=[1.0, 0.0],
+        similarity_score=0.9,
+        most_similar_phrase_id=None,
+        validation_status=ValidationStatus.UNIQUE,
+        validated_at=datetime.now(UTC),
+    )
+    with factory() as uow, pytest.raises(PhraseMetadataInvariantViolation):
+        uow.repo.add(unpaired)
+
+
+def test_add_rejects_a_confirmed_duplicate_without_a_neighbour() -> None:
+    # phrases_confirmed_has_neighbor: a duplicate_confirmed row always
+    # carries both similarity_score and most_similar_phrase_id.
+    factory = InMemoryUnitOfWorkFactory()
+    unconfirmed_neighbor = NewPhrase(
+        text="confirmed but blind",
+        normalized_text="confirmed but blind",
+        embedding=[1.0, 0.0],
+        similarity_score=None,
+        most_similar_phrase_id=None,
+        validation_status=ValidationStatus.DUPLICATE_CONFIRMED,
+        validated_at=datetime.now(UTC),
+    )
+    with factory() as uow, pytest.raises(PhraseMetadataInvariantViolation):
+        uow.repo.add(unconfirmed_neighbor)
+
+
+def test_add_accepts_a_valid_paired_neighbor_on_a_unique_row() -> None:
+    # Valid case: a `unique` row MAY carry a below-threshold neighbour, as
+    # long as score and neighbour are a pair.
+    factory = InMemoryUnitOfWorkFactory()
+    paired = NewPhrase(
+        text="below threshold",
+        normalized_text="below threshold",
+        embedding=[1.0, 0.0],
+        similarity_score=0.55,
+        most_similar_phrase_id=1,
+        validation_status=ValidationStatus.UNIQUE,
+        validated_at=datetime.now(UTC),
+    )
+    with factory() as uow:
+        row = uow.repo.add(paired)
+        uow.commit()
+    assert row.similarity_score == 0.55
+    assert row.most_similar_phrase_id == 1

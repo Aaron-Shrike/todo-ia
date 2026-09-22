@@ -21,12 +21,24 @@ forbidden_modules =
 name = phrases MAY import only similarity.contracts, never similarity internals
 ; similarity has no api/ layer (see design.md "API Module Structure and Boundaries"; it has no
 ; transport of its own), so only its domain/ and adapters/ internals need guarding here.
+; `forbidden` checks INDIRECT chains by default (grimp), which would also flag
+; similarity.contracts' own re-exports of similarity.domain (Vector, SimilarityPolicy, errors,
+; cosine_distance -- design.md's "PUBLISHED" comment on similarity/contracts.py, Unit 2). That
+; re-export IS the deliberate facade this contract exists to require -- phrases.contracts imports
+; similarity.contracts, which alone may still reach into similarity.domain. ignore_imports below
+; excludes exactly that one facade edge; any OTHER module under phrases reaching similarity.domain
+; (directly, or via any path other than similarity.contracts) still breaks the contract.
 type = forbidden
 source_modules =
     app.modules.phrases
 forbidden_modules =
     app.modules.similarity.domain
     app.modules.similarity.adapters
+ignore_imports =
+    app.modules.similarity.contracts -> app.modules.similarity.domain.cosine
+    app.modules.similarity.contracts -> app.modules.similarity.domain.errors
+    app.modules.similarity.contracts -> app.modules.similarity.domain.policy
+    app.modules.similarity.contracts -> app.modules.similarity.domain.vector
 
 [importlinter:contract:domain-purity]
 name = domain layers MUST NOT import the framework/runtime
