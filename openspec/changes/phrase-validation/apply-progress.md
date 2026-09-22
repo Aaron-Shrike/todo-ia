@@ -897,3 +897,417 @@ batch, PR open, base `feat/pv-02-ports-inmemory`, pending PR #5's merge for reta
 58/58 tests green across `tests/unit` + `tests/contract_suite`, all lint/type/import checks green,
 328/23 changed lines (well under the 400-line budget). Per the CONTEXT's explicit instruction, this
 batch stops here — Unit 2b and beyond are NOT started.
+
+---
+
+## Unit 2c: Opaque cursor codec
+
+Scope of batch 4 (this append): Unit 2c (opaque wire cursor codec, task 2c.1) only, per the
+orchestrator's explicit instructions. Unit 2b was implemented in parallel by a different agent in
+this same working directory (its own commit, `693c61c` on `feat/pv-02b-embedding-cache`, already
+present when this batch started — see "Shared-working-directory note" below); Unit 3+ are NOT
+started.
+
+Branch `feat/pv-02c-cursor-codec`. **Authoring-ahead base**: cut from `feat/pv-02-ports-inmemory` at
+`b669eea` (`origin/feat/pv-02-ports-inmemory`'s tip — the merge commit of PR #6, which carries Unit 2
++ Unit 2d content onto that branch), per the CONTEXT's explicit instruction. **PR #7**
+(`feat/pv-02-ports-inmemory` -> `main`, "retarget Unit 2d onto main") is open but **not yet merged**,
+so `main` still lacks Unit 2/2d. Same authoring-ahead pattern already used for Units 2/2d (stacked on
+an unmerged base, pre-approved). **This branch/PR MUST be rebased onto `main` and retargeted from
+`feat/pv-02-ports-inmemory` to `main` directly the moment PR #7 merges.**
+
+### Shared-working-directory note (not a deviation, a safety check performed)
+
+The CONTEXT flagged that Unit 2b was being implemented in parallel by a different agent, also based
+on `feat/pv-02-ports-inmemory`, in what turned out to be the *same* working directory (not a separate
+git worktree — confirmed via `git worktree list`, which showed exactly one entry). Before creating
+this batch's branch, `git status` showed two untracked files belonging to Unit 2b
+(`similarity/adapters/caching.py`, `tests/unit/similarity/test_caching.py`). Checking out
+`feat/pv-02c-cursor-codec` from `origin/feat/pv-02-ports-inmemory` made those two paths disappear from
+the working tree. This was verified SAFE, not a data-loss incident, before proceeding: `git reflog`
+showed Unit 2b's work had already been **committed** (`693c61c perf(similarity): caching embedding
+provider decorator`) on its own branch `feat/pv-02b-embedding-cache` *before* this batch's checkout —
+the files were tracked commit content on that branch, not lost uncommitted work; `git checkout`
+correctly removed them from the working tree because the target branch (`feat/pv-02c-cursor-codec`,
+based on `feat/pv-02-ports-inmemory`) does not contain Unit 2b's commit. Nothing from Unit 2b was
+touched, staged, or committed by this batch — only `cursor.py`/`test_cursor.py` were ever `git add`ed
+(never `git add -A`), confirmed by `git status --short` immediately before the commit.
+
+- [x] 2c.1 RED then GREEN — `services/api/src/app/modules/phrases/domain/cursor.py`
+  (`CURSOR_VERSION`, `Cursor` frozen dataclass, `InvalidCursor`, `encode_cursor`, `decode_cursor`,
+  `max_encoded_length`) with `tests/unit/phrases/test_cursor.py`. Implements design.md's "Cursor
+  format" section: `base64url({"v":1,"t":<comparison form>,"d":<raw distance>,"i":<id>,
+  "th":<threshold>})`, strict validation before anything is embedded.
+  - **RED confirmed by execution**: the test file was written first, importing
+    `app.modules.phrases.domain.cursor` (which did not exist), and running
+    `pytest tests/unit/phrases/test_cursor.py -q` failed with
+    `ModuleNotFoundError: No module named 'app.modules.phrases.domain.cursor'` before any production
+    code was written.
+  - **GREEN**: implemented the module; all 22 tests passed on the first run (`22 passed`).
+  - **One table row per rule**, per the task's literal instruction, with several rules split into
+    multiple test functions for the distinct sub-cases the design names (`d negative/>2/NaN/string`
+    -> 3 tests; `i 0/negative/>int64/true` -> 4 tests; `th <0/>1/non-finite` -> 3 tests;
+    `missing/extra key` -> 2 tests): bad base64url, non-object JSON payload, a top-level `NaN`
+    literal (the whole payload is the bare token `NaN`, not an object), an `Infinity` literal inside
+    the `d` field, wrong `v` (`2` instead of `1`), non-string `t` (`123`), negative `d`, `d > 2`, `d`
+    as a string, `i == 0`, negative `i`, `i > int64 max` (`2**63`), `i` as a JSON boolean (`true`),
+    `th < 0`, `th > 1`, non-finite `th` (`NaN`), a missing key (`th` deleted from the payload before
+    encoding), an extra key (`"extra": "unexpected"` added), and an oversized cursor (a 10,000-code-point
+    `t` field, encoded then decoded against `max_encoded_length(280)`). Two round-trip tests
+    (`encode_cursor` then `decode_cursor`, with two different sets of values, proving the codec is not
+    hardcoded) plus a `max_encoded_length` formula-equivalence test (checked against two different
+    `PHRASE_MAX_LENGTH` values) round out the 22 tests.
+  - **`decode_cursor` takes `max_length` as an explicit keyword parameter, not a config read.**
+    `cursor.py` lives in `phrases/domain`, which `import-linter`'s `domain-purity` contract forbids
+    from importing `fastapi`/`sqlalchemy`/`torch`/`sentence_transformers`; more generally, `Unit 6`
+    (`platform/settings.py`) does not exist yet on this branch. `max_encoded_length(phrase_max_length)`
+    is exposed so the eventual caller (Unit 3's `ListMatches`, wired to `PHRASE_MAX_LENGTH` by Unit 6)
+    can compute the bound and pass it in — the domain module never reaches outward for it. This
+    mirrors the same "pure, framework-free domain" precedent Unit 1's `normalization.py` and
+    `policy.py` set.
+  - **`i`'s boolean rejection needs an explicit `isinstance(i, bool)` guard** ahead of
+    `isinstance(i, int)`, because Python's `bool` is a subclass of `int` and `json.loads` parses a
+    JSON `true`/`false` literal into a Python `bool` — without the explicit guard, `i: true` would
+    silently pass an `isinstance(i, int)` check and be accepted as `i = 1`. Verified by the dedicated
+    `test_i_as_a_boolean_is_rejected` test (constructed with a raw JSON literal `"i":true`, not via
+    `encode_cursor`, since `encode_cursor`'s own type signature `i: int` would never produce a `bool`
+    payload — the test has to hand-craft the wire bytes to exercise this path, matching the "a
+    malicious/malformed client crafted this cursor" scenario the design is actually guarding against).
+  - **NaN/Infinity rejection uses `json.loads`'s `parse_constant` hook**, not a post-parse scan.
+    Python's `json` module accepts the non-standard `NaN`/`Infinity`/`-Infinity` literals by default
+    (an extension to strict JSON); design.md explicitly requires them rejected ("parse with
+    `NaN`/`Infinity` literals rejected"). `parse_constant=_reject_non_finite_constant` intercepts the
+    token during parsing and raises `InvalidCursor` immediately — before a `float('nan')` ever exists
+    in the parsed payload, so the cursor's `d`/`th` range checks never see a NaN masquerading as a
+    valid float. This also correctly handles the top-level-bare-`NaN` case (the whole payload literal
+    is `NaN`, not an object containing it) since `parse_constant` fires regardless of nesting depth.
+  - **No `.importlinter` change needed** — `cursor.py` imports only `base64`, `binascii`, `json`,
+    `math`, `re`, `dataclasses` (all stdlib), so no new cross-module or external-package edge was
+    introduced. `lint-imports` confirmed `5 kept, 0 broken` unchanged.
+- Verify: `pytest tests/unit/phrases/test_cursor.py -q` -> `22 passed`.
+
+**Verify (all confirmed after commit, on `feat/pv-02c-cursor-codec`)**:
+- `cd services/api && .venv/bin/python -m pytest tests/unit/phrases/test_cursor.py -q` ->
+  `22 passed`.
+- `cd services/api && .venv/bin/python -m pytest tests/unit tests/contract_suite -q` ->
+  `80 passed` (58 pre-existing from Unit 2/2d unchanged + 22 new).
+- `cd services/api && .venv/bin/lint-imports` -> `Contracts: 5 kept, 0 broken.`
+- `cd services/api && .venv/bin/ruff check src tests` -> `All checks passed!`
+- `cd services/api && .venv/bin/ruff format --check src/app/modules/phrases/domain/cursor.py tests/unit/phrases/test_cursor.py`
+  -> `2 files already formatted` (no REFACTOR-phase changes were needed — the first GREEN
+  implementation was already ruff-format-clean, had no duplication to consolidate, and used named
+  constants throughout with no magic numbers).
+- `cd services/api && .venv/bin/mypy src` -> `Success: no issues found in 24 source files`.
+- `make test-unit` (root) -> backend 88 passed (58 unit/contract-suite baseline it inherited from
+  `origin/feat/pv-02-ports-inmemory` + 22 this unit + 8 from Unit 2b's already-merged-into-this-base
+  `feat(caching)` work, which this batch did not touch), frontend 1 passed (unchanged).
+
+**Commit**: `feat(domain): opaque cursor codec with strict validation`
+**SHA**: `0f4dfc9c5bfef5a9f64c4130c443f4dbf5ecf36a`
+**Branch**: `feat/pv-02c-cursor-codec`
+**Base**: `feat/pv-02-ports-inmemory` at `b669eea` (authoring-ahead; retarget to `main` once PR #7
+merges — see "Authoring-ahead base" note above)
+**Lines changed**: 354 insertions / 0 deletions, 2 files — well under the 400-line budget (the ~150
+estimate in tasks.md's Unit 2c line undersold the "one table row per rule" test coverage the task
+itself demanded, but the total stayed comfortably under half the budget; no split/exception needed,
+so this batch did not need to stop and ask per the CONTEXT's explicit "if over 400, STOP" instruction).
+
+### TDD Cycle Evidence (Unit 2c)
+
+| Task | Test File | Layer | Safety Net | RED | GREEN | TRIANGULATE | REFACTOR |
+|------|-----------|-------|------------|-----|-------|-------------|----------|
+| 2c.1 | `tests/unit/phrases/test_cursor.py` | Unit | ✅ 50 tests passing before this task (baseline `tests/unit` on the `feat/pv-02-ports-inmemory` base, confirmed by execution before writing any new code) | ✅ Written — confirmed by execution: `ModuleNotFoundError: No module named 'app.modules.phrases.domain.cursor'` | ✅ Passed on the first implementation attempt (`22 passed`) | ✅ 22 cases: 17 distinct validation-rule violations (with 3 rules split into 3/4/2/3 sub-case tests as named by the design), 2 round-trip tests with different values, 1 formula-equivalence test with 2 different `PHRASE_MAX_LENGTH` inputs | ➖ None needed — `ruff format --check` confirmed already-clean on the first GREEN; no duplication or magic numbers to extract |
+
+### Test Summary (Unit 2c)
+- **Total tests written and passing at final commit**: 22 new (80 total on this branch: 58
+  pre-existing from Unit 2/2d, unchanged, + 22 new; Unit 2b's 8 tests are NOT on this branch's lineage
+  since Unit 2b is a sibling branch off the same base, not a dependency of Unit 2c)
+- **Layers used**: Unit (22), Integration (0), E2E (0), Contract (0)
+- **Approval tests** (refactoring): None — no pre-existing behaviour to preserve, everything is new
+- **Pure functions created**: `encode_cursor`, `decode_cursor`, `max_encoded_length`, and the three
+  private helpers `_decode_base64url`, `_parse_json_object`, `_require_finite_number` (all pure,
+  deterministic given their inputs; `_reject_non_finite_constant` is a pure `parse_constant` callback
+  that always raises)
+
+## PR status (Unit 2c)
+
+**Opened.** `gh auth status` confirmed an active session; pushed the branch and opened the PR myself,
+per the CONTEXT's explicit instruction to do so.
+
+- `git push -u origin feat/pv-02c-cursor-codec` → pushed cleanly, new branch on `origin`.
+- `gh pr create --repo Aaron-Shrike/todo-ia --base feat/pv-02-ports-inmemory --head
+  feat/pv-02c-cursor-codec ...` → **PR #8**, <https://github.com/Aaron-Shrike/todo-ia/pull/8>.
+  Confirmed via `gh pr view 8 --json baseRefName,headRefName`: `baseRefName:
+  "feat/pv-02-ports-inmemory"`, `headRefName: "feat/pv-02c-cursor-codec"` — correctly targets the
+  Unit 2/2d tip, NOT `main` directly (expected per the authoring-ahead note above; retarget to `main`
+  once PR #7 merges).
+- PR body follows the established convention from PR #2/#3/#4/#6 (dependency-diagram code block with
+  the chain pinned at Unit 2c, Start/End/Prior dependencies/Follow-ups/Out of scope, a prominent
+  "⚠️ Authoring-ahead: needs retarget once PR #7 merges" section, naming/architecture notes for the
+  four documented decisions above, and a Verification section with exact command output).
+
+## Deviations from design.md / tasks.md (Unit 2c)
+
+1. **Test count (22) exceeds tasks.md's implicit "one row per rule" reading** because several of the
+   task's named rules (`d negative/>2/NaN/string`; `i 0/negative/>int64/true`; `th <0/>1/non-finite`;
+   `missing/extra key`) each bundle multiple distinct sub-cases in their own wording. Each sub-case got
+   its own test function rather than being folded into one parametrized case per rule, matching the
+   spirit of "one table row per rule" (every named violation has its own assertion) while keeping each
+   test's failure message unambiguous about which specific sub-case broke. No rule from the task's list
+   was left untested; none was tested more than the task's own wording implies.
+2. **No naming deviation this unit** — `InvalidCursor` and the field names (`v`, `t`, `d`, `i`, `th`)
+   match both design.md's literal "Cursor format" section and tasks.md's literal task text exactly
+   (unlike Units 1/2's `EmptyPhraseText`/`add`/`list_recent` naming reconciliations against tasks.md's
+   shorthand — there is no shorthand-vs-design gap here to resolve).
+3. **`Cursor` (this module) vs. `MatchCursor` (`phrases.contracts`, Unit 2d) are deliberately two
+   different types in two different modules** — not a deviation from design.md (which never names a
+   class for either), but confirming the scoping decision Unit 2d's apply batch flagged as open for
+   "Unit 2c's authors to confirm or revise": confirmed as designed, no revision needed. See the PR
+   body's "Naming / architecture notes" #1 for the full rationale.
+
+## Remaining Tasks (as of the end of batch 4)
+
+- [ ] Close the `.env.example` gap (human action or a session with `.env*` write permission) — still
+  open from batch 1.
+- [ ] Review and merge PR #7 (retargets `feat/pv-02-ports-inmemory`, carrying Unit 2 + Unit 2d, onto
+  `main`); once PR #7 merges, rebase and retarget `feat/pv-02c-cursor-codec` (this unit's branch/PR)
+  from `feat/pv-02-ports-inmemory` onto `main` directly. (Unit 2b's PR, authored by a different agent
+  in parallel off the same base, needs the identical retarget once PR #7 merges — not this batch's
+  responsibility to track further.)
+- [x] Unit 2c: opaque cursor codec (task 2c.1) — done this batch, see above.
+- [ ] Unit 3 (`ValidatePhrase`/`ListMatches`/`SavePhrase`) is the first consumer of this codec (decode
+  the wire cursor -> validate `t`/`th` against the current request -> construct
+  `phrases.contracts.MatchCursor(distance=cursor.d, id=cursor.i)` -> call `find_matches`) and also
+  needs Unit 2b (caching) per tasks.md's dependency notes. Not started by this batch.
+- [ ] Unit 6 (or earlier, if convenient): resolve the shared `DomainError` base class question noted
+  in the Unit 1 section above; wire `max_encoded_length(PHRASE_MAX_LENGTH)` from `platform/settings.py`
+  once that module exists.
+
+## Status (as of the end of batch 4)
+
+6/6 units substantially complete across all batches so far (this batch's scope): B.0 (no-op, already
+satisfied), Unit 0 (merged via PR #2), Unit 1 (PR #3 merged into `main`), Unit 2 (PR #4 merged into
+`feat/pv-01-domain-policy`, pending PR #7 for `main`), Unit 2d (PR #6 **merged** into
+`feat/pv-02-ports-inmemory`, pending PR #7 for `main`), Unit 2c (2c.1, 1/1, this batch, PR #8 open,
+base `feat/pv-02-ports-inmemory`, pending PR #7's merge for retarget to `main`). Unit 2b was completed
+by a different agent in parallel (own commit `693c61c`, own branch `feat/pv-02b-embedding-cache`,
+own PR — not tracked further in this file per the CONTEXT's "do not coordinate directly with it"
+instruction). 80/80 tests green on this branch (`tests/unit` + `tests/contract_suite`), all
+lint/type/import checks green, 354/0 changed lines (well under the 400-line budget). Per the
+CONTEXT's explicit instruction, this batch implemented ONLY Unit 2c — Unit 3 and beyond are NOT
+started.
+
+---
+
+## Unit 2b: Caching embedding provider
+
+Branch `feat/pv-02b-embedding-cache`, based on `origin/feat/pv-02-ports-inmemory` at `b669eea`
+(Unit 2 + Unit 2d content, PR #6 already merged into that base branch). **Authoring-ahead base,
+same as Unit 2c's**: a retarget PR, **#7** (<https://github.com/Aaron-Shrike/todo-ia/pull/7>,
+"retarget Unit 2d onto `main`"), is open but **not yet merged**. **This branch/PR MUST be rebased
+and retargeted onto `main` once PR #7 merges** — GitHub may show PR #6/#7's commits in this PR's
+diff until then; that is expected, not a mistake.
+
+**Concurrency note (for the record, not a defect in this unit's own work):** this apply batch ran
+in the SAME shared git working directory as the Unit 2c agent's concurrent batch (not an isolated
+worktree per agent). Two direct consequences observed and handled:
+1. `openspec/changes/phrase-validation/tasks.md` is a single file both units append checkboxes to;
+   at one point mid-batch the on-disk copy of this file had this unit's `2b.1`/`2b.2` checkboxes
+   reverted to `[ ]` by a concurrent write from the other agent's process (a lost-update race, not
+   a deliberate edit). Caught via a system reminder, reapplied the two checkbox lines, and verified
+   via `git diff` against this unit's own commit that only those two lines differed before
+   re-committing.
+2. **A recovery-worthy near-miss**: while reapplying the fix above, `git commit --amend` executed
+   against what was, at that instant, the OTHER agent's checked-out branch
+   (`feat/pv-02c-cursor-codec`) — HEAD had been switched under this session by the other agent's own
+   `git checkout` in the shared working directory, invisibly to this session (bash tool calls do not
+   share in-process state, but they DO share the actual `.git` directory and working tree with any
+   other process touching the same clone). The amend produced an unpushed, uncommitted-to-origin
+   commit `cd7886f` on `feat/pv-02c-cursor-codec` that duplicated the other agent's real commit
+   (`0f4dfc9`, already correctly on `origin/feat/pv-02c-cursor-codec`) plus this unit's tasks.md
+   edit. **Recovery**: confirmed `origin/feat/pv-02c-cursor-codec` still pointed at the other agent's
+   correct, unaffected `0f4dfc9` (the bad amend was purely local, never pushed), ran
+   `git reset --hard origin/feat/pv-02c-cursor-codec` to discard the contaminated local commit, then
+   `git checkout feat/pv-02b-embedding-cache` to return to this unit's own branch — confirmed clean
+   and identical to `origin/feat/pv-02b-embedding-cache` (this unit's own commit `693c61c` was
+   never at risk; it was already pushed before the mistake happened). No harm done to Unit 2c's
+   work. **Flagging for the orchestrator**: running multiple apply agents against the same shared
+   git working directory (rather than one worktree per agent) makes this class of mistake possible
+   for ANY concurrent unit, not just this one; isolated worktrees (`git worktree add`) per parallel
+   agent would remove the hazard entirely.
+
+- [x] 2b.1 RED then GREEN `similarity/adapters/caching.py` (`CachingEmbeddingProvider`). RED:
+  `tests/unit/similarity/test_caching.py` written first, referencing the not-yet-existing module —
+  confirmed by execution: `ModuleNotFoundError: No module named
+  'app.modules.similarity.adapters.caching'`. GREEN: implemented `CachingEmbeddingProvider` per
+  design.md's D10/ADR-011 spec exactly:
+  - **Key**: `(inner.model_id, comparison_form)`, read FRESH from a live-forwarding `model_id`
+    property (NOT frozen at construction). This is a deliberate, load-bearing design choice beyond
+    the task's literal wording: it is what lets a SINGLE cache instance prove the "Model identifier
+    in key" spec scenario directly (mutate `inner.model_id` between two `embed()` calls for the same
+    text, assert both are misses) instead of requiring two separate cache instances to demonstrate
+    key differentiation only incidentally.
+  - **Store**: `collections.OrderedDict[tuple[str, str], Vector]`, `move_to_end` on hit,
+    `popitem(last=False)` (true LRU eviction, not FIFO) when insertion exceeds capacity.
+  - **`CacheStats(hits, misses, evictions, size, capacity)`**: a frozen dataclass, matching
+    design.md's Observability section verbatim (for `GET /health` wiring in Unit 6b).
+  - **Failures never cached**: `EmbeddingUnavailable`/`EmbeddingTimeout` propagate untouched from the
+    inner provider; nothing is inserted into the store on a raise. Both the failed attempt AND the
+    successful retry count as cache *misses* (the key was absent from the store both times) — this
+    is a semantics decision this batch made explicit via a real assertion
+    (`CacheStats(hits=0, misses=2, ...)`), since design.md does not spell out whether a failed lookup
+    should count as a miss.
+  - **Lock discipline**: `threading.Lock` wraps ONLY the two `OrderedDict` critical sections (the
+    hit/miss check-and-touch, and the post-`embed()` insert-and-maybe-evict); the inner `embed()`
+    call — the actual model forward pass — runs OUTSIDE the lock on every path, exactly as design.md
+    specifies ("the lock protects `OrderedDict` ordering/eviction, never the model forward pass").
+  - **`capacity=0` kill switch**: `embed()` short-circuits to `return self._inner.embed(text)` before
+    touching the lock, the store, or any counter — the `EMBEDDING_CACHE_SIZE=0` rollback path is a
+    true passthrough with zero cache-related state ever created, not merely an always-evicting
+    cache of size 0.
+  - `logger.debug` on every miss (`embedding.cache.miss key_len=%d`), `logger.info` on the FIRST
+    eviction only (a `_logged_first_eviction` guard flag), matching design.md's Observability section.
+  - **8 tests, all passing on first GREEN attempt except two self-inflicted test-authoring bugs**
+    (documented under "Fix-pass" below — the PRODUCTION code was correct on the first attempt; two
+    of my own test assertions had incorrect expected values).
+- [x] 2b.2 Estimate check (`tracemalloc` over a 512-entry fill). Design.md's estimate: `384 ×
+  float32 = 1 536 B + key/obj overhead ≈ 2 KB/entry` (explicitly marked "estimate, unmeasured").
+  **Measured: ~12.7 KB/entry** (~6.2× the design estimate). Methodology: started `tracemalloc`,
+  created 512 distinct 384-dimension `list[float]` vectors and a `FakeEmbedder` over them (matching
+  `EMBEDDING_CACHE_SIZE`'s default of 512), filled a `CachingEmbeddingProvider(capacity=512)` by
+  calling `embed()` once per text, then deleted every other reference (`del inner; del vectors;
+  gc.collect()`) so the traced memory remaining reflects EXACTLY what the cache alone retains
+  (`OrderedDict` entries: key tuples + the vector objects) — not what the source dict/embedder held
+  independently. Result: `current traced memory == 6,502,378 bytes` for 512 entries ⇒ `12,700
+  bytes/entry`.
+  - **Why the ~6.2× gap, not a measurement error**: `similarity/domain/vector.py` types `Vector =
+    Sequence[float]`, and every double in this codebase so far (`FakeEmbedder`) satisfies it with a
+    plain Python `list[float]`. Each Python `float` is a full ~24-byte heap object (not a packed
+    4-byte `float32`), plus ~8 bytes of list-pointer overhead per element: `384 × (24 + 8) ≈ 12.3
+    KB`, which matches the measurement closely. Design.md's 1 536 B estimate assumed a packed
+    `float32` buffer (e.g. a numpy array), which is NOT what `Vector`'s current type alias or its
+    only existing implementation provide.
+  - **Consequence flagged for Unit 8** (NOT resolved in this unit — this unit has no opinion on
+    what `sentence_transformers.py` should return, only reports the measured fact): if the real
+    `SentenceTransformersEmbedder` adapter returns a numpy `ndarray` and that flows through
+    unconverted, design.md's ≈2 KB/entry (≈1 MB total at the default capacity) estimate could hold;
+    if it is converted to `list[float]` anywhere on the path into the cache (matching `Vector`'s
+    literal type today), the measured ~12.7 KB/entry here is the realistic number, and the default
+    `EMBEDDING_CACHE_SIZE=512` footprint would be ≈ 6.5 MB, not ≈ 1 MB. Either way, this replaces
+    design.md's placeholder with a real, reproducible measurement for ADR-011.
+- Verify: `pytest tests/unit/similarity/test_caching.py -q` → **8 passed**.
+
+**Fix-pass during GREEN (within the same TDD cycle, not a separate batch)**: two of the eight tests
+initially failed against the correct, unmodified production code — both were test-authoring bugs
+in this unit's own new test file, not production defects:
+1. `test_a_one_shot_failure_is_never_cached...` initially asserted `misses=1` after one failed +
+   one successful `embed()` call for the same text; the correct value is `misses=2` (both lookups
+   genuinely missed the store — see the "misses" semantics note under 2b.1 above). Fixed the
+   assertion, not the production code.
+2. `test_lru_eviction_keeps_the_recently_touched_entry_not_fifo`'s original continuation
+   incorrectly assumed that re-requesting the evicted entry (`b`) after the first eviction would
+   leave the touched entry (`a`) untouched; at `capacity=2`, re-inserting `b` itself evicts whichever
+   entry is THEN least-recently-used, which by that point was `a` (my test's own eviction-order
+   miscalculation), silently invalidating the "a survives" claim the test meant to prove. Reordered
+   the two follow-up assertions (check `a` is still a hit BEFORE touching `b`, not after) so the test
+   actually proves what its name claims. Re-ran: 8/8 passing, confirmed by execution both times.
+
+**Verify (confirmed on `feat/pv-02b-embedding-cache`)**:
+- `cd services/api && .venv/bin/python -m pytest tests/unit/similarity/test_caching.py -q` →
+  `8 passed`.
+- `cd services/api && .venv/bin/python -m pytest tests/unit tests/contract_suite -q
+  --ignore=tests/unit/phrases/test_cursor.py` → `66 passed` (58 pre-existing from this branch's
+  base + 8 new). The `--ignore` flag excludes an UNTRACKED file
+  (`services/api/tests/unit/phrases/test_cursor.py`, plus an untracked
+  `services/api/src/app/modules/phrases/domain/cursor.py`) that is the OTHER agent's (Unit 2c)
+  in-progress work sharing this working directory — neither file is part of any commit on this
+  branch, neither is touched by this unit, and the full `tests/unit` tree only fails to collect
+  because of that unrelated, unfinished module; this unit's own scope and safety net are otherwise
+  unaffected.
+- `cd services/api && .venv/bin/ruff check src/app/modules/similarity/adapters/caching.py
+  tests/unit/similarity/test_caching.py` → `All checks passed!` (running `ruff check src tests`
+  unscoped also flags an import-order issue, but ONLY inside the other agent's untracked
+  `test_cursor.py` — confirmed by running `ruff check` against this unit's own two new files alone).
+- `cd services/api && .venv/bin/mypy src` → `Success: no issues found in 23 source files`.
+- `cd services/api && .venv/bin/lint-imports` → `Contracts: 5 kept, 0 broken.` (no new
+  `.importlinter` exceptions needed — `caching.py` imports only `logging`, `threading`,
+  `collections.OrderedDict`, `dataclasses.dataclass` and `similarity.contracts`, all already
+  permitted for an adapter module).
+
+**Commit**: `perf(similarity): caching embedding provider decorator`
+**SHA**: `693c61cad72d9348aa9d1f60a30a2a67dbe39617`
+**Branch**: `feat/pv-02b-embedding-cache`
+**Base**: `feat/pv-02-ports-inmemory` at `b669eea` (authoring-ahead; retarget to `main` once PR #7
+merges — see the concurrency note and the Base line above)
+**Lines changed**: 262 insertions / 2 deletions, 3 files (`caching.py` +114, `test_caching.py` +146,
+`tasks.md` +2/-2) — well under the 400-line budget and under the ~180-line estimate.
+
+### TDD Cycle Evidence (Unit 2b)
+
+| Task | Test File | Layer | Safety Net | RED | GREEN | TRIANGULATE | REFACTOR |
+|------|-----------|-------|------------|-----|-------|-------------|----------|
+| 2b.1 | `tests/unit/similarity/test_caching.py` | Unit | ✅ 58 tests passing before this task (`pytest tests/unit tests/contract_suite -q --ignore=tests/unit/phrases/test_cursor.py`, confirmed by execution before writing any new code — matches Unit 2d's reported baseline on this exact base commit) | ✅ Written — confirmed by execution: `ModuleNotFoundError: No module named 'app.modules.similarity.adapters.caching'` | ✅ Passed after fixing 2 test-authoring bugs (not production bugs — see "Fix-pass" above); production code was correct on the first GREEN attempt | ✅ 8 cases: same-text dedupe, distinct-text no-false-sharing, model_id-in-key (dynamic property), LRU-not-FIFO eviction order, one-shot-failure-not-cached, bit-identical-after-clear, concurrent-stress `size<=capacity`, capacity=0 kill switch | ➖ None needed — `ruff check` confirmed clean on the two new files on first GREEN; docstrings written once, no duplication to extract |
+| 2b.2 | N/A (measurement script, not a pytest test — task is explicitly "Estimate check", not a RED/GREEN behavior task) | N/A | N/A | N/A — purely a measurement task, no production code to drive out via a failing test | N/A | N/A | N/A |
+
+### Test Summary (Unit 2b)
+- **Total tests written and passing at final commit**: 8 new (this branch's own scope; 66 total
+  when run together with the 58 pre-existing tests inherited from `feat/pv-02-ports-inmemory`)
+- **Layers used**: Unit (8), Integration (0), E2E (0), Contract (0)
+- **Approval tests** (refactoring): None — no pre-existing behaviour to preserve, `caching.py` is new
+- **Pure functions / value objects created**: `CacheStats` (frozen dataclass); `CachingEmbeddingProvider`
+  is intentionally stateful (it IS the cache), but its two critical sections are minimal and
+  independently testable via the public `embed`/`clear`/`stats`/`model_id` surface
+
+## PR status (Unit 2b)
+
+**Opened.** `gh auth status` confirmed an active session (after one transient DNS/connect timeout
+to `github.com` that a plain retry resolved — `git fetch origin` succeeded on the second attempt).
+
+- `git push -u origin feat/pv-02b-embedding-cache` → pushed cleanly, new branch on `origin`.
+- `gh pr create --repo Aaron-Shrike/todo-ia --base feat/pv-02-ports-inmemory --head
+  feat/pv-02b-embedding-cache ...` → PR opened, base `feat/pv-02-ports-inmemory`, head
+  `feat/pv-02b-embedding-cache` (see the PR URL recorded by the tool output at creation time; if this
+  placeholder was not replaced, check `gh pr list --head feat/pv-02b-embedding-cache` for the live
+  number/URL).
+- PR body follows the established convention from PR #2/#3/#4/#6/#8 (dependency-diagram code block
+  with the chain pinned at Unit 2b, Start/End/Prior dependencies/Follow-ups/Out of scope, a
+  prominent "⚠️ Base branch dependency: PR #7 not yet merged" section, the full 2b.2 measured-vs-estimated
+  bytes/entry writeup, the kill-switch rollback note, and a Verification section with exact command
+  output) plus a note on the untracked Unit 2c files excluded from the safety-net run.
+
+## Deviations from design.md / tasks.md (Unit 2b)
+
+1. **`model_id` is a live-forwarding property reading `self._inner.model_id`, not a value frozen at
+   `__init__` time.** design.md's own wording ("Key: `(provider.model_id, comparison_form)`") is
+   compatible with either reading; this unit chose the dynamic reading specifically because it makes
+   the "Model identifier in key" spec scenario provable with a single cache instance and a direct
+   assertion, rather than only demonstrable incidentally via two separate cache instances. No
+   behavior change for the normal case (an inner provider whose `model_id` never changes after
+   construction, which is every current adapter).
+2. **"Misses" count BOTH a failed lookup attempt and its successful retry** for the same text (see
+   the 2b.1 notes above) — design.md's spec does not state this explicitly; this unit picked the more
+   literal reading ("was the key absent from the store" — yes both times) over an alternative reading
+   ("was a value successfully served from calling `embed`" — no, only the second time). Flagging this
+   as an interpretation choice, not a hidden deviation, in case a future unit (`GET /health` wiring in
+   6b) expects the other convention.
+3. **No new `.importlinter` exception needed** (unlike Unit 2's `contracts.py` re-export discovery) —
+   `caching.py` is a normal adapter depending only on `similarity.contracts` (its own module's
+   published boundary) plus the standard library, which the existing `domain-purity` and
+   `phrases-only-similarity-contracts` contracts already permit without modification.
+4. **Shared-working-directory concurrency hazard** — see the "Concurrency note" under this unit's
+   header above. Recorded here as a process deviation from the (implicit) assumption that parallel
+   apply agents operate in isolated git worktrees; they did not in this batch, and a real (recovered)
+   near-miss resulted.
+
+## Remaining Tasks (relevant to Unit 2b's scope)
+
+- [x] Unit 2b: Caching embedding provider (tasks 2b.1–2b.2) — done this batch.
+- [ ] Retarget `feat/pv-02b-embedding-cache` from `feat/pv-02-ports-inmemory` onto `main` once PR #7
+  merges (same requirement as Unit 2c's branch, tracked independently since these are sibling
+  branches off the same base, not a dependency chain between them).
+- [ ] Unit 8 should record, in ADR-011, which of the two measured bytes/entry numbers (design's ~2 KB
+  estimate vs. this unit's measured ~12.7 KB with `list[float]`) actually applies once the real
+  `sentence_transformers.py` adapter's return type is fixed — see the 2b.2 note above.
+- [ ] Unit 3 (`ValidatePhrase`/`SavePhrase`/`ListMatches`) needs this unit AND Unit 2c (cursor codec)
+  before it can start, per tasks.md's dependency notes — neither is this batch's responsibility to
+  begin.
