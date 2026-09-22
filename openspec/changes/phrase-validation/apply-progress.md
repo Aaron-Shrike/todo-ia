@@ -2407,3 +2407,270 @@ CRITICAL findings from `sdd-verify`, both resolved" section directly under the `
 callout, summarizing both fixes and the re-run verify numbers (59/195 passed). Final PR state:
 `gh pr view 20` -> base `develop`, head `feat/pv-06-api-foundation`, 3 commits, 1407 additions / 4
 deletions total.
+
+---
+
+## Unit 6b: Validate endpoint and `/health` readiness -- SHIPPED (`size:exception`, user-approved)
+
+**Resolution**: the user explicitly accepted the 468-line overrun (466 insertions / 2 deletions, 6
+files) as `size:exception` (single PR, not a chained/stacked split) after reading this section's
+original "budget STOP" report below. Committed and shipped as a single squashed RED+GREEN commit,
+per Strict TDD convention.
+
+Branch `feat/pv-06b-validate-health`, cut authoring-ahead from `feat/pv-06-api-foundation` (PR #20,
+open at the time of this batch; retargeted to `develop` once #20 merges -- see "PR status" below for
+whether that retarget was needed at ship time). Both sub-tasks (6b.1, 6b.2) are fully implemented,
+RED->GREEN confirmed, and green against every quality gate below. After a genuine, multi-round trim
+pass the diff still measured 466 insertions / 2 deletions across 6 files -- above the 400-line hard
+cap, with no documented split seam for this unit. Per the orchestrator's explicit instruction for
+that batch, the apply agent stopped and reported back instead of self-authorizing an exception or
+inventing a seam -- see "Review-budget trim" below. **The user then explicitly accepted the overrun
+as `size:exception`**, declining a chained/stacked split; the unit is committed and shipping
+unchanged since the report (no further code edits were needed to ship).
+
+- [x] 6b.1 RED then GREEN:
+  - `services/api/src/app/modules/phrases/api/router.py` -- `build_validate_router(*,
+    phrase_max_length, matches_page_size)` returns an `APIRouter` with one route,
+    `POST /phrases/validate`. The request model (`_ValidateRequest`) is a class NESTED inside the
+    factory function, not module-level, because its `text`/`limit` field bounds
+    (`raw_phrase_text(phrase_max_length)` / `page_limit(matches_page_size)`, both from Unit 6's
+    `phrases/api/schemas.py`) close over caller-supplied settings values, not constants.
+    **Deliberately no `from __future__ import annotations` in this file** -- with it active, those
+    field annotations become unresolved strings FastAPI can only look up via the route function's
+    `__globals__`, never an enclosing closure's locals, which is the EXACT bug Unit 6's fix-pass
+    found and documented in `test_framework_errors.py` (probe models defined inside a helper
+    function). Evaluating eagerly (no postponed evaluation) avoids it entirely; documented with a
+    comment at the top of the file for the next reader who reaches for the project's usual
+    `from __future__ import annotations` convention. `_ValidateRequest.model_config =
+    ConfigDict(extra="ignore")` is what makes a `cursor` key silently ignored (design.md D9) rather
+    than a schema violation. The route handler reads its `ValidatePhrase` instance off
+    `request.app.state.phrases` (never constructs one itself, never imports an adapter -- satisfies
+    import-linter's `composition-root-owns-adapters` contract, which forbids `phrases.api` from
+    importing `*.adapters`). Response models: one shared `_ScoredPhrase` (`id: PhraseId, text, score`)
+    reused for both `most_similar` and each `matches[]` entry (design.md's two shapes are
+    structurally identical), wrapped in `_ValidateData` / `_ValidateResponse` (`{"data": {...}}`).
+  - `services/api/src/app/modules/phrases/container.py` -- `PhrasesContainer` (frozen dataclass,
+    currently just `validate_phrase: ValidatePhrase`) and `build_phrases_container(*, embedder,
+    uow_factory, policy, phrase_max_length)`. Adapter-agnostic by construction: takes
+    already-constructed ports, never decides which concrete adapter backs them -- that stays the
+    caller's (a test's, or eventually Unit 8's) decision.
+  - `services/api/src/app/modules/similarity/container.py` -- **scope deliberately narrowed during
+    this batch's trim pass**: originally also contained a `build_embedding_provider(settings)`
+    function that raised `NotImplementedError` for the real `sentence_transformers` value (a
+    fail-fast placeholder for Unit 8), wired into a `main.py` lifespan hook that would run it only at
+    actual ASGI startup. Removed entirely once the review-budget trim made clear that (a) nothing in
+    this unit's own tests need it (they build `FakeEmbedder`/`FailingEmbedder` directly), and (b) the
+    task's own wording ("real provider wiring is Unit 8's job") means this unit should not
+    pre-build speculative wiring for a provider that does not exist yet. What remains:
+    `wrap_with_cache(provider, *, capacity)` only -- the one piece of `similarity/container.py`
+    this unit's "Caching invisible" contract test actually needs (D10's outermost
+    `CachingEmbeddingProvider`, `capacity=0` kill switch), independent of which concrete provider it
+    wraps. Uses `typing.cast` once, documented inline: `CachingEmbeddingProvider.model_id` is a
+    read-only `@property` (forwards to `inner` live), which mypy sees as narrower than
+    `EmbeddingProvider`'s plain `model_id: str` Protocol member (a settable-variable expectation);
+    structurally correct at runtime since every caller only reads it.
+  - `services/api/src/app/platform/health.py` -- `HealthState` (frozen dataclass:
+    `check_database: Callable[[], bool]`, `model_ready: bool`, `dimensions: int`,
+    `embedding_model: str`, `embedding_cache: Callable[[], dict[str, int] | None]`),
+    `build_health_payload(state) -> (status_code, body)` (pure, unit-testable in isolation even
+    though it is only exercised here via the HTTP contract tests), and the `GET /health` route
+    itself, which does nothing but read `request.app.state.health` and call the payload builder.
+    `embedding_cache` is typed as a plain `dict`, not `similarity.adapters.caching.CacheStats`, so
+    `platform` (cross-cutting, owns no business rule per design.md's module-structure table) never
+    has to import a `similarity` adapter -- translating `CacheStats` to a `dict` is the composition
+    root's job (done in `main.py`/tests, not here). 200 only when both `database_ok` and
+    `model_ready`; otherwise 503 `NOT_READY` with per-component `details` using the same keys
+    (`model`/`database`/`dimensions`/`embedding_model`), matching design.md's D15 exactly.
+  - `services/api/src/app/main.py` -- mounts `build_validate_router(...)` and `health_router` inside
+    `create_app(settings)`. **Production wiring deliberately minimal**: `app.state.health` is set to
+    a static "not ready" `HealthState` (`check_database=lambda: False`, `model_ready=False`, real
+    `dimensions`/`embedding_model` from settings, `embedding_cache=lambda: None`) -- honest given no
+    real embedding provider exists until Unit 8; `app.state.phrases` is deliberately left UNSET in
+    production, so a real `POST /phrases/validate` request against the production app today would
+    500 `INTERNAL_ERROR` (an `AttributeError` on `request.app.state.phrases`, caught by
+    `CatchAllMiddleware`) until Unit 8 wires a real container. This is a conscious scope decision,
+    not an oversight -- see "Deviations" below.
+- [x] 6b.2 RED then GREEN `tests/contract/test_validate_health.py` (17 test functions, several
+  parametrized -- 24 total cases) against the real `create_app()` wiring, `FakeEmbedder`/
+  `FailingEmbedder` and `InMemoryUnitOfWorkFactory`. Every test builds its OWN app via a `_client()`
+  helper (never `app.main.app`, never enters `TestClient` as a context manager, matching
+  `test_framework_errors.py`'s precedent) and sets `app.state.phrases`/`app.state.health` directly
+  after `create_app(settings)`, so `main.py`'s "not ready" production defaults are never exercised by
+  these tests. Named-scenario coverage (all 15 scenarios in the Covers line):
+  - `test_duplicate_found_returns_the_full_verdict_payload` -- also covers "Success envelope"
+    (`set(response.json()) == {"data"}`), "Cursor not accepted" (a `cursor` key is included in the
+    request body and silently ignored, not rejected), and "Nothing persisted" (folded in as a final
+    assertion against the store, to avoid a near-duplicate standalone test).
+  - `test_empty_store_returns_a_null_verdict`.
+  - `test_page_1_carries_the_verdict_using_the_default_limit` -- `matches_page_size=2`, 3 seeded
+    phrases, no `limit` in the body; covers "Page 1 carries the verdict" AND "Default limit" together
+    (both are the same request shape).
+  - `test_limit_bounds_are_enforced_inclusively` -- parametrized over `(1, 200, 1), (2, 200, 2),
+    (0, 422, None), (3, 422, None)` against `matches_page_size=2`: covers "Limit bounds" (both the
+    accepted boundary and the rejected out-of-range case in one function).
+  - `test_strict_integer_limit_rejects_non_strict_values` -- parametrized over `"10"`, `True`,
+    `10.5`, all -> 422 `invalid_type` (design.md's `StrictInt` rule; `page_limit()`'s existing
+    strictness, reused verbatim from Unit 6, not reimplemented).
+  - `test_database_unreachable_outside_health_is_500_internal_error` -- a plain function passed as
+    `uow_factory` that raises `RuntimeError` immediately on call, proving an unhandled exception on
+    the validate path (never `/health`) is 500 `INTERNAL_ERROR`, not a DB-specific code (design.md:
+    "database unreachable on any endpoint but `/health`" has no dedicated error code).
+  - `test_provider_failure_and_timeout_map_to_their_registered_codes` -- parametrized over
+    `EmbeddingUnavailable`/`EmbeddingTimeout` via `FailingEmbedder`, -> 503/504 with their registered
+    codes (Unit 6's `ERROR_REGISTRY`, unmodified, now proven reachable through a real endpoint).
+  - `test_cold_and_warm_validate_responses_are_byte_identical` -- two identical requests with caching
+    enabled (`capacity=512`); asserts `first.content == second.content` (cache invisible to the
+    response shape) AND `embedder.call_count == 1` (cold miss then a cache hit) -- the two halves of
+    "Caching invisible" the spec cares about: response identity AND that the SAVING is real.
+  - `test_health_ready_returns_every_required_key_and_issues_zero_embeddings` -- covers "Ready" AND
+    the "zero embeddings" requirement from task 6b.1's own literal wording, folded into one function
+    since the zero-embeddings assertion is a one-line addition to the same request/response.
+  - `test_health_not_ready_reports_which_component_is_down` -- parametrized over
+    `(model_ready=False, database_ok=True) -> details.model=="unavailable"` and
+    `(model_ready=True, database_ok=False) -> details.database=="unavailable"`, covering "Model not
+    loaded" and "Database down" in one function.
+  - **Explicit end-to-end confirmation of the Unit 6 fix-pass** (requested explicitly, not just
+    trusted): manually exercised `POST /phrases/validate` (not a standalone probe route, the real
+    live endpoint) with three inputs after wiring a `FakeEmbedder`/in-memory repo onto a fresh
+    `create_app()` instance: (1) raw text of 1121 `"a"` characters (one over the raw `4 ×
+    PHRASE_MAX_LENGTH` cap) -> `422 VALIDATION_ERROR`, `reason: "too_long"`, **`max_length: 280`**
+    (the SEMANTIC value, not pydantic's default raw-cap value of 1120) -- this is exactly the bug
+    Unit 6's fix-pass closed, now proven to still hold through a real business endpoint, not just
+    `test_framework_errors.py`'s isolated probe route; (2) 300 `"a"` characters (within the raw cap,
+    over the semantic `PHRASE_MAX_LENGTH` after normalization) -> `422 VALIDATION_ERROR`,
+    `reason: "too_long"`, `max_length: 280` via the DOMAIN-level `PhraseTooLong` path (a different
+    code path than (1), also correct); (3) whitespace-only text -> `422 VALIDATION_ERROR`,
+    `reason: "empty"` via the domain-level `EmptyPhraseText` path. All three confirmed by direct
+    execution in this batch (not asserted from memory); none of the three needed a code change --
+    Unit 6's fix-pass already covers this endpoint correctly by construction, since `main.py`'s
+    `_reason_for`/`_validation_error_handler` and `raw_phrase_text()`'s custom `AfterValidator` are
+    shared, unmodified code this router calls into, not reimplemented per-endpoint.
+
+### Review-budget trim (still over budget after a genuine, multi-round trim pass)
+
+First complete draft (all of 6b.1 + 6b.2, RED->GREEN, all green, including a `main.py` lifespan hook
+that eagerly built a real embedding-provider placeholder): **580 insertions / 4 deletions**, 6 files.
+Far above the ~250 estimate and the 400-line hard cap -- similar in shape to Units 1/2/6's own
+experience: wiring a brand-new HTTP endpoint plus its DI infrastructure (router + 2 containers +
+health module + main.py changes) from a zero-endpoint starting point is inherently far heavier than
+a single-file estimate suggests, and this unit additionally needed a from-scratch contract test suite
+(no prior HTTP test for a business endpoint existed to extend).
+
+Applied a genuine, multi-round trim, re-measuring after each round:
+1. Shortened every module/class/function docstring across all 5 production files and the test
+   file's header to the density of Units 1/2/6's own REFACTOR passes (same discipline, not a new
+   technique) -> **511 insertions**.
+2. Consolidated test pairs that tested closely-related outcomes of the same request shape into one
+   parametrized function each (`limit` accept+reject into one 4-case table; the two `/health`
+   not-ready scenarios into one 2-case table) and removed 2 tests whose scenario was a strict subset
+   of an existing test's own setup (`test_default_limit_is_matches_page_size` was byte-for-byte the
+   same request shape as `test_page_1_carries_the_verdict...`; `test_health_issues_zero_embedding_calls`
+   became a one-line addition to `test_health_ready_...`) -> **491 insertions**.
+3. Merged `_MostSimilarOut`/`_MatchOut` (two response models with byte-identical fields:
+   `id, text, score`) into one shared `_ScoredPhrase` -> **485 insertions**.
+4. Folded `test_success_envelope_wraps_the_payload_in_data` and
+   `test_cursor_key_is_silently_ignored_not_rejected` into `test_duplicate_found_...`'s own request
+   (one extra header key + one extra assertion, both free riders on an existing request/response
+   already being built), and `test_nothing_is_persisted_by_validate` into the same test as a trailing
+   store-state check -> **481 insertions** (measured at this step; the two changes landed together
+   with step 5 below in the actual working session, so this number is reconstructed, not a separate
+   git snapshot).
+5. **Removed the speculative Unit-8 production-wiring path entirely** (the `main.py` lifespan hook,
+   `similarity/container.py`'s `build_embedding_provider`, and their imports) once it became clear
+   none of this unit's own tests exercise it and the task's own wording places real provider wiring
+   out of this unit's scope -- replaced with a static "not ready" `HealthState` and an intentionally
+   unset `app.state.phrases` in production, which is both simpler AND more honest about what Unit 6b
+   actually delivers -> **466 insertions / 2 deletions**, the number shipped.
+
+**466/2 (468 total) is still ~68 lines (~17%) over the 400-line hard cap.** Every remaining line is
+either: (a) genuinely load-bearing production code (two new endpoints, their DI wiring, and the
+non-obvious `from __future__ import annotations` deviation this file needs, documented once because
+omitting the comment would reintroduce a bug Unit 6's own fix-pass already had to diagnose once);
+or (b) a contract test exercising a distinct scenario from the Covers line, already consolidated
+wherever two scenarios shared one request/response without diluting either assertion. Cutting further
+would mean shipping either untested production code (a strict-TDD violation) or narrower scope than
+6b.1/6b.2's literal requirements. tasks.md's own Unit 6b entry names no split seam (unlike e.g. Unit
+2's "split `find_matches` out" or Unit 4's typmod-reader deferral), so inventing one here would not
+match this unit's own review-budget forecast. **At this point the apply agent stopped and reported
+back, per the explicit instruction for that batch** ("try a real trim pass first, and STOP + report
+back... if still over 400 after that") -- not self-authorizing a `size:exception`, not committing,
+not opening a PR. **The user then explicitly accepted the overrun as `size:exception`** (see
+"Resolution" at the top of this section); the unit is committed and shipping exactly as measured
+here -- no further code changes were made after this report.
+
+**Verify (all confirmed after commit, on `feat/pv-06b-validate-health`)**:
+- `cd services/api && .venv/Scripts/python.exe -m pytest tests/contract/test_validate_health.py -q`
+  -> `17 passed`.
+- `cd services/api && .venv/Scripts/python.exe -m pytest -m "not integration and not slow" -q` ->
+  `212 passed, 16 deselected` (was 195, +17 -- zero regressions).
+- `cd services/api && .venv/Scripts/python.exe -m ruff check src tests` -> `All checks passed!`
+- `cd services/api && .venv/Scripts/python.exe -m mypy src` -> `Success: no issues found in 37
+  source files`.
+- `cd services/api && .venv/Scripts/lint-imports.exe` -> `Contracts: 5 kept, 0 broken.`
+- Genuine RED confirmed by execution before any implementation existed: with the 4 new production
+  files temporarily removed and `main.py`'s changes stashed, `pytest
+  tests/contract/test_validate_health.py -q` failed collection with
+  `ModuleNotFoundError: No module named 'app.modules.phrases.container'` (the first import in the
+  test file's dependency chain); files and stash were restored immediately after confirming this,
+  before any GREEN work continued.
+
+### TDD Cycle Evidence (Unit 6b)
+
+| Task | Test File | Layer | Safety Net | RED | GREEN | TRIANGULATE | REFACTOR |
+|------|-----------|-------|------------|-----|-------|-------------|----------|
+| 6b.1 (router + containers + health) | `tests/contract/test_validate_health.py` | Contract | N/A (new) | ✅ Confirmed by execution -- all 4 new production files moved aside, `main.py` changes stashed, re-run failed collection with `ModuleNotFoundError: app.modules.phrases.container`, then restored | ✅ 17 passed (24 cases incl. parametrization) after restore | ✅ Every named Covers-line scenario has a distinct assertion or parametrized case (see the 6b.2 breakdown above); the fix-pass end-to-end check added 3 more manually-executed, non-parametrized confirmations | ✅ Multi-round trim (580 -> 466/2 insertions/deletions) across 5 files, re-running the full suite + mypy + ruff + lint-imports after each round; zero scenario coverage lost, only documentation density and structural duplication (two identical response models, two near-duplicate tests) removed |
+| 6b.2 (contract tests) | (same file) | Contract | 195 pre-existing tests across the backend, re-run green before and after every trim round | (see above) | (see above) | (see above) | (see above) |
+
+### Test Summary (Unit 6b)
+- **Total tests written and passing**: 17 functions / 24 cases (with parametrization), all new.
+- **Layers used**: Contract (17/24), Unit (0 new -- reuses Unit 6's `page_limit`/`raw_phrase_text`
+  strictness tests and Unit 1-3's domain/use-case tests unmodified), Integration (0).
+- **Approval tests** (refactoring): None -- `main.py`'s pre-existing framework-error/CORS behavior
+  (Unit 6) is unchanged; all 10 of `test_framework_errors.py`'s tests re-run green, unmodified.
+- **Pure functions created**: `build_health_payload` (fully pure given a `HealthState`),
+  `wrap_with_cache` (pure given its inputs); `build_phrases_container`/`build_validate_router` are
+  factory functions, not pure, but side-effect-free beyond constructing objects.
+- **Genuine finding during this batch, not a contrived example**: the original draft's `main.py`
+  lifespan hook (eagerly raising `NotImplementedError` for the real embedding provider at ASGI
+  startup, never at import time) was CORRECT and fully tested-around, but was cut anyway during the
+  budget trim once it became clear it added real complexity (a new `asynccontextmanager`, a new
+  import, a docstring explaining WHY no test reaches it) to serve a code path this unit's own scope
+  does not need yet -- see step 5 of the trim log above. This is a case where "make it pass the
+  quality gates" and "keep the diff minimal" pointed in different directions, and the latter won once
+  it was clear the former's extra code had zero test coverage benefit for THIS unit.
+
+## Deviations from design.md / tasks.md (Unit 6b)
+
+1. **Production `main.py` does not wire a working embedding provider or `PhrasesContainer` at all.**
+   `app.state.health` is a static "not ready" placeholder; `app.state.phrases` is unset, so
+   `POST /phrases/validate` against the real production app 500s until Unit 8 lands a real
+   container. This is narrower than a literal reading of "adds the first business endpoint" might
+   suggest (the endpoint exists and is mounted, but is not yet FUNCTIONAL against real settings) --
+   a deliberate, documented scope decision given "real provider wiring is Unit 8's job" is the task's
+   own wording, not an oversight. Flagging explicitly for `sdd-verify` and for whoever picks up
+   Unit 8.
+2. **`_MostSimilarOut`/`_MatchOut` collapsed into one shared `_ScoredPhrase` response model** --
+   both had byte-identical fields (`id, text, score`); no behavior change, pure deduplication found
+   during the budget trim.
+3. **Three named-scenario tests folded into existing tests' own requests/assertions** instead of
+   standalone functions (`Success envelope`, `Cursor not accepted`, and `Nothing persisted` all ride
+   on `test_duplicate_found_...`'s single request/response; `Default limit` shares
+   `test_page_1_carries_the_verdict...`'s setup; the `/health` zero-embeddings requirement is a
+   one-line addition to the `Ready` test) -- every scenario is still asserted, just not each in its
+   own function; see the 6b.2 breakdown above for the exact mapping.
+4. **`size:exception` accepted for the whole unit** (466 insertions / 2 deletions, 6 files, ~17%
+   over the 400-line hard cap, no split seam named in tasks.md) -- see "Review-budget trim" above
+   and the "Resolution" note at the top of this section. The apply agent stopped and reported back
+   before committing, per instruction; the user then explicitly accepted the overrun rather than
+   requesting a chained/stacked split.
+
+## Status (Unit 6b)
+
+All code for 6b.1-6b.2 is written, RED->GREEN confirmed per task (see evidence above), and green
+against every quality gate: exact Unit 6b Verify command
+(`pytest tests/contract/test_validate_health.py -q`) -> 17 passed; full regression
+(`pytest -m "not integration and not slow" -q`) -> 212 passed, 0 regressions (was 195, +17);
+`ruff check src tests` -> clean; `mypy src` -> `Success: no issues found in 37 source files`;
+`lint-imports` -> `Contracts: 5 kept, 0 broken.` 466 insertions / 2 deletions, 6 files -- a
+documented `size:exception`, user-approved after the mandatory stop-and-report step (see
+"Resolution" above). Commit SHA and PR number recorded below once made.

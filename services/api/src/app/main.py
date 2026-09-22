@@ -1,5 +1,11 @@
-"""Composition root (Unit 6): app factory, middleware ordering, framework
-and domain error handlers. No business router yet -- Unit 6b adds the first.
+"""Composition root (Unit 6 + 6b): app factory, middleware ordering,
+framework/domain error handlers, and (6b) the first business router plus
+`/health`.
+
+Real embedding-provider wiring is Unit 8's job, so the production app
+mounts `/health` pre-set to "not ready" and never sets `app.state.phrases`
+at all -- `/phrases/validate` 500s until Unit 8 wires a real container.
+Every test builds its OWN app and sets both directly, bypassing this.
 """
 
 from __future__ import annotations
@@ -14,7 +20,10 @@ from starlette.requests import Request
 from starlette.responses import JSONResponse
 from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
+from app.modules.phrases.api.router import build_validate_router
 from app.platform.errors import ERROR_REGISTRY, build_error_response, error_envelope
+from app.platform.health import HealthState
+from app.platform.health import router as health_router
 from app.platform.settings import Settings
 
 _FRAMEWORK_CODES = {404: "NOT_FOUND", 405: "METHOD_NOT_ALLOWED"}
@@ -178,6 +187,23 @@ def create_app(settings: Settings) -> FastAPI:
     for exc_type in ERROR_REGISTRY:
         handler: Callable[[Request, Exception], Awaitable[JSONResponse]] = _domain_error_handler
         app.add_exception_handler(exc_type, handler)  # type: ignore[arg-type]
+
+    app.include_router(
+        build_validate_router(
+            phrase_max_length=settings.phrase_max_length,
+            matches_page_size=settings.matches_page_size,
+        )
+    )
+    app.include_router(health_router)
+    # Not ready until Unit 8 wires the real provider; `app.state.phrases`
+    # is deliberately left unset (a hit on `/phrases/validate` 500s).
+    app.state.health = HealthState(
+        check_database=lambda: False,
+        model_ready=False,
+        dimensions=settings.embedding_dimensions,
+        embedding_model=settings.embedding_model,
+        embedding_cache=lambda: None,
+    )
 
     # `add_middleware` PREPENDS, so the LAST call ends up OUTERMOST (see
     # CatchAllMiddleware's docstring) -- CORS MUST be added last.
