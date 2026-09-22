@@ -337,7 +337,7 @@ disables it entirely and every test must still pass (that is the kill switch).
 | Value | the exact `Vector` object the inner provider returned — stored as-is, never re-serialized |
 | Failures | **never cached.** `EmbeddingUnavailable` / `EmbeddingTimeout` propagate and nothing is inserted — no negative caching, so a provider that fails once and recovers succeeds on the very next call |
 | Concurrency | `threading.Lock` around dict mutation only; the inner `embed()` runs **outside** the lock |
-| Footprint | 384 × float32 = **1 536 B** + key/obj overhead ≈ **2 KB/entry** (**estimate, unmeasured**) → default ≈ **1 MB** |
+| Footprint | Design estimate: 384 × float32 = 1 536 B + key/obj overhead ≈ 2 KB/entry → default ≈ 1 MB. **Measured (Unit 2b, `tracemalloc` over a 512-entry fill): ≈ 12.7 KB/entry ≈ 6.5 MB at the default 512-entry bound — ~6.2× the estimate.** Root cause: `Vector = Sequence[float]` is satisfied today by a boxed-float `list[float]` (≈32 B/element with Python object overhead), not a packed `float32` buffer as the estimate assumed. Unit 8's `sentence_transformers` adapter decides which number is realistic in production — if it returns a packed/numpy representation before the cache sees it, the original ≈2 KB estimate holds; if it returns a plain list, budget for ≈13 KB/entry. Record the resolution in ADR-011. |
 
 **Consistency with the spec (item 9).** semantic-validation requires only that the cache be
 **bounded with eviction**, that the key include the model identifier, that responses be identical
