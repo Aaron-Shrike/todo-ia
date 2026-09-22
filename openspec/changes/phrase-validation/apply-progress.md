@@ -359,20 +359,326 @@ concrete reason (it did not).
 5. **Diff trimmed for the review budget** (documentation/comments only, no coverage lost) — see
    "Review-budget trim" above.
 
-## Remaining Tasks (next batch)
+## Remaining Tasks (as of the end of batch 2)
 
 - [ ] Close the `.env.example` gap (human action or a session with `.env*` write permission) —
   still open from batch 1.
-- [ ] Review and merge PR #3 (`feat/pv-01-domain-policy` -> `main`).
-- [ ] Unit 2: Ports, unit of work, fake embedder, in-memory repository (tasks 2.1–2.3) — NOT
-  started, per the orchestrator's explicit instruction to stop after Unit 1.
+- [ ] Review and merge PR #3 (`feat/pv-01-domain-policy` -> `main`); once merged, rebase and
+  retarget `feat/pv-02-ports-inmemory` onto `main` (see "Authoring-ahead base" note in the Unit 2
+  section below).
+- [x] Unit 2: Ports, unit of work, fake embedder, in-memory repository (tasks 2.1–2.3) — done this
+  batch, **with `find_matches` and its keyset scenarios deferred to a new Unit 2d** — see below.
+- [ ] Unit 2d (new, not in the original tasks.md units list): restore `find_matches`/`Match`/
+  `Page`/`MatchCursor` and the deferred contract-suite keyset scenarios. Needed before Unit 3
+  (`ValidatePhrase`/`ListMatches`/`SavePhrase` all call `find_matches`). See tasks.md's new
+  "Unit 2d" section and the "Review-budget split" note below.
 - [ ] Unit 6 (or earlier, if convenient): resolve the shared `DomainError` base class question noted
   above before `platform/errors.py` is written.
 
+---
+
+## Unit 2: Ports, unit of work, fake embedder, in-memory repository
+
+Branch `feat/pv-02-ports-inmemory`. **Authoring-ahead base**: PR #3 (Unit 1,
+`feat/pv-01-domain-policy`) is NOT merged to `main` yet. Per tasks.md's stacked-to-main rule
+("branch N is cut from main after PR N-1 has merged, OR from branch N-1 when authoring ahead, then
+rebased onto main and retargeted the moment N-1 merges"), this branch was cut from
+`feat/pv-01-domain-policy` (the branch checked out at the start of this session), not from `main` —
+this is authoring-ahead, expected and pre-approved by the orchestrator's instructions for this
+batch. **It MUST be rebased onto `main` and its PR retargeted from `main`-via-`feat/pv-01-domain-policy`
+to `main` directly the moment PR #3 merges** (GitHub will show it as stacked on PR #3 in the
+meantime — this is expected, not a mistake).
+
+- [~] 2.1 GREEN `modules/similarity/contracts.py` (`EmbeddingProvider` Protocol; re-exports
+  `Vector`, `SimilarityPolicy`, `ROUNDING_DECIMALS`, `ROUNDING_UNIT`, `EmbeddingTimeout`,
+  `EmbeddingUnavailable`, `cosine_distance` from Unit 1's `domain/`; publishes `KEY_EPSILON`) and
+  `modules/phrases/contracts.py` (`ValidationStatus`, `Isolation` enums; `NewPhrase`, `Phrase`,
+  `Neighbor` dataclasses; `DuplicateTextConflict`; `UnitOfWork`, `UnitOfWorkFactory`,
+  `PhraseRepository` Protocols with `add`, `list_recent`, `find_nearest`, `find_nearest_exact`,
+  `lock_for_write`). **`Match`, `Page`, `MatchCursor` and the `find_matches` method are NOT in this
+  PR** — see "Review-budget split" below. Purely structural (Protocols + frozen dataclasses, no
+  branching), so per strict-tdd.md's skip rule this is GREEN-only, same precedent as Unit 1's 1.3;
+  correctness of the enum string VALUES (which must match the DB `CHECK` constraint / SQL isolation
+  keywords exactly) is nonetheless locked by a real assertion in
+  `tests/unit/phrases/test_in_memory_repository.py`'s first test, not skipped.
+  - **Naming deviation from tasks.md's literal shorthand** (same precedent as Unit 1's
+    `EmptyPhraseText`/`PhraseTooLong`): methods are `add`/`list_recent` (design.md's own
+    `PhraseRepository` Protocol code sample), not tasks.md's shorthand `insert`/`list`. `Neighbor` is
+    added even though tasks.md's file list omits it — it is `find_nearest`'s return type in design.md's
+    own contract and cannot be typed without it.
+  - **Import-linter discovery**: `forbidden` contracts check the FULL transitive import graph
+    (`grimp`), not just direct imports. `similarity/contracts.py` re-exporting `similarity/domain/*`
+    symbols (exactly what design.md's own "PUBLISHED" comment describes) therefore tripped the
+    `phrases-only-similarity-contracts` contract as soon as `phrases/contracts.py` imported
+    `similarity.contracts` — even though nothing in `phrases` ever references `similarity.domain`
+    directly. Fixed by adding four `ignore_imports` entries (one per re-exported domain module:
+    `cosine`, `errors`, `policy`, `vector`) to that specific contract in `.importlinter`, each
+    documented inline as the deliberate facade edge this contract exists to require. Verified:
+    `lint-imports` now reports `5 kept, 0 broken` with `(4 ignored imports)` noted on that contract.
+    This is a **new, load-bearing discovery for every future unit** that adds symbols to either
+    `contracts.py` file — flagging it here for Unit 2b/2c/5a/5b, which will hit the same shape if
+    they re-export anything.
+- [x] 2.2 RED then GREEN `similarity/adapters/fake.py` (`FakeEmbedder`: `{text: vector}` lookup
+  table, `call_count`, tied texts configured with the literal same vector object) and `failing.py`
+  (`FailingEmbedder`: wraps an inner provider, `fail_times=1` for one-shot, `fail_times=None` for
+  permanent, custom `error=` override, delegates to `inner` once exhausted).
+  `tests/unit/similarity/{test_fake,test_failing}.py` cover: configured-vector return + call
+  counting, object-identity tie, `KeyError` on an unconfigured text, `check_ready` no-op/delegation,
+  `model_id`/`dimensions` passthrough, permanent-mode zero inner calls, one-shot-then-delegates,
+  custom `EmbeddingTimeout` error.
+- [~] 2.3 RED then GREEN `phrases/adapters/in_memory_repository.py`
+  (`_InMemoryStore` + `InMemoryPhraseRepository` + `InMemoryUnitOfWork` +
+  `InMemoryUnitOfWorkFactory`) and the shared suite `tests/contract_suite/repository_contract.py`
+  (only in-memory registered; pgvector registers in 5a/5b). **Done**: `add` (raises
+  `DuplicateTextConflict` for a repeated `normalized_text` among `unique` rows only, per ADR-006's
+  partial-index semantics — a `duplicate_confirmed` insert with the same text is allowed),
+  `list_recent` (newest-first, `(created_at, id)` sort), `find_nearest`/`find_nearest_exact` (same
+  exact computation in-memory, per design.md), `lock_for_write` (no-op), and a full
+  `InMemoryUnitOfWork` (`REPEATABLE_READ` freezes a snapshot at `__enter__`, `READ_COMMITTED`
+  re-reads live; writes buffered in `_pending` and applied to the shared store only on `commit()`;
+  `rollback()` or exiting the context manager without a commit discards them). Contract-suite
+  scenarios shipped: empty store -> `None` (both `find_nearest`/`find_nearest_exact`),
+  below-threshold neighbour still returned, distance tie -> lowest id. In-memory-specific unit tests
+  (`tests/unit/phrases/test_in_memory_repository.py`) additionally cover: enum string values,
+  `list_recent` limit/ordering, duplicate-conflict-unless-confirmed, write buffering
+  (rollback + un-committed context-exit), `REPEATABLE_READ` snapshot isolation (a write committed by
+  a second, concurrently-open `UnitOfWork` is invisible to an already-open snapshot read, visible to
+  a fresh one), `lock_for_write` no-op.
+  - **`find_matches` (the `(bucket, id)` keyset scan) was implemented, tested green, then
+    DELETED** — see "Review-budget split" below. The working implementation (bucket = `floor(distance
+    / KEY_EPSILON)`, `max_distance` filter, sort by `(bucket, id)`, cursor `> (cursor_bucket,
+    cursor.id)` continuation, `limit + 1` has-more probe) and its contract-suite test (spec's "Tie
+    scores across a page boundary": 5 bit-identical-distance matches ids 1..5, `limit=2` ->
+    `[1,2],[3,4],[5]`) both ran green before removal; both are reproducible near-verbatim for Unit 2d
+    from this note plus the design.md SQL comment they mirror.
+
+### Review-budget split (Unit 2 exceeded budget even after applying its own escape hatch)
+
+tasks.md's Unit 2 Notes line says: *"If over 400, split the `find_matches` keyset out of the
+contract suite."* The first complete draft (all 8 named contract-suite scenarios, full
+`find_matches`, full `Match`/`Page`/`MatchCursor`) diffed at **1,159 insertions** across 14 files —
+far above the ~340 estimate and the 400-line budget, because Unit 2 (unlike Unit 1's three pure
+files) introduces two full Protocol/contracts modules, two adapter files, a stateful in-memory
+repository + `UnitOfWork`, and a genuinely new test layer (the shared contract suite) — all as brand
+new files with zero prior content to amend.
+
+Applied the named escape hatch progressively, re-measuring after each cut:
+1. Deferred 3 of the 4 `find_matches`-scenario contract-suite tests (displayed-tie, 500-match
+   paging, perturbed-vector paging), keeping the bit-identical/keyset one -> **825 lines**.
+2. Trimmed every docstring/comment across all 14 files to the density of Unit 1's REFACTOR pass,
+   deleted two purely-structural `test_contracts.py` files (folding their two genuinely load-bearing
+   assertions — the `ValidationStatus`/`Isolation` string values — into
+   `test_in_memory_repository.py`'s first test) -> **732 lines**.
+3. Went beyond the literal "test fixtures" wording and deferred `find_matches` itself (production
+   code, `Match`/`Page`/`MatchCursor` types, and its remaining test) to a new Unit 2d, since step 1+2
+   alone could not reach budget -> still **732 lines** (this is the number actually shipped).
+
+**732 lines is still ~330 over the 400 budget.** I did not cut further because everything remaining
+is: (a) explicitly required by tasks 2.1/2.2/2.3's literal scope (`find_nearest`, `find_nearest_exact`,
+`add`, `list_recent`, `lock_for_write`, the full `UnitOfWork`, both embedder doubles), and (b) already
+at the point where every remaining test exercises a distinct method or code path with zero
+redundancy left to consolidate — cutting further would mean shipping either untested production code
+(a strict-TDD violation) or an incomplete port narrower than tasks.md's own 2.1 requirement. This is
+a **transparent, documented budget exception**, not a silent overage: full before/after numbers are
+above, the cut boundary (`find_matches` + its keyset) is the exact seam tasks.md's own Notes line
+names, and the deferred work is fully specified as the new Unit 2d in tasks.md, sized ~150-200 lines
+(small enough to land comfortably under budget on its own). Flagging this explicitly for review
+rather than proceeding silently, per the orchestrator's instruction.
+
+**Verify (confirmed on `feat/pv-02-ports-inmemory`)**:
+- `cd services/api && .venv/bin/python -m pytest tests/unit tests/contract_suite -q` ->
+  `44 passed` (28 from Unit 1 unchanged + 16 new: 3 contract-suite + 13 unit across
+  `test_fake.py`/`test_failing.py`/`test_in_memory_repository.py`).
+- `cd services/api && .venv/bin/lint-imports` -> `Contracts: 5 kept, 0 broken.` (`phrases MAY import
+  only similarity.contracts...` shows `(4 ignored imports)` — see the import-linter discovery note
+  above).
+- `cd services/api && .venv/bin/ruff check src tests` -> `All checks passed!`
+- `cd services/api && .venv/bin/mypy src` -> `Success: no issues found in 22 source files`
+
+**Commit**: `feat(domain): ports, unit of work, fake embedder and in-memory repository`
+**SHA**: `e7a8135aaf78a928fefb5e1975c97277b4866007` — **superseded**: rebuilt via `git reset --soft`
+to fold the "Unit 2 fix pass" section below into this commit (not a separate fixup commit), per
+instruction. New SHA: `0a39077e904ad50f6aab8f529cb796a862f11e0a`. The description below (lines
+changed, verify output) is the ORIGINAL pre-fix-pass state; see "Unit 2 fix pass" for what changed
+and its own verification output.
+**Branch**: `feat/pv-02-ports-inmemory`
+**Base**: `feat/pv-01-domain-policy` (authoring-ahead; retarget to `main` once PR #3 merges — see note
+at the top of this section)
+**Lines changed**: 732 insertions / 0 deletions, 12 files in `services/api` (931 insertions / 12
+deletions including the `openspec/` doc updates in the same commit) — **over the 400-line budget;
+see "Review-budget split" above for the full justification and mitigation already applied.**
+
+## PR status (Unit 2)
+
+**Opened.** `gh auth status` confirmed an active session; pushed the branch and opened the PR myself,
+per the orchestrator's explicit instruction.
+
+- `git push -u origin feat/pv-02-ports-inmemory` → pushed cleanly (first attempt hit a transient
+  network failure connecting to github.com; retried once, succeeded).
+- `gh pr create --repo Aaron-Shrike/todo-ia --base feat/pv-01-domain-policy --head
+  feat/pv-02-ports-inmemory ...` → **PR #4**, <https://github.com/Aaron-Shrike/todo-ia/pull/4>.
+  Confirmed via `gh pr view 4 --json baseRefName,headRefName`: `baseRefName:
+  "feat/pv-01-domain-policy"`, `headRefName: "feat/pv-02-ports-inmemory"` — correctly stacked on
+  PR #3, NOT targeting `main` directly (expected per the authoring-ahead note above; retarget to
+  `main` once PR #3 merges).
+- PR body follows PR #2/#3's established convention (dependency-diagram code block, Start/End/Prior
+  dependencies/Follow-ups/Out of scope, naming/architecture notes, Verification, Test Plan) plus a
+  prominent "⚠️ Stacked on an unmerged PR" section and a full "⚠️ Review budget: 732 changed lines"
+  section reproducing the before/after numbers from "Review-budget split" above, so a reviewer sees
+  both callouts before scrolling to the diff.
+
+### TDD Cycle Evidence (Unit 2)
+
+| Task | Test File | Layer | Safety Net | RED | GREEN | TRIANGULATE | REFACTOR |
+|------|-----------|-------|------------|-----|-------|-------------|----------|
+| 2.1 | N/A (structural; see `test_in_memory_repository.py`'s first test for the one load-bearing assertion) | Unit | N/A (new) | N/A — purely structural (Protocols + frozen dataclasses, no branching); triangulation/RED skipped per strict-tdd.md's explicit skip rule, same precedent as Unit 1's 1.3 | ✅ Imports/instantiates cleanly, exercised transitively by 2.2/2.3's tests | Triangulation skipped: purely structural, ONE possible output per field | ➖ None needed |
+| 2.2 (fake) | `tests/unit/similarity/test_fake.py` | Unit | N/A (new) | ✅ Written — `ModuleNotFoundError: app.modules.similarity.adapters.fake` | ✅ Passed | ✅ 4 cases (configured vector + counting, object-identity tie, KeyError on unconfigured text, check_ready/metadata) | ➖ None needed — already minimal |
+| 2.2 (failing) | `tests/unit/similarity/test_failing.py` | Unit | N/A (new) | ✅ Written — `ModuleNotFoundError: app.modules.similarity.adapters.failing` | ✅ Passed | ✅ 3 cases (permanent mode, one-shot mode, custom error + check_ready delegation) | ➖ None needed |
+| 2.3 (contract suite) | `tests/contract_suite/repository_contract.py` + `test_in_memory_repository.py` | Unit (marked `contract`) | N/A (new) | ✅ Written — `ModuleNotFoundError: app.modules.phrases.adapters.in_memory_repository` | ✅ Passed, all 3 scenarios first try | Triangulation is the suite itself: 3 distinct scenarios (empty, below-threshold, tie) each exercising both `find_nearest`/`find_nearest_exact` | ➖ None needed |
+| 2.3 (in-memory unit) | `tests/unit/phrases/test_in_memory_repository.py` | Unit | N/A (new) | ✅ Written — same `ModuleNotFoundError` as above | ✅ Passed, all 6 tests first try | ✅ 6 distinct scenarios (enum values, list_recent, duplicate-conflict-unless-confirmed, rollback/uncommitted-exit, repeatable-read isolation, lock_for_write) | ✅ Extracted `has_pending_writes`/`drain_pending` accessors on `InMemoryPhraseRepository` so `InMemoryUnitOfWork` no longer reaches into a sibling's private `_pending` list; re-ran full suite green after |
+
+### Test Summary (Unit 2)
+- **Total tests written and passing at final commit**: 16 new (44 total with Unit 1's 28 unchanged)
+- **Layers used**: Unit (13), Unit marked `contract` (3), Integration (0), E2E (0)
+- **Approval tests** (refactoring): None — no pre-existing behaviour to preserve
+- **Pure functions / value objects created**: `FakeEmbedder`, `FailingEmbedder` (both pure w.r.t.
+  their configured table/inner), `NewPhrase`/`Phrase`/`Neighbor` (frozen dataclasses); the
+  `InMemoryPhraseRepository`/`InMemoryUnitOfWork` pair is intentionally stateful (it models a
+  transaction) but every method is a small, single-purpose unit
+
+## Deviations from design.md / tasks.md (Unit 2)
+
+1. **`find_matches`, `Match`, `Page`, `MatchCursor` deferred to a new Unit 2d** — see "Review-budget
+   split" above. This is the largest deviation this batch: tasks 2.1 and 2.3 are only partially
+   complete (marked `[~]` in tasks.md), and Unit 3 (which needs `find_matches`) cannot start until
+   Unit 2d lands.
+2. **Method naming**: `add`/`list_recent` (design.md) instead of tasks.md's literal `insert`/`list`
+   shorthand — same precedent as Unit 1.
+3. **Import-linter's transitive-chain checking required a new `.importlinter` `ignore_imports`
+   exception** for `similarity.contracts`'s own re-export of `similarity.domain.*` — see the
+   discovery note under 2.1 above. This is a change to a file not explicitly owned by any single unit
+   in tasks.md's dependency notes (only `openspec/config.yaml` is called out as Unit-0-only); Unit 2
+   is the first unit to actually populate `contracts.py` with re-exports, so it is the natural owner
+   of this fix.
+4. **`created_at` is independent of `validated_at`** in the in-memory adapter (`datetime.now(UTC)` at
+   `add()` time), matching the DB schema's `created_at TIMESTAMPTZ NOT NULL DEFAULT now()` more
+   faithfully than reusing the caller-supplied `validated_at`.
+5. **`add()` assigns an id only after the duplicate-conflict check passes** (not unconditionally like
+   Postgres's `GENERATED ALWAYS AS IDENTITY`, which burns a sequence value even on a failed insert).
+   Simplification with no observable effect on any current or planned test (nothing depends on
+   gap-free ids across a conflict).
+
 ## Status
 
-3/3 assigned units across both batches substantially complete: B.0 (no-op, already satisfied), Unit
-0 (7/7 sub-tasks, one file blocked by tooling not missing work, merged via PR #2), Unit 1 (3/3
-sub-tasks fully done, 28/28 tests green, all lint/type/import checks green, diff exactly at the
-400-line budget, pushed and opened as PR #3). Ready for review before Unit 2 is launched. Branch
-`feat/pv-01-domain-policy` is on `origin`, commits `631fe86` (feat) and `abfe52d` (docs).
+4/4 units substantially complete across all batches so far, with one explicit, documented partial:
+B.0 (no-op, already satisfied), Unit 0 (7/7 sub-tasks, merged via PR #2), Unit 1 (3/3 sub-tasks,
+merged pending PR #3 review), Unit 2 (2.2 fully done; 2.1/2.3 done EXCEPT `find_matches` and its
+keyset, deferred to the new Unit 2d per a documented, over-budget review-budget split — see above).
+44/44 tests green, all lint/type/import checks green. **Not** within the 400-line budget (732
+lines) — flagged prominently above and in the PR body for review, per the orchestrator's explicit
+"do not silently exceed budget" instruction. Branch `feat/pv-02-ports-inmemory` is authored on top
+of the NOT-YET-MERGED `feat/pv-01-domain-policy` (authoring-ahead, pre-approved) and needs rebase +
+retarget onto `main` once PR #3 merges.
+
+## Unit 2 fix pass (4-lens review: risk + resilience + readability + reliability)
+
+A follow-up apply batch on PR #4 fixed 10 confirmed findings from an adversarial 4-lens review of
+Unit 2's shipped scope (`find_nearest`/`find_nearest_exact`, ports, fakes, contract suite — NOT
+`find_matches`, which stays deferred to Unit 2d, and NOT anything in Unit 3+). Strict TDD followed
+throughout: every new assertion was confirmed RED (by temporarily reverting the production fix via
+`git stash` and re-running the new tests — 5 genuine failures observed) before being confirmed GREEN
+against the real fix. Folded into this commit (not a separate fixup commit) per instruction.
+
+1. **`read_only` UnitOfWork guard now fails fast at `add()`**, not only at `commit()` with pending
+   writes. `InMemoryPhraseRepository.add()` raises `RuntimeError` immediately when its owning
+   `UnitOfWork` is `read_only=True`, matching a real Postgres `READ ONLY` transaction (reject at the
+   statement). `InMemoryUnitOfWork.commit()` keeps its old check too, now as pure defense-in-depth
+   (unreachable in the normal path). New **contract-suite** test
+   (`tests/contract_suite/repository_contract.py::test_add_inside_a_read_only_unit_of_work_raises_immediately`)
+   so every future adapter (pgvector in 5a/5b) is held to the same contract.
+2. **`add()` now enforces migration 0001's paired-metadata CHECK invariants** in the domain, before
+   any write: `phrases_metadata_paired` (`similarity_score`/`most_similar_phrase_id` null together or
+   not at all) and `phrases_confirmed_has_neighbor` (`duplicate_confirmed` always carries both). New
+   `PhraseMetadataInvariantViolation(ValueError)` in `phrases/domain/errors.py`. Three new unit tests
+   in `tests/unit/phrases/test_in_memory_repository.py` (unpaired score, confirmed-without-neighbor,
+   valid below-threshold pair). Fallout: the pre-existing
+   `test_add_raises_duplicate_conflict_unless_confirmed` built a `duplicate_confirmed` fixture with no
+   neighbor — genuinely invalid data the guard now (correctly) rejects — so its `_phrase()` helper
+   gained optional `similarity_score`/`most_similar_phrase_id` params and that one test case now
+   passes a valid pair.
+3. **Added the converse `READ_COMMITTED` isolation test**:
+   `test_read_committed_sees_a_write_committed_after_it_opened` in
+   `tests/unit/phrases/test_in_memory_repository.py`, proving a live `read_view` (the
+   `self._store.snapshot` method reference) sees a write committed by another transaction after it
+   opened — the mirror of the existing `REPEATABLE_READ` negative case. No production change; this
+   closes a coverage gap on already-correct behaviour (confirmed still green before this batch's other
+   fixes were applied).
+4. **`FailingEmbedder.check_ready()` now reflects the double's own configured failure mode** instead of
+   unconditionally delegating to `inner`. It re-evaluates the same one-shot/permanent state `embed()`
+   would hit on its *next* call (`self.call_count + 1`, so `embed()`'s own counting is untouched) and
+   raises the configured error while "down". Two new tests
+   (`test_check_ready_reflects_permanent_failure_mode`,
+   `test_check_ready_reflects_one_shot_failure_window_then_recovers`) replace the old
+   `test_custom_error_and_check_ready_delegate`'s no-op assertion (split into
+   `test_custom_error_delegates_on_embed` for the unrelated custom-error-on-embed case).
+5. **Added inline one-line glosses** next to `(D10)`, `(D16)`, `ADR-002`, `ADR-006`, `migration 0001`
+   and `phrases_metadata_paired` in `similarity/contracts.py` and `phrases/contracts.py` so the
+   published contracts are self-explanatory without design.md open. The references themselves are
+   unchanged (traceability preserved).
+6. **Consolidated the triplicated "review-budget split" process note** to ONE place:
+   `phrases/contracts.py`'s module docstring (now explicitly marked as the single source of truth).
+   `in_memory_repository.py` (module docstring + the trailing inline comment on
+   `InMemoryPhraseRepository`) and `tests/contract_suite/repository_contract.py`'s module docstring
+   now each carry a one-line pointer back to it instead of repeating the paragraph.
+7. **Replaced the `# noqa: E731` lambda** in `InMemoryUnitOfWork.__enter__` with a one-line local
+   `def read_view() -> list[Phrase]: return snapshot` — identical behaviour, no suppression needed.
+8. **`has_pending_writes`/`drain_pending` renamed to `_has_pending_writes`/`_drain_pending`** on
+   `InMemoryPhraseRepository` (leading underscore: owning-`UnitOfWork`-only, never part of the public
+   `PhraseRepository` contract). The sole caller, `InMemoryUnitOfWork.commit`/`.rollback`, updated;
+   confirmed via `rg` that nothing else referenced the old public names.
+9. **Removed `KEY_EPSILON` from `similarity/contracts.py`'s `__all__`** (its only consumer is the
+   deferred `find_matches`, Unit 2d) while keeping the constant defined with its explanatory comment,
+   per the module's own re-add-when-wired note.
+10. **Added the `fail_times=0` boundary test** in `tests/unit/similarity/test_failing.py`
+    (`test_fail_times_zero_never_fails_and_delegates_immediately`): per the module's own docstring
+    ("raises for the first `fail_times` calls"), `0` means zero calls raise — immediate, permanent
+    delegation to `inner` from the very first call, distinct from `fail_times=None` (always fails) and
+    `fail_times=1` (fails once then delegates). Also verified `check_ready()` agrees (never "down").
+
+**Verification (all re-confirmed after the fix pass, on `feat/pv-02-ports-inmemory`)**:
+- `cd services/api && .venv/bin/python -m pytest tests/unit tests/contract_suite -q` ->
+  `52 passed` (44 pre-existing + 8 net new: 1 read-only contract-suite test, 3 paired-metadata unit
+  tests, 1 READ_COMMITTED converse test, 2 `check_ready` tests replacing 1 old test, 1 `fail_times=0`
+  test).
+- RED confirmed by `git stash` of the two production fix files
+  (`in_memory_repository.py`, `failing.py`) and re-running the affected test files: 5 failures
+  (`test_check_ready_reflects_permanent_failure_mode`,
+  `test_check_ready_reflects_one_shot_failure_window_then_recovers`,
+  `test_add_rejects_a_new_phrase_that_breaks_the_paired_metadata_invariant`,
+  `test_add_rejects_a_confirmed_duplicate_without_a_neighbour`,
+  `test_add_inside_a_read_only_unit_of_work_raises_immediately`), then `git stash pop` restored the
+  fix and all 52 tests passed again.
+- `cd services/api && .venv/bin/lint-imports` -> `Contracts: 5 kept, 0 broken.`
+- `cd services/api && .venv/bin/ruff check .` -> `All checks passed!`
+- `cd services/api && .venv/bin/mypy src` -> `Success: no issues found in 22 source files`
+
+**Out of scope, confirmed untouched**: the 2D-vector-fixture-vs-`vector(384)` gap (Unit 5a/5b's
+problem), anonymous/no-tenant-scoping (design.md D5, intentional), and `find_matches`/`Match`/`Page`/
+`MatchCursor` (Unit 2d).
+
+### TDD Cycle Evidence (Unit 2 fix pass)
+
+| Finding | Test File | Layer | RED | GREEN | TRIANGULATE | REFACTOR |
+|---------|-----------|-------|-----|-------|-------------|----------|
+| 1 (read-only fail-fast) | `tests/contract_suite/repository_contract.py` | Unit (contract) | ✅ `git stash`-confirmed: `DID NOT RAISE Exception` | ✅ Passed after restoring the fix | Triangulation skipped: one behavioural contract (raises immediately), no branching | ➖ None needed |
+| 2 (paired-metadata invariant) | `tests/unit/phrases/test_in_memory_repository.py` | Unit | ✅ `git stash`-confirmed: both violation tests `DID NOT RAISE` | ✅ Passed after restoring the fix | ✅ 3 cases: unpaired score, confirmed-without-neighbor, valid paired below-threshold neighbor | ➖ None needed |
+| 3 (READ_COMMITTED converse) | `tests/unit/phrases/test_in_memory_repository.py` | Unit | N/A — asserts pre-existing correct behaviour, no production change | ✅ Passed first try (no stash needed: nothing to revert) | ➖ Single scenario, mirrors the existing REPEATABLE_READ negative case | ➖ None needed |
+| 4 (`check_ready` failure mode) | `tests/unit/similarity/test_failing.py` | Unit | ✅ `git stash`-confirmed: both `DID NOT RAISE` | ✅ Passed after restoring the fix | ✅ 2 cases: permanent mode, one-shot window then recovery | ➖ None needed |
+| 10 (`fail_times=0` boundary) | `tests/unit/similarity/test_failing.py` | Unit | Triangulation-as-RED: no production change needed (existing `_is_down` formula already handles `0` correctly), verified by reading the formula against the module's own docstring, not guessed | ✅ Passed first try | ➖ Single boundary case per the finding's scope | ➖ None needed |
+
+### Test Summary (Unit 2 fix pass)
+- **Total tests added/changed**: 9 (8 net new + 1 pre-existing fixture repaired)
+- **Total tests passing at final commit**: 52 (44 prior + 8 net new)
+- **Layers used**: Unit (7), Unit marked `contract` (1)
+- **Approval tests**: None — findings 1/2/4 are new invariants, not refactors of passing behaviour
+- **Pure functions / guards created**: `_validate_paired_metadata` (module-level, pure), `FailingEmbedder._is_down` (pure given the instance's configured `fail_times`)
