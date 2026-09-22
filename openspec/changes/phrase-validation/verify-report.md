@@ -902,3 +902,130 @@ Scanned all four Unit 6 test files (test_settings.py, test_errors.py, test_schem
 **PASS WITH WARNINGS**
 
 All shipped code is correct, well-tested, and green against every quality gate, including the unit's own hardest, previously-uncertain claim (middleware ordering), which is independently re-derived from source and reproducibly green. The size:exception process was followed correctly and is documented consistently and honestly across all three artifacts (tasks.md, apply-progress.md, PR #20 body), each independently re-measured to match the real diff exactly. Two CRITICAL findings exist but neither invalidates what was actually shipped and tested: (1) a real, reproducible defect in error-reason mapping for a scenario ("Raw length cap") that this unit claims but cannot yet prove end-to-end since no endpoint exists until Unit 6b/7 - must be fixed before that scenario is truly closed; (2) a documentation-completeness gap (missing TDD Cycle Evidence table) that does not itself indicate the underlying work is flawed, given independently reproduced GREEN test runs and clean assertion quality throughout. Neither CRITICAL blocks Unit 6b or other independent units from proceeding, but both should be tracked and closed (recommend folding finding 1 into Unit 6b's own fix-pass discipline, and finding 2 as a same-session documentation append) rather than silently carried forward.
+
+## Verification Report - Unit 6b
+
+**Change**: phrase-validation
+**Unit**: 6b -- Validate endpoint and /health readiness
+**Version**: N/A
+**Mode**: Strict TDD
+
+### Completeness
+| Metric | Value |
+|--------|-------|
+| Tasks total | 2 (6b.1, 6b.2) |
+| Tasks complete | 2 |
+| Tasks incomplete | 0 |
+
+### Build & Tests Execution
+**Build**: N/A (interpreted service, no separate build step)
+
+**Tests**: independently re-run, both commands, on feat/pv-06b-validate-health:
+```text
+$ cd services/api && .venv/Scripts/python.exe -m pytest tests/contract/test_validate_health.py -q
+17 passed, 2 warnings in 0.62s
+
+$ cd services/api && .venv/Scripts/python.exe -m pytest -m "not integration and not slow" -q
+212 passed, 16 deselected, 2 warnings in 1.70s
+```
+Both counts match apply-progress.md exactly (17 passed for the unit's own suite; 212 passed, up from 195 pre-Unit-6b, zero regressions).
+
+**Quality gates** (all re-run independently, all clean, matching apply-progress.md verbatim):
+```text
+$ ruff check src tests   -> All checks passed!
+$ mypy src               -> Success: no issues found in 37 source files
+$ lint-imports           -> Contracts: 5 kept, 0 broken.
+```
+
+**Coverage**: not configured for this backend -- not available, not a failure.
+
+### TDD Compliance
+| Check | Result | Details |
+|-------|--------|---------|
+| TDD Evidence reported | Yes | Full "TDD Cycle Evidence (Unit 6b)" table present in apply-progress.md |
+| All tasks have tests | Yes | Both 6b.1 and 6b.2 map to tests/contract/test_validate_health.py |
+| RED confirmed (tests exist) | Yes (narrative, plausible, not re-executed) | apply-progress.md describes moving the 4 new production files aside plus stashing main.py, re-running, and getting ModuleNotFoundError: app.modules.phrases.container before restoring -- internally consistent with the file's actual import graph; not independently re-enacted by this verify pass (would require destructively moving committed files), but nothing contradicts it |
+| GREEN confirmed (tests pass) | Yes | Independently re-run: 17/17 pass now |
+| Triangulation adequate | Yes | Every one of the 15 named Covers-line scenarios maps to a specific assertion or parametrized case (see Spec Compliance Matrix below); confirmed by reading the test file directly, not just trusting the write-up |
+| Safety Net for modified files | Yes | All 5 production files are new (N/A (new) is correct); main.py is the only modified file and its 10 pre-existing test_framework_errors.py tests are included in, and pass within, the 212-test full regression |
+
+**TDD Compliance**: 6/6 checks passed
+
+### Test Layer Distribution
+| Layer | Tests | Files | Tools |
+|-------|-------|-------|-------|
+| Contract | 17 cases (10 functions, 3 parametrized) | 1 (test_validate_health.py) | fastapi.testclient.TestClient |
+| Unit | 0 new (reuses Unit 6's page_limit/raw_phrase_text tests unmodified) | -- | pytest |
+| Integration / E2E | 0 | -- | -- |
+| **Total** | **17** | **1** | |
+
+### Assertion Quality
+Reviewed the full test file (tests/contract/test_validate_health.py, 241 lines). No tautologies, no assertion-free tests, no ghost loops, no smoke-test-only patterns, no CSS/implementation-detail coupling found. Two tests assert embedder.call_count (== 0 for health, == 1 for cold/warm caching) -- this reads as mock-call-count coupling at first glance, but it is the literal spec requirement being tested (D10's "caching is invisible AND the saving is real", and the health route's "zero embeddings issued" contract), not an incidental implementation detail; treated as justified, not flagged.
+
+**Assertion quality**: All assertions verify real behavior
+
+### Spec Compliance Matrix
+| Requirement | Scenario | Test | Result |
+|-------------|----------|------|--------|
+| POST /phrases/validate | Duplicate found | test_duplicate_found_returns_the_full_verdict_payload | COMPLIANT |
+| POST /phrases/validate | Empty store | test_empty_store_returns_a_null_verdict | COMPLIANT |
+| POST /phrases/validate | Page 1 carries the verdict | test_page_1_carries_the_verdict_using_the_default_limit | COMPLIANT |
+| POST /phrases/validate | Limit bounds | test_limit_bounds_are_enforced_inclusively[*] | COMPLIANT |
+| POST /phrases/validate | Strict integer limit | test_strict_integer_limit_rejects_non_strict_values[*] | COMPLIANT |
+| POST /phrases/validate | Default limit | test_page_1_carries_the_verdict_using_the_default_limit (folded -- same request shape, no limit in body) | COMPLIANT |
+| POST /phrases/validate | Cursor not accepted | test_duplicate_found_returns_the_full_verdict_payload (folded -- request body includes a cursor key, response proves it was ignored) | COMPLIANT |
+| POST /phrases/validate | Nothing persisted | test_duplicate_found_returns_the_full_verdict_payload (folded -- trailing uow.repo.list_recent(10) length assertion) | COMPLIANT |
+| GET /health | Ready | test_health_ready_returns_every_required_key_and_issues_zero_embeddings | COMPLIANT |
+| GET /health | Model not loaded | test_health_not_ready_reports_which_component_is_down[False-True-...] | COMPLIANT |
+| GET /health | Database down | test_health_not_ready_reports_which_component_is_down[True-False-...] | COMPLIANT |
+| Caching is invisible to the contract | Cold and warm responses identical | test_cold_and_warm_validate_responses_are_byte_identical -- asserts first.content == second.content (real byte comparison, not just status code) | COMPLIANT |
+| Response envelopes | Success envelope | test_duplicate_found_returns_the_full_verdict_payload (folded -- set(response.json()) == {"data"}) | COMPLIANT |
+| Error codes and status mapping | Database unreachable outside health (validate side) | test_database_unreachable_outside_health_is_500_internal_error | COMPLIANT |
+| Error codes and status mapping | Provider failure/timeout on the endpoint | test_provider_failure_and_timeout_map_to_their_registered_codes[*] | COMPLIANT |
+
+**Compliance summary**: 15/15 scenarios compliant (matches apply-progress.md's own count of "all 15 scenarios in the Covers line")
+
+Every "folded" mapping above was independently confirmed by reading the actual test body, not by trusting apply-progress.md's own claim -- in each case the named scenario has a genuine, distinct assertion inside the shared test function, not an incidental side-effect.
+
+### Correctness (Static Evidence)
+| Requirement | Status | Notes |
+|------------|--------|-------|
+| Production honesty of the "not wired yet" deviation | Implemented, honestly flagged | main.py's own module docstring (lines 1-9) and inline comments (198-199) state plainly that app.state.phrases is left unset and app.state.health defaults to a static "not ready" HealthState. Confirmed by direct code reading (not test-masked): a real POST /phrases/validate against create_app(settings) with no further wiring raises AttributeError on request.app.state.phrases, caught by CatchAllMiddleware -> 500 INTERNAL_ERROR; GET /health always returns 503 NOT_READY, details: {database:"unavailable", model:"unavailable"} since check_database=lambda: False and model_ready=False. Nothing in the test suite hides this -- every contract test builds its own app and re-wires app.state.phrases/app.state.health before calling it. This is a legitimate, transparently documented interim state, not a silently broken feature. |
+| from __future__ import annotations omission in router.py | Implemented, verified not cargo-culted | Confirmed the import is genuinely absent (only the module docstring at the top explains why). Independently re-added the import as an experiment, re-ran the suite: 14/17 tests failed (assert 422 == 200 on the happy-path test), restored the file, re-ran green again (17/17). The bug is real, reproducible, and the reasoning in the code comment is sound, not a cargo-culted convention override. |
+| Three Unit 6 fix-pass claims re-verified end-to-end | Implemented, independently reconfirmed | Built a fresh create_app() + FakeEmbedder/in-memory repo outside the test suite and POSTed directly: 1121-char text -> 422, reason:"too_long", max_length:280; 300-char text (over semantic 280, under raw 1120) -> 422, reason:"too_long", max_length:280 (per apply-progress.md this is reached via the domain PhraseTooLong path, not independently distinguished as a separate code path by this pass beyond status/reason/detail); whitespace-only -> 422, reason:"empty". All three match the claimed values exactly. |
+| GET /health issues zero embedding calls | Implemented | build_health_payload only reads HealthState fields; nothing in platform/health.py can reach an EmbeddingProvider. Test explicitly asserts embedder.call_count == 0 after a health check. |
+| limit strictness matches design.md's PageLimit rule | Implemented | design.md line 937 states the strict-int rule ("10", true, 10.5 -> 422 invalid_type) verbatim; the test's parametrization ("10", True, 10.5) matches exactly, and reuses Unit 6's existing page_limit() implementation unmodified rather than reimplementing it. |
+| _MostSimilarOut/_MatchOut merge into _ScoredPhrase | Implemented | router.py defines only one such model, _ScoredPhrase(id, text, score), reused for both most_similar and matches[]. Pure dedup, no behavior change. |
+| size:exception documentation accuracy | Implemented with a minor discrepancy | See WARNING 2 below -- the documented "466 insertions / 2 deletions" for the 6 code/test files is off by 1 insertion versus git show --numstat ae247d1 (actual: 465/2). Consistent across tasks.md, apply-progress.md and PR #21's body (all three say the same number), so it is self-consistent, just not bit-for-bit accurate against the real diff. |
+| No AI/Claude co-authorship in commits | Confirmed | git show authorship for ae247d1 and a158ce2 both show author "Aaron Rojas", no Co-Authored-By trailer of any kind in either commit message. |
+
+### Coherence (Design)
+| Decision | Followed? | Notes |
+|----------|-----------|-------|
+| D9 -- validate takes no cursor, silently ignored via extra="ignore" | Yes | Matches design.md's D9 row verbatim; test proves it via a cursor key that is accepted-but-ignored, not rejected |
+| D10 -- outermost CachingEmbeddingProvider, capacity=0 kill switch | Yes | similarity/container.py's wrap_with_cache implements exactly this; cold/warm test proves the cache is both invisible to the response and real (call_count == 1 across two identical calls) |
+| D15 -- model/embedding_model/database key mapping shared between 200 and 503 bodies | Yes | build_health_payload uses identical keys in both branches, matching design.md's stated "one key mapping, everywhere" rule |
+| import-linter composition-root-owns-adapters contract (phrases.api never imports an adapter) | Yes | router.py imports only phrases.container.PhrasesContainer and phrases.api.schemas, never an adapter; lint-imports independently re-run clean (5 kept, 0 broken) |
+| Unit 8 scope boundary ("real provider wiring is Unit 8's job") | Yes, and genuinely trimmed to it | The speculative main.py lifespan hook and build_embedding_provider were removed during the trim pass specifically because nothing in this unit's own tests needed them -- confirmed absent from both files as shipped |
+
+### Issues Found
+
+**CRITICAL**: None.
+
+**WARNING**:
+
+1. apply-progress.md's own prose (and PR #21's body, which repeats it) describes the test file as "17 test functions, several parametrized -- 24 total cases." Independently collected the file with pytest tests/contract/test_validate_health.py -q --collect-only: it actually contains 10 test functions / 17 total collected cases (test_limit_bounds_are_enforced_inclusively x4, test_strict_integer_limit_rejects_non_strict_values x3, test_provider_failure_and_timeout_map_to_their_registered_codes x2, test_health_not_ready_reports_which_component_is_down x2, plus 6 non-parametrized functions = 17 cases from 10 functions). The Verify command's reported "17 passed" is correct and matches what I independently measured -- only the descriptive "17 functions / 24 cases" sentence is wrong on both numbers. Low impact (doesn't change scenario coverage or pass/fail truth), but should be corrected in apply-progress.md and the PR body for accuracy.
+
+2. The size:exception line count is off by one line from the actual measured diff. tasks.md, apply-progress.md, and PR #21's body all state "466 insertions / 2 deletions" (468 total changed lines) for the 6 code/test files. Independently measured via git show --numstat ae247d1 (the only commit touching those 6 files): main.py +28/-2, router.py +73/-0, phrases/container.py +36/-0, similarity/container.py +23/-0, health.py +65/-0, test_validate_health.py +240/-0 -> 465 insertions / 2 deletions (467 total), not 466/468. The 1-line discrepancy is immaterial to the exception decision itself (467 is still ~67 lines / ~17% over the 400 cap, same magnitude as the documented ~68/17%), and the number is at least self-consistent across all three artifacts, but it does not match git's own count exactly, which the task explicitly asked to confirm.
+
+3. platform/health.py's own module docstring (lines 1-8) states "the model is warmed once, in main.py's lifespan hook" -- but the trim pass (round 5, documented in apply-progress.md) removed main.py's lifespan hook entirely; main.py as shipped has no lifespan hook at all (app.state.health is a static dataclass literal, not something a hook constructs). This is stale documentation left over from before the trim -- the comment describes a mechanism that does not exist in this unit's shipped code (presumably intended as forward-looking for Unit 8, but reads as describing current behavior). Should be corrected to say the lifespan wiring is Unit 8's future job, not the present unit's.
+
+**SUGGESTION**:
+
+1. Given that /health always reports "not ready" and /phrases/validate always 500s against the real, unmodified create_app(settings) object today, consider a single smoke test that hits the actual app.main.app module-level instance directly (every current test instead builds its own app and re-wires state) to lock in this documented interim behavior as a regression guard -- so that if a future partial-wiring change accidentally sets one of app.state.health/app.state.phrases without the other, or wires a broken provider, this "honestly not ready" state doesn't quietly change to "silently wrong" the way it's currently only protected by prose (main.py's docstring and code comments) rather than a test. Not required for this unit to ship -- Unit 8 owns the real wiring -- but worth doing whenever Unit 8 lands.
+
+### Verdict
+
+PASS WITH WARNINGS
+
+All 2 tasks complete, all 15 named spec scenarios have a passing, independently-reconfirmed covering test, all quality gates (pytest x2, ruff, mypy, lint-imports) reproduce exactly as documented, the from __future__ import annotations omission and the "not wired to production" deviation are both genuine and honestly disclosed (verified by direct experiment and code reading, not by trusting the write-up), and no AI/Claude co-authorship appears in either commit. The three WARNINGs are all documentation-accuracy issues in apply-progress.md/tasks.md/PR #21 (a wrong test-count sentence, a 1-line-off size:exception measurement, and a stale docstring referencing a since-removed lifespan hook) -- none of them affect the actual shipped behavior, test coverage, or the substantive size:exception decision, which remains valid either way (467 or 468 total, both ~17% over the 400-line cap).
