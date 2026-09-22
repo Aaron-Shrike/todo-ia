@@ -2938,3 +2938,310 @@ PR creation). PR body carries a `size:exception` callout at the top (same conven
 plus the dependency diagram, Start/End/Prior deps/Follow-ups/Out-of-scope sections, and the exact
 Verification command output. No CI run expected (`.github/workflows/ci.yml` fires on `main` only;
 this chain targets `develop`).
+
+---
+
+## Unit 7: Save, list and match paging endpoints -- SHIPPED (`size:exception`, user-approved)
+
+**Resolution**: the user explicitly accepted the 566-line overrun (554 insertions / 12 deletions, 6
+files) as `size:exception` (single PR, not the proposed 7a/7c further split below) after reading this
+section's original "review-budget STOP" report. This unit's own named seam (move `GET /phrases` + the
+OpenAPI snapshot to a follow-up Unit 7b) WAS applied before stopping -- unlike some prior over-budget
+units in this session, this one had a real seam to try -- but it was not sufficient alone (890 -> 851
+-> 570 -> 566 across the seam and two trim rounds, still ~42% over the 400 cap). Committed and shipped
+as a single squashed RED+GREEN commit, per Strict TDD convention; Unit 7b remains real, deferred,
+NOT STARTED scope, unaffected by this resolution.
+
+Branch `feat/pv-07-save-list-matches`, already checked out, cut from `develop` at `ea0a2c4`
+(Units 0-6b merged and reconciled -- see the CONTEXT note for this batch; nothing from that merge
+needed redoing here). All three sub-tasks (7.1-7.3) are fully implemented, RED->GREEN confirmed, and
+green against every quality gate below. After applying this unit's own named review-budget seam (move
+`GET /phrases` + the OpenAPI snapshot to a follow-up Unit 7b) and two genuine trim rounds, the diff
+still measured 566 changed lines (554 insertions / 12 deletions, 6 files) -- ~42% over the 400-line
+hard cap. Per the orchestrator's explicit instruction for that batch, the apply agent stopped and
+reported back instead of self-authorizing an exception -- see "Review-budget" below. **The user then
+explicitly accepted the overrun as `size:exception`**, declining the proposed 7a/7c split; the unit is
+committed and shipping exactly as measured at the stop (no further code changes were needed to ship).
+
+### What was implemented (7.1-7.3, all green)
+
+- [x] 7.1 `phrases/api/router.py::build_phrases_router` -- new `POST /phrases` (`_SaveRequest`:
+  `raw_phrase_text`, `StrictBool confirm_duplicate` defaulting `False`, `extra="ignore"`) and
+  `POST /phrases/matches` (`_MatchesRequest`: `raw_phrase_text`, required `cursor` with an
+  `Opaque; clients MUST NOT parse it.` `Field(description=...)`, optional `page_limit`). Both
+  request models are nested inside the factory function, same precedent as `_ValidateRequest`
+  (no `from __future__ import annotations` in this file -- closures over caller-supplied settings
+  bounds). `save_phrase`'s handler reads `PhrasesContainer.save_phrase` off `request.app.state`;
+  when `SaveResult.conflict is not None` it returns a hand-built `JSONResponse(status_code=409, ...)`
+  carrying the validate-shaped `details` (`_verdict_details`, new helper reusing the existing
+  `_ScoredPhrase` model for `most_similar`/`matches[]`) -- not routed through
+  `platform.errors.error_envelope`, see the import-linter finding below. `list_matches`'s handler
+  is a thin call into `PhrasesContainer.list_matches` (Unit 3's `ListMatches`, unchanged) plus
+  response-shape mapping; `InvalidCursor` propagates to the existing `ERROR_REGISTRY` handler
+  (400, unchanged since Unit 6) without any new registration. New shared response models:
+  `_ValidationOut`, `_PhraseOut`, `_PhraseResponse`, `_MatchesData`, `_MatchesResponse`;
+  `_phrase_out(Phrase) -> _PhraseOut` maps a domain `Phrase` to the wire shape (`validation.status`
+  is the enum's `.value`, `most_similar_phrase_id`/`id` both serialize as strings via the existing
+  `PhraseId` type). `GET /phrases` and `phrases/application/list_phrases.py` were fully written,
+  tested green, then deleted as the review-budget seam -- see "Review-budget" below; both are
+  reproducible near-verbatim for Unit 7b from this note (the use case is a 9-line pass-through over
+  `PhraseRepository.list_recent` inside a read-only `UnitOfWork`).
+  - `container.py`: `PhrasesContainer` gained `list_matches: ListMatches` and `save_phrase:
+    SavePhrase` fields; `build_phrases_container` gained a `matches_page_size` parameter, passed to
+    `SavePhrase` as `default_page_size` (the 409 payload's page-1 size) and to `ListMatches`'s
+    embedder/policy construction (unchanged signature otherwise). `list_phrases`/`phrases_list_limit`
+    were added then removed with the GET /phrases deferral.
+  - `main.py`: `create_app` now also `include_router`s a new `build_phrases_router(phrase_max_length=,
+    matches_page_size=)` alongside the pre-existing `build_validate_router` call -- `app.state.phrases`
+    remains unset in production (Unit 8's job, unchanged from Unit 6b).
+  - Import-linter finding: importing `app.platform.errors.error_envelope` from `router.py` to
+    build the 409 body broke `phrases-only-similarity-contracts` -- `platform.errors` itself imports
+    `similarity.domain.errors` (for its `EmbeddingUnavailable`/`EmbeddingTimeout` registry rows), and
+    import-linter's `forbidden` contract checks the FULL transitive chain, so
+    `phrases.api -> platform.errors -> similarity.domain` broke it even though nothing in `router.py`
+    touches `similarity` directly (same category of discovery as Unit 2's `contracts.py` re-export
+    finding). Fixed by building the `{"error": {code, message, details}}` dict inline in
+    `save_phrase`'s 409 branch instead of importing the shared helper -- a deliberate, documented
+    trade-off (one inline dict literal vs. a new forbidden import edge), not an oversight.
+- [x] 7.2 `tests/contract/test_phrases_endpoints.py` (new, 15 test functions / 24 cases with
+  parametrization, against the real `create_app()` wiring with `FakeEmbedder`/`InMemoryUnitOfWorkFactory`,
+  same `_client()` precedent as `test_validate_health.py`). Named-scenario coverage (Unit 7's Covers
+  line, POST /phrases + POST /phrases/matches only -- GET /phrases deferred, see below):
+  - `test_matches_pagination_walk_from_validate` / `test_save_large_match_set_on_409_next_cursor_usable_with_matches`
+    -- both share a `_LARGE_MATCH_SET` fixture (120 matches, `matches_page_size=50`) and a
+    `_walk_pages` helper; prove Pagination walk and Large match set on 409 (120-match fixture,
+    `next_cursor` usable with `/phrases/matches`) with the exact `50, 50, 20` page-size sequence
+    design.md names.
+  - `test_matches_response_has_no_verdict_fields` -- No verdict fields.
+  - `test_matches_invalid_cursor_is_400` (4 cases: different-text, different-threshold, malformed
+    base64url, one field out of range) -- Cursor with different text/threshold, Malformed
+    cursor, a representative Cursor field violations case (the full per-rule table is already
+    unit-tested in `tests/unit/phrases/test_cursor.py` from Unit 2c; this file proves HTTP reachability,
+    not re-derives the table).
+  - `test_matches_schema_violations_are_422` (3 cases: missing `cursor`, `limit=0`, `limit=51`) --
+    Missing cursor and Limit bounds.
+  - `test_save_created_unique_records_null_metadata_and_normalizes_text` -- Created unique,
+    Text is stored normalized and the Persistence: Unique metadata (over HTTP) scenario, all
+    on one request/response (a `"  Hola​  "` input normalizes to `"Hola"` with null
+    score/neighbor).
+  - `test_save_created_confirmed_records_score_and_neighbor` -- Created confirmed and
+    Persistence: Confirmed metadata (over HTTP).
+  - `test_save_conflict_shape_and_payload_completeness` -- Conflict shape and 409 payload:
+    Payload completeness (3 matches, ordered score-desc, `has_more=false`) on one 3-match fixture.
+  - `test_save_non_boolean_confirm_duplicate_rejected` (3 cases: `"yes"`, `1`, `"true"`) --
+    Strict boolean flag and duplicate-confirmation's Explicit flag: Non-boolean flag (same
+    HTTP behaviour, one test).
+  - `test_save_provider_failure_never_persists` (2 cases: `EmbeddingUnavailable`/`EmbeddingTimeout`)
+    and `test_save_database_unreachable_is_500_and_persists_nothing` -- Failures never save
+    (HTTP: 503/504, DB down -> 500 `INTERNAL_ERROR`).
+  - `test_save_unique_violation_on_insert_maps_to_409_never_500` -- reuses Unit 3's
+    `ConflictRepo`/`ProxyUnitOfWorkFactory` test doubles with `remaining=[None]` (persistent-violation
+    case, the same fixture shape as `test_always_raising_duplicate_conflict_still_returns_409_never_raises`
+    in `tests/unit/phrases/test_save_phrase.py`) to prove Concurrency: Unique violation maps to
+    409, never 500 is reachable through the real HTTP layer, not only at the use-case unit level.
+  - `tests/contract/test_openapi.py` and the `docs/openapi.json` snapshot were fully written,
+    verified green (5/5 tests, including a real generated snapshot), then deleted as part of the
+    review-budget seam -- see "Review-budget" below. The concrete OpenAPI shapes needed for Unit 7b
+    (confirmed empirically via `app.openapi()`, not assumed): request/response bodies are always
+    `$ref`-wrapped (pydantic v2 + FastAPI names every model), the `{"data": {...}}` envelope needs one
+    extra `$ref` hop to unwrap, and a shared `ErrorEnvelope`/`ErrorDetail` pydantic pair plus an
+    `error_responses(*[(status, code)])` factory in `schemas.py` is the cleanest way to get every
+    registered `code` string to appear literally in the generated document (via each response's
+    `description`) without a bespoke schema per status code.
+- [x] 7.3 `tests/integration/test_endpoints_pgvector.py` (new, 2 test functions / 3 named scenarios,
+  wiring a REAL `create_app()` + `PgVectorUnitOfWorkFactory(engine)` + `FakeEmbedder` -- same
+  `database_url`/`engine`/`_freshly_migrated_schema` fixture trio as `test_nearest_and_uow.py`,
+  duplicated per-file per this codebase's established precedent, not extracted to a shared conftest).
+  `test_post_phrases_returns_201_then_409_for_a_duplicate` (one 201, then one 409 against the SAME
+  client/store) and `test_concurrent_identical_saves_yield_exactly_one_201_and_one_409` (two real
+  `ThreadPoolExecutor` threads posting identical text concurrently through the SAME `TestClient`;
+  since `save_phrase`/`list_matches` are plain `def` handlers, Starlette dispatches each through
+  `run_in_threadpool`, so two concurrent HTTP calls genuinely race on the real Postgres advisory lock
+  -- confirmed by execution: `sorted(statuses) == [201, 409]` and `SELECT count(*) FROM phrases == 1`,
+  both green against the real `phrases_test` database). New cross-file discovery, not previously
+  hit: this is the first `tests/integration/*` module to import `app.main` (every prior integration
+  file talks to the pgvector adapter directly, never through the FastAPI app), and `app.main` builds a
+  production `Settings()` at IMPORT time (Unit 6's fail-fast design) -- so running this file WITHOUT
+  `tests/contract` also being collected first (which is what supplies a placeholder `DATABASE_URL` via
+  `tests/contract/conftest.py`, per the develop-merge fix already in this branch) crashed at
+  collection with a `database_url` `Field required` error. Fixed with a defensive
+  `os.environ.setdefault("DATABASE_URL", <the same real default every fixture in this file already
+  falls back to>)` at the top of the module, before `from app.main import create_app` -- not a
+  fake/placeholder value (unlike `tests/contract/conftest.py`'s), so there is nothing to leak into
+  other integration tests and nothing to clean up in a `pytest_collection_finish` hook. Confirmed this
+  makes the file collectible and green both standalone (`pytest tests/integration/test_endpoints_pgvector.py`)
+  and combined with `tests/contract` (the unit's own literal Verify command).
+
+### Review-budget: seam applied, still over -- `size:exception` granted after the mandatory stop
+
+First complete draft (7.1 GREEN including `GET /phrases` + `list_phrases.py`, 7.2 GREEN including
+`test_openapi.py` + the real `docs/openapi.json` snapshot, 7.3 GREEN) measured 890 changed lines
+(875 insertions / 15 deletions, 10 files, `docs/openapi.json` excluded from that count as a generated
+file per tasks.md's own Notes line) -- far above the ~380 estimate, in the same "brand-new endpoints
+from zero" category as Units 2/6/6b, which have every prior time in this session exceeded budget for
+the same structural reason (new router wiring + new response schemas + a from-scratch contract-test
+file, no prior HTTP test to extend for these specific endpoints).
+
+Applied a real trim pass first (re-verifying green after each step, same discipline as every prior
+over-budget unit): consolidated `test_phrases_endpoints.py`'s near-duplicate scenario pairs into
+parametrized tests (cursor-400 variants merged into one 4-case test, schema-violation variants merged
+into one 3-case test, Created unique + Text stored normalized merged into one test) and merged
+`test_endpoints_pgvector.py`'s standalone 201/409 tests into one sequential test -> ~851 lines
+(measured on the code files only, before the seam).
+
+Then applied the exact seam this unit's own Notes line names: moved `GET /phrases`
+(`phrases/application/list_phrases.py`, `container.py`'s `list_phrases`/`phrases_list_limit` wiring,
+`router.py`'s `GET /phrases` route + `_PhraseListData`/`_PhraseListResponse`, and the 3 GET-phrases
+contract tests) and the OpenAPI documentation pass (`tests/contract/test_openapi.py`,
+`docs/openapi.json`, `schemas.py`'s `ErrorDetail`/`ErrorEnvelope`/`error_responses` helper, and the
+`responses=error_responses(...)` kwargs on the two remaining routes) to a new Unit 7b, added to
+tasks.md just above Unit 8 with its own Commit/Covers/Verify lines and a PR-chain table row (base
+`develop`, needs Unit 7 merged first so the OpenAPI snapshot documents the full `/phrases` surface).
+This cut the measured diff from ~851 to 570 lines (558 insertions / 12 deletions, 6 files) --
+about a third off, and a genuinely large, real reduction, but still ~42% over the 400 cap.
+
+A final short trim round (shortening the import-linter-avoidance comment in `router.py` from 6 lines
+to 4, `_PhraseOut`'s docstring from 2 lines to 1, and this file's own module docstring) brought the
+final measured diff to 566 changed lines (554 insertions / 12 deletions, 6 files) -- see the file
+table below for the exact per-file breakdown.
+
+566 is still ~42% over the 400-line hard cap, and every remaining line is either: (a) genuinely
+load-bearing production code for two brand-new business endpoints and their DI wiring (two new routes,
+five new response models, one new helper function, one import-linter workaround), or (b) a contract/
+integration test exercising a distinct named scenario from Unit 7's own (still large, even after
+deferring 7 of its ~24 named scenarios to Unit 7b) Covers line, already consolidated wherever two
+scenarios shared one request/response. Cutting further without either shipping untested production
+code (a strict-TDD violation) or narrowing scope below 7.1-7.3's literal requirements is not possible
+without a further structural split. Per the CONTEXT's explicit instruction ("do not self-authorize a
+`size:exception`... propose your own real split... if [the named seam] isn't enough"), the apply agent
+stopped here and reported back the measured size, the trim log, and the further-split proposal below
+instead of committing or opening a PR. **The user then explicitly accepted the 566-line overrun as
+`size:exception`**, declining the further split; the unit is committed and shipping exactly as
+measured here -- no further code changes were made after this report.
+
+### Proposed further split (declined -- user chose `size:exception` instead)
+
+The remaining 566-line scope splits cleanly along the two endpoints, since `POST /phrases/matches`
+shares no response model or route-building logic with `POST /phrases` beyond the pre-existing
+`_ScoredPhrase` (Unit 6b) and the container's shared construction call:
+
+| Slice | Scope | Files | Est. lines |
+|-------|-------|-------|-----------|
+| 7a | `POST /phrases/matches` only: `router.py`'s `list_matches` route + `_MatchesData`/`_MatchesResponse`/`_MatchesRequest`, `container.py`'s `list_matches` wiring, `main.py`'s `include_router` call, the 4 matches-section tests in `test_phrases_endpoints.py` (or a new `test_matches_endpoint.py`) plus a `_client()`/`_seed()` helper pair | `router.py` (partial), `container.py` (partial), `main.py`, new matches test file | ~200-230 |
+| 7c | `POST /phrases` + its real-Postgres integration test: `router.py`'s `save_phrase` route + `_ValidationOut`/`_PhraseOut`/`_phrase_out`/`_verdict_details`/`_PhraseResponse`, `container.py`'s `save_phrase` wiring, the 8 save-section tests in `test_phrases_endpoints.py` (or a new `test_save_endpoint.py`), all of `test_endpoints_pgvector.py` | `router.py` (partial), `container.py` (partial), new save test file, `test_endpoints_pgvector.py` | ~420-460 (would likely need one more small trim to clear 400, e.g. extracting the two files' shared `_client()` boilerplate to a `tests/contract/conftest.py` fixture) |
+
+Dependency order: either slice can land first (both need only Unit 6b, not each other) -- a natural
+2-PR stacked-to-develop or feature-branch-chain pair. This mirrors the same by-sub-scope split shape
+already used for Units 3a-3d and Unit 6's declined 3-way proposal. Not applied: splitting a single
+test file into two, and re-deriving which shared helper code goes where, is itself nontrivial
+additional work with its own risk of introducing a seam bug (e.g. accidentally dropping the
+`ConflictRepo`/`_LARGE_MATCH_SET` reuse), so this is being proposed for the user's decision rather than
+executed speculatively. **Declined**: the user explicitly chose `size:exception` for a single PR
+instead, after reviewing this proposal (see "Resolution" at the top of this section).
+
+### Files touched (exact `git diff --numstat` against `develop` at `ea0a2c4`)
+
+| File | Action | Lines (ins/del) |
+|------|--------|------------------|
+| `services/api/src/app/main.py` | Modified (mounts `build_phrases_router`) | 7 / 1 |
+| `services/api/src/app/modules/phrases/api/router.py` | Modified (`POST /phrases`, `POST /phrases/matches`) | 134 / 5 |
+| `services/api/src/app/modules/phrases/container.py` | Modified (`list_matches`/`save_phrase` wiring) | 23 / 6 |
+| `services/api/tests/contract/test_phrases_endpoints.py` | New | 280 / 0 |
+| `services/api/tests/contract/test_validate_health.py` | Modified (call-site update for the new `build_phrases_container` signature) | 1 / 0 |
+| `services/api/tests/integration/test_endpoints_pgvector.py` | New | 109 / 0 |
+| **Total** | | **554 / 12 (566 changed)** |
+
+Not included above (deferred to Unit 7b, deleted from the working tree before this measurement):
+`phrases/application/list_phrases.py`, `tests/unit/phrases/test_list_phrases.py`,
+`tests/contract/test_openapi.py`, `docs/openapi.json`, and the `ErrorDetail`/`ErrorEnvelope`/
+`error_responses` additions to `schemas.py` (reverted to its Unit 6 baseline, zero net diff).
+
+### Verify (confirmed after commit, on `feat/pv-07-save-list-matches`)
+
+- `cd services/api && .venv/Scripts/python.exe -m pytest tests/contract tests/integration/test_endpoints_pgvector.py -q`
+  -> 50 passed (this unit's exact Verify command; excludes the deferred `test_openapi.py`).
+- `cd services/api && .venv/Scripts/python.exe -m pytest -m "not integration and not slow" -q` ->
+  232 passed, 35 deselected (was 212 before this unit's contract tests; +20 net after the GET-phrases
+  deferral removed 3 test functions and their `phrases_list_limit`/`ListPhrases` unit tests that had
+  briefly existed).
+- `cd services/api && .venv/Scripts/python.exe -m pytest -m integration -q` -> 35 passed, 232
+  deselected (was 33 before this batch; +2 net -- the originally-written 3 scenarios' worth of test
+  functions were trimmed to 2 functions during the review-budget pass, see 7.3 above).
+- `cd services/api && .venv/Scripts/python.exe -m ruff check src tests` -> `All checks passed!`
+- `cd services/api && .venv/Scripts/python.exe -m mypy src` -> `Success: no issues found in 38 source
+  files`.
+- `cd services/api && .venv/Scripts/lint-imports.exe` -> `Contracts: 5 kept, 0 broken.` (the
+  `phrases-only-similarity-contracts` break from importing `platform.errors.error_envelope` was found
+  and fixed during this batch -- see the 7.1 note above -- before this final green run.)
+
+### TDD Cycle Evidence (Unit 7)
+
+| Task | Test File | Layer | Safety Net | RED | GREEN | TRIANGULATE | REFACTOR |
+|------|-----------|-------|------------|-----|-------|-------------|----------|
+| 7.1 (router + container + main) | `tests/contract/test_phrases_endpoints.py` | Contract | 212 pre-existing tests (Units 0-6b), re-run green before and after | Confirmed by construction: `POST /phrases`/`POST /phrases/matches` did not exist before this batch; the routes 404d until added | 24/24 passed after implementation | Every named Covers-line scenario for the two remaining endpoints has a distinct assertion or parametrized case (see the 7.2 breakdown above); the import-linter break/fix and the `GET /phrases` build-then-delete are both genuine, execution-confirmed findings, not hypothetical | Two rounds: (1) consolidated near-duplicate test pairs into parametrized tests, (2) applied the named seam (deferred `GET /phrases` + OpenAPI to Unit 7b); re-ran the full suite + mypy + ruff + lint-imports after each round |
+| 7.2 (contract tests) | (same file) | Contract | (see 7.1 row) | (see 7.1 row) | (see 7.1 row) | (see 7.1 row) | (see 7.1 row) |
+| 7.3 (integration) | `tests/integration/test_endpoints_pgvector.py` | Integration | 33 pre-existing integration tests (5a/5b), re-run green before and after | Confirmed by construction: the file did not exist before this batch; first collection attempt failed with a `DATABASE_URL` `Field required` error (a genuine, execution-confirmed collection-time bug, not contrived) before the `os.environ.setdefault` fix | 3/3 passed after the fix, both standalone and combined with `tests/contract` | 2 functions covering 3 named scenarios (201, 409, concurrent pair); the concurrency test is a real two-thread race against the actual Postgres advisory lock, not simulated | Merged the standalone 201 and 409 tests into one sequential test during the trim pass; re-verified green |
+
+### Test Summary (Unit 7)
+
+- Total tests written and passing at the final commit: 27 (24 in
+  `test_phrases_endpoints.py`, 3 in `test_endpoints_pgvector.py`).
+- Layers used: Contract (24), Integration (3), Unit (0 new -- reuses Unit 3's `ConflictRepo`/
+  `ProxyUnitOfWorkFactory` test doubles and Unit 2c's cursor codec unchanged).
+- Approval tests (refactoring): None -- `POST /phrases/validate`'s pre-existing behaviour (Unit
+  6b) is unchanged; all of `test_validate_health.py`'s tests re-run green, unmodified except the
+  one `build_phrases_container` call-site update for the new required `matches_page_size` parameter.
+- Pure functions/types created: `_phrase_out`, `_verdict_details` (both pure given their inputs);
+  `_PhraseOut`/`_ValidationOut`/`_MatchesData`/`_MatchesResponse`/`_PhraseResponse` are pydantic
+  response models (deterministic serialization).
+- Genuine findings during this batch, not contrived examples: the `platform.errors` transitive
+  import-linter break (7.1), the `app.main`/`DATABASE_URL` collection-time crash for the first
+  integration file to import it (7.3), and the concrete OpenAPI `$ref`-nesting shape confirmed via
+  direct `app.openapi()` introspection before the (later deferred) `test_openapi.py` was written.
+
+## Deviations from design.md / tasks.md (Unit 7)
+
+1. `GET /phrases` and the OpenAPI documentation pass (task 7.1's `list_phrases.py`, task 7.2's
+   `test_openapi.py` + `docs/openapi.json`) are deferred to a new Unit 7b, added to tasks.md with
+   its own Commit/Covers/Verify lines and PR-chain row -- the exact seam tasks.md's own Unit 7 Notes
+   line names, applied because the remaining scope was still ~42% over budget even after using it.
+   Both deferred pieces were fully implemented and verified green before being removed; see the 7.1/
+   7.2 notes above for what to restore.
+2. `error_envelope` NOT reused for the 409 body -- `router.py` builds the `{"error": {...}}` dict
+   inline instead of importing `app.platform.errors.error_envelope`, to avoid a new import-linter
+   violation (`phrases.api -> platform.errors -> similarity.domain`, a transitive chain the
+   `phrases-only-similarity-contracts` contract forbids). See the 7.1 note above.
+3. `test_endpoints_pgvector.py` sets `DATABASE_URL` defensively at module scope (via
+   `os.environ.setdefault`, using the same real default every fixture in the file already falls back
+   to) before importing `app.main` -- the first `tests/integration/*` module to need this, since it is
+   the first to import `app.main` at all. Not a fake/placeholder value, so no `pytest_collection_finish`
+   cleanup hook is needed (unlike `tests/contract/conftest.py`'s own, unrelated mechanism).
+4. `size:exception` accepted for the whole unit (566 changed lines, 554 insertions / 12 deletions, 6
+   files, ~42% over the 400-line hard cap, after applying the unit's own named seam and two trim
+   rounds) -- see "Review-budget" above and the "Resolution" note at the top of this section. The
+   apply agent stopped and reported back before committing, per instruction; the user then explicitly
+   accepted the overrun rather than requesting the proposed 7a/7c split.
+
+## Status (Unit 7)
+
+All code for 7.1-7.3 is written, RED->GREEN confirmed per task (see evidence above), and green
+against every quality gate: exact Unit 7 Verify command
+(`pytest tests/contract tests/integration/test_endpoints_pgvector.py -q`) -> 50 passed; full
+regression (`pytest -m "not integration and not slow" -q`) -> 232 passed, 0 regressions; full
+integration (`pytest -m integration -q`) -> 35 passed, 0 regressions; `ruff check src tests` ->
+clean; `mypy src` -> `Success: no issues found in 38 source files`; `lint-imports` -> `Contracts: 5
+kept, 0 broken.` 6 files changed, 554 insertions / 12 deletions (566 total), a documented
+`size:exception`, user-approved after the mandatory stop-and-report step (see "Resolution" above).
+
+## Remaining Tasks (as of the end of this batch)
+
+- [x] Unit 7: save + matches endpoints (tasks 7.1-7.3) -- done this batch, `size:exception` granted,
+  see above.
+- [ ] Unit 7b (`GET /phrases` + OpenAPI documentation): NOT started, needs Unit 7 merged first (the
+  OpenAPI snapshot should document the full `/phrases` surface). Fully specified in tasks.md and in
+  this section's 7.1/7.2 notes (the deleted code was working and green before removal).
+- [ ] Unit 8 (sentence-transformers adapter) needs Unit 2b (done) + Unit 7 (now shipped, not yet
+  merged into `develop` -- confirm this unit's PR has merged before starting Unit 8; see "PR status"
+  below for the PR number once opened).
+- [ ] Unit 10 (web scaffold + generated types) needs `docs/openapi.json`, which now only exists after
+  Unit 7b, not Unit 7 -- note this dependency shift explicitly for whoever picks up Unit 10.

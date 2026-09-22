@@ -60,6 +60,7 @@ def _client(
         uow_factory=factory,
         policy=SimilarityPolicy(threshold=settings.similarity_threshold),
         phrase_max_length=settings.phrase_max_length,
+        matches_page_size=settings.matches_page_size,
     )
 
     def _cache_snapshot() -> dict[str, int] | None:
