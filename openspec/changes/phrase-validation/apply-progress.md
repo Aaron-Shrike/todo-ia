@@ -2356,12 +2356,16 @@ the per-file breakdown.
 | `services/api/tests/integration/test_nearest_and_uow.py` | New | 441 / 0 |
 
 **Commit**: `feat(db): pgvector find_nearest, find_nearest_exact, unit of work and advisory lock`
+**SHA**: `1b605a48e1cc5567fde730204093ddbdd1d94418` (rebased directly onto `develop`'s tip; the original
+pre-rebase commit was `c4625bd`, superseded by the rebase — same tree, new parent)
 **Branch**: `feat/pv-05b-nearest-uow`
 **Base**: `develop` (retargeted from the authoring-ahead `feat/pv-05a-find-matches` base now that PR
 #18 merged into `develop` at `f6fb5bb` — a clean fast-forward on top of this branch's exact prior base
-`6bf9671`, no rebase needed)
+`6bf9671`, no rebase conflicts)
 **Lines changed**: 658 insertions / 38 deletions, 5 files — **`size:exception`, explicit user sign-off**
 (see above; the mandatory split-or-escalate step was followed before the exception was granted).
+**PR**: #19 — <https://github.com/Aaron-Shrike/todo-ia/pull/19>, base `develop`, head
+`feat/pv-05b-nearest-uow`, OPEN.
 
 ## Remaining Tasks (as of the end of this batch)
 
