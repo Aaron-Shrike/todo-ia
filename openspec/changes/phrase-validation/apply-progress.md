@@ -904,8 +904,7 @@ batch stops here — Unit 2b and beyond are NOT started.
 
 Scope of batch 4 (this append): Unit 2c (opaque wire cursor codec, task 2c.1) only, per the
 orchestrator's explicit instructions. Unit 2b was implemented in parallel by a different agent in
-this same working directory (its own commit, `693c61c` on `feat/pv-02b-embedding-cache`, already
-present when this batch started — see "Shared-working-directory note" below); Unit 3+ are NOT
+this same working directory (its own commits on `feat/pv-02b-embedding-cache`); Unit 3+ are NOT
 started.
 
 Branch `feat/pv-02c-cursor-codec`. **Authoring-ahead base**: cut from `feat/pv-02-ports-inmemory` at
@@ -916,22 +915,49 @@ so `main` still lacks Unit 2/2d. Same authoring-ahead pattern already used for U
 an unmerged base, pre-approved). **This branch/PR MUST be rebased onto `main` and retargeted from
 `feat/pv-02-ports-inmemory` to `main` directly the moment PR #7 merges.**
 
-### Shared-working-directory note (not a deviation, a safety check performed)
+### Shared-working-directory incident (read before touching this repo concurrently)
 
 The CONTEXT flagged that Unit 2b was being implemented in parallel by a different agent, also based
-on `feat/pv-02-ports-inmemory`, in what turned out to be the *same* working directory (not a separate
-git worktree — confirmed via `git worktree list`, which showed exactly one entry). Before creating
-this batch's branch, `git status` showed two untracked files belonging to Unit 2b
-(`similarity/adapters/caching.py`, `tests/unit/similarity/test_caching.py`). Checking out
-`feat/pv-02c-cursor-codec` from `origin/feat/pv-02-ports-inmemory` made those two paths disappear from
-the working tree. This was verified SAFE, not a data-loss incident, before proceeding: `git reflog`
-showed Unit 2b's work had already been **committed** (`693c61c perf(similarity): caching embedding
-provider decorator`) on its own branch `feat/pv-02b-embedding-cache` *before* this batch's checkout —
-the files were tracked commit content on that branch, not lost uncommitted work; `git checkout`
-correctly removed them from the working tree because the target branch (`feat/pv-02c-cursor-codec`,
-based on `feat/pv-02-ports-inmemory`) does not contain Unit 2b's commit. Nothing from Unit 2b was
-touched, staged, or committed by this batch — only `cursor.py`/`test_cursor.py` were ever `git add`ed
-(never `git add -A`), confirmed by `git status --short` immediately before the commit.
+on `feat/pv-02-ports-inmemory`. In practice this meant a genuinely **shared working directory and
+`.git`** (confirmed via `git worktree list`: exactly one entry, no isolated worktree per agent), not
+just a shared remote. Two concrete incidents this batch, both diagnosed and resolved safely:
+
+1. **Untracked-file disappearance (safe).** Before creating this batch's branch, `git status` showed
+   two untracked files belonging to Unit 2b (`similarity/adapters/caching.py`,
+   `tests/unit/similarity/test_caching.py`). `git checkout -b feat/pv-02c-cursor-codec
+   origin/feat/pv-02-ports-inmemory` made both paths disappear from the working tree. Verified SAFE
+   before proceeding, not a data-loss incident: `git reflog` showed Unit 2b's work had already been
+   **committed** (`693c61c perf(similarity): caching embedding provider decorator`) on its own branch
+   `feat/pv-02b-embedding-cache` *before* this checkout — the files were tracked commit content on
+   that branch, not lost uncommitted work; `git checkout` correctly removed them because the target
+   branch does not contain that commit.
+2. **Cross-branch commit landing (caught and fixed).** After committing `cursor.py`/`test_cursor.py`
+   on `feat/pv-02c-cursor-codec` (confirmed via `git log` and a successful `git push` at the time),
+   pushing the PR, and editing `tasks.md`/`apply-progress.md` in this working directory, a later `git
+   add ... && git commit -m "docs(sdd): ..."` landed on branch **`feat/pv-02b-embedding-cache`**, not
+   `feat/pv-02c-cursor-codec` — the other agent's concurrent `git checkout` had changed the shared
+   HEAD between my preceding tool calls and that commit. `git branch --show-current` immediately after
+   the commit confirmed the wrong branch; the commit (`830e27a`) contained only `apply-progress.md`
+   content unrelated to Unit 2b, an accidental pollution of that branch/PR. **Caught before any
+   damage**: the subsequent `git push` failed on a network error (unrelated, transient), so the stray
+   commit never reached `origin`; a follow-up check found the other agent's own subsequent git
+   operation had already reset local `feat/pv-02b-embedding-cache` back to match
+   `origin/feat/pv-02b-embedding-cache` (`890fd90`), silently discarding the stray commit before this
+   session took any corrective action itself. Re-verified `feat/pv-02b-embedding-cache` (local and
+   origin) both at `890fd90`, clean working tree, no trace of the stray commit remaining. Checked out
+   back to `feat/pv-02c-cursor-codec` (confirmed via `git branch --show-current` and `git log`
+   matching the expected `0f4dfc9` tip, already on `origin`), found this batch's `tasks.md`/
+   `apply-progress.md` edits had been reverted away by the same intervening checkout/reset, and
+   **redid both edits on the correct branch** before committing again — this section is that redo.
+
+**Operational takeaway for the orchestrator**: this pair of agents shares one working directory with
+no worktree isolation. Every `git` command in this kind of session should be treated as
+non-atomic against a concurrently-mutating HEAD; `git branch --show-current` immediately before AND
+after any `git add`/`git commit`/`git push` is the only reliable guard observed to work this batch.
+No `git add -A` was used at any point (only explicit path lists), which is what kept incident 2 from
+also capturing unrelated files. Neither incident touched a single byte of Unit 2b's actual production
+code, tests, or its own docs commits — confirmed by inspecting `feat/pv-02b-embedding-cache`'s log and
+diff before and after.
 
 - [x] 2c.1 RED then GREEN — `services/api/src/app/modules/phrases/domain/cursor.py`
   (`CURSOR_VERSION`, `Cursor` frozen dataclass, `InvalidCursor`, `encode_cursor`, `decode_cursor`,
@@ -1045,6 +1071,10 @@ per the CONTEXT's explicit instruction to do so.
   the chain pinned at Unit 2c, Start/End/Prior dependencies/Follow-ups/Out of scope, a prominent
   "⚠️ Authoring-ahead: needs retarget once PR #7 merges" section, naming/architecture notes for the
   four documented decisions above, and a Verification section with exact command output).
+- **The docs commit for this section had to be redone once** after a shared-working-directory git
+  race landed it on the wrong branch — see "Shared-working-directory incident" above. The code commit
+  (`0f4dfc9`) and the PR itself were never affected by that incident; only this apply-progress/tasks.md
+  bookkeeping commit needed a redo.
 
 ## Deviations from design.md / tasks.md (Unit 2c)
 
