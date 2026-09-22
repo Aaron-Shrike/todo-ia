@@ -2135,19 +2135,32 @@ Unit 6b/7 wire it in (this unit's own stated Rollback note); `find_nearest`/`fin
 
 ---
 
-## Unit 6: Settings, error envelope, framework-error handlers -- IMPLEMENTED, NOT COMMITTED (budget STOP)
+## Unit 6: Settings, error envelope, framework-error handlers -- SHIPPED (`size:exception`, user-approved)
+
+**Resolution**: the user explicitly accepted the 826-line overrun as `size:exception` (single PR,
+not the proposed 3-way split below) after reading this section's original "budget STOP" report.
+Committed and shipped as a single squashed RED+GREEN commit.
+
+**Commit**: `feat(api): settings, error envelope and framework-error handlers`
+**SHA**: `1edd12d` (14 files changed, 998 insertions / 4 deletions total, including
+`openspec/` doc updates -- 826 insertions across the 12 code/test files alone, per the
+measurement below)
+**Branch**: `feat/pv-06-api-foundation`
+**Base**: `develop` at `f6fb5bb` (Units 0-5a merged; Unit 5b still open in PR #19, not a
+dependency of Unit 6)
 
 Branch `feat/pv-06-api-foundation`, cut from `develop` at `f6fb5bb` (Units 0-5a merged; Unit 5b
 still open/unmerged in PR #19, not a dependency of Unit 6 per tasks.md's "6 needs 0 only").
 
 All three sub-tasks are fully implemented, RED->GREEN confirmed per task, and green against every
-quality gate below. **Not committed** and **no PR opened**: after a genuine review-budget trim pass
-the diff still measures 826 changed lines against this unit's 400-line hard cap, and tasks.md
-records no split seam for Unit 6 (unlike e.g. Unit 2's explicit "split `find_matches` out" note).
-Per the orchestrator's explicit instruction for this batch -- "if you're at genuine risk of
-exceeding 400 after a real trim pass, STOP and report back... rather than self-authorizing an
-exception or inventing a seam" -- this batch stops here instead of committing. See "Budget
-measurement" and "Proposed split (not yet actioned)" below.
+quality gate below. After a genuine review-budget trim pass the diff still measured 826 changed
+lines against this unit's 400-line hard cap, and tasks.md records no split seam for Unit 6 (unlike
+e.g. Unit 2's explicit "split `find_matches` out" note). Per the orchestrator's explicit instruction
+for that batch, the apply agent stopped and reported back instead of self-authorizing an exception
+or inventing a seam -- see "Budget measurement" and "Proposed split (declined)" below. **The user
+then explicitly accepted the overrun as `size:exception` for a single PR**, declining the proposed
+3-way split; the unit is committed and shipping as originally implemented (unchanged since the
+report -- no further code edits were needed to ship).
 
 - [x] 6.1 RED then GREEN `platform/settings.py` (`Settings`: every var from design.md's
   Configuration table this service itself reads, each with its stated validation range;
@@ -2272,7 +2285,7 @@ documented, self-authorized exception with the maintainer's prior "flag it, don'
 for that batch), THIS batch's explicit instruction is the opposite: stop and ask rather than
 self-authorize. Stopping here.
 
-### Proposed split (not yet actioned -- awaiting the user's chain-strategy decision)
+### Proposed split (declined -- user chose `size:exception` instead)
 
 The three sub-tasks already implemented split cleanly along their own 6.1/6.2/6.3 boundaries, each
 comfortably under 400 on its own:
@@ -2286,9 +2299,8 @@ comfortably under 400 on its own:
 Dependency order is linear (`errors-schemas` needs nothing from `settings`; `app-foundation` imports
 both `platform.errors` and `platform.settings`, so it must land last) -- a natural 3-PR
 feature-branch-chain or stacked-to-develop sequence, mirroring the precedent already used for Units
-2/2b/2c/2d and 3a-3d. **Not actioned in this batch** -- this is a proposal for the user to accept,
-adjust, or reject (e.g. in favor of a `size:exception`) before any commit is made, per this batch's
-explicit "stop and report back" instruction.
+2/2b/2c/2d and 3a-3d. **Declined**: the user explicitly chose `size:exception` for a single PR
+instead, after reviewing this proposal (see "Resolution" at the top of this section).
 
 ### Status
 
@@ -2296,6 +2308,17 @@ All code for 6.1-6.3 is written, RED->GREEN confirmed per task (see evidence abo
 against every quality gate: exact Unit 6 Verify command (`pytest -m "unit or contract" tests/unit/
 platform tests/contract -q`) -> 58 passed; full regression (`pytest -m "not integration and not slow"
 -q`) -> 193 passed, 0 regressions; `ruff check src tests` -> clean; `mypy src` -> `Success: no issues
-found in 33 source files`; `lint-imports` -> `Contracts: 5 kept, 0 broken.` **Nothing is committed and
-no PR is open** -- working tree has all Unit 6 files present and passing, staged but uncommitted,
-pending the user's decision on the proposed split (or an explicit `size:exception`) above.
+found in 33 source files`; `lint-imports` -> `Contracts: 5 kept, 0 broken.` Committed as `1edd12d`
+on `feat/pv-06-api-foundation`; PR number recorded below once opened.
+
+## PR status (Unit 6)
+
+**Opened.** Pushed `feat/pv-06-api-foundation` to `origin` and opened **PR #20**,
+<https://github.com/Aaron-Shrike/todo-ia/pull/20>, via `gh pr create --repo Aaron-Shrike/todo-ia
+--base develop --head feat/pv-06-api-foundation`. Confirmed via `gh pr view 20
+--json baseRefName,headRefName`: `baseRefName: "develop"`, `headRefName:
+"feat/pv-06-api-foundation"` -- correct, not stacked on anything (Unit 6 needs only Unit 0, already
+merged). PR body carries a `size:exception` callout at the top (same convention as PR #19 / Unit
+5b) plus the dependency diagram, Start/End/Prior deps/Follow-ups/Out-of-scope sections, and the
+exact Verification command output. No CI run expected (`.github/workflows/ci.yml` fires on `main`
+only; this PR targets `develop`).
