@@ -681,6 +681,188 @@ were each independently verified against real Postgres, not trusted from the rep
 (documentation clarity on the review-budget exclusion, not a correctness issue) found by this pass;
 no CRITICAL issues; nothing blocks merging PR #18 or proceeding to Unit 5b.
 
+## Verification Report - Unit 5b
+
+**Change**: phrase-validation
+**Unit**: 5b - find_nearest, find_nearest_exact, unit of work, advisory lock (pgvector adapter)
+**Branch**: feat/pv-05b-nearest-uow, base develop, PR #19 (open, not merged; 910 additions / 43 deletions per gh pr view, includes openspec doc updates alongside the 658/38 code diff)
+**Version**: N/A
+**Mode**: Strict TDD
+
+### Completeness
+| Metric | Value |
+|--------|-------|
+| Tasks total (Unit 5b) | 4 (5b.0-5b.3) |
+| Tasks complete | 4 |
+| Tasks incomplete | 0 |
+
+All four sub-tasks are checked [x] in tasks.md and match the code on disk on this branch.
+
+### Build and Tests Execution (all commands re-run directly by this pass, nothing taken on trust)
+
+Docker: db/migrate already healthy at session start; docker compose up -d db migrate re-confirmed both Healthy/Started.
+
+Unit's own literal Verify line (pytest -m integration tests/integration/test_nearest_and_uow.py -q): run 3 separate times, 17 passed every time (34.8s-35.5s each) - matches apply-progress.md's claim exactly.
+
+Recall-miss test in isolation, the highest-risk single test given its documented flake history: run 5 additional standalone times (pytest ... ::test_recall_miss_hnsw_alone_is_wrong_but_save_still_answers_409 -q) - 5/5 green (5.4s-5.7s each, consistent with finding a genuine miss on the first or second of up to 8 independent attempts). Combined with apply-progress.md's own reported 10/10 stress-test after the fix, this pass adds 5 more independent green runs plus 3 full-file green runs (which each include one recall-miss execution) - 8 additional real pytest invocations of this specific test, all green, none proxy-scripted.
+
+Full integration suite (pytest -m integration -q): run twice, 33 passed, 123 deselected both times - matches the claimed 16 (Unit 4+5a, unchanged) + 17 (new) exactly.
+
+Full unit suite (pytest -m "not integration and not slow" -q): 123 passed, 33 deselected - zero regression, confirmed by direct re-run.
+
+Lint/type/import:
+- ruff check src tests -> All checks passed!
+- mypy src -> Success: no issues found in 30 source files
+- lint-imports -> Contracts: 5 kept, 0 broken (4 ignored imports, same established exception as prior units)
+
+Coverage: not configured for this project (no coverage tool detected) - skipped, not a failure.
+
+### 1. Recall-miss test's fix -- scrutinized hardest, per instruction
+
+Read `_find_a_genuine_recall_miss` and `_adversarial_recall_miss_corpus` directly (not paraphrased from apply-progress.md). The retry loop **genuinely rebuilds an independent corpus per attempt**, not a tautological retry:
+- Each attempt calls `_adversarial_recall_miss_corpus(engine, random.Random(seed))`, which does a real `TRUNCATE phrases RESTART IDENTITY` (committed) followed by a fresh `_seed_raw` INSERT of 3,081 rows (3,000 filler + 80 confuser + 1 target) -- a real, committed data change, not an in-memory replay.
+- pgvector's HNSW index is **not** dropped/recreated by `TRUNCATE` (only the autouse `_freshly_migrated_schema` fixture does a full Alembic downgrade/upgrade, once per test function, before any attempt loop runs) -- but HNSW's graph structure is rebuilt incrementally as each `INSERT` runs, and pgvector's own per-node layer assignment during that incremental build draws from Postgres-internal randomness, independent of the Python `random.Random(seed)` that only controls the corpus's vector values. This means each attempt, even reusing the same seed value, is not guaranteed to reproduce the same graph structure -- the mechanism the apply-progress.md narrative describes is architecturally sound, not asserted without basis.
+- Each attempt independently re-verifies the control invariant (`assert exact.text == "target"`) before checking the HNSW arm, so a broken corpus never silently passes.
+- The loop accepts the **first** attempt where HNSW's own top-1 (forced via a tiny `ef_search=1`) genuinely differs from `"target"`, up to 8 attempts, `pytest.fail`s loudly only if all 8 attempts find no miss.
+- This is a real "retry until a genuine adverse condition manifests" pattern (same shape as retrying a race-condition reproduction), not a tautology and not testing the same state repeatedly -- each attempt is a distinct, re-committed database state.
+
+Real execution evidence, not re-trust of the prior "6+ reruns" claim (which apply-progress.md itself already flagged as methodologically flawed and superseded): this pass ran the isolated recall-miss test 5 additional standalone times (all green, ~5.5s each) plus 3 full-file runs (all green, each including one execution of this test) -- 8 genuine pytest invocations, 8/8 green, satisfying the ">=3 consecutive clean runs" bar the task set, well above it. No CRITICAL finding here -- the fix is real engineering (bounded retry across genuinely independent, re-seeded, re-committed corpus states), not a papered-over flake, and this pass's own fresh runs corroborate it rather than merely re-reading the claim.
+
+### 2. 5b.0 planner-assumption reversal -- independently re-verified, not trusted
+
+Ran my own `EXPLAIN (ANALYZE, BUFFERS)` against a freshly-migrated `phrases_test`, seeded with 1,000 random 384-dim unit vectors (independent seed, independent script, not reusing any fixture from the test file):
+
+- Literal design.md query (`ORDER BY embedding <=> :q, id LIMIT 1`) with `SET enable_seqscan = off`: plan is `Limit -> Sort (Sort Method: top-N heapsort) -> Seq Scan on phrases (cost=10000000000.00...)`. The artificially inflated cost (1e10, the effect of `enable_seqscan=off`) is still the plan chosen -- confirming independently that no alternative plan exists for this two-key ORDER BY; forcing seqscan off does not make the planner find an HNSW path because none can serve both sort keys. This matches the apply agent's claim exactly, verified from a fresh script and a fresh corpus, not re-run of their own test.
+- k-NN-subquery fallback (`FIND_NEAREST_QUERY`, k=10), same `enable_seqscan = off` forcing: plan is `Limit -> Incremental Sort (Presorted Key on the inner ORDER BY) -> Limit -> Index Scan using phrases_embedding_hnsw_idx on phrases`. Confirms the documented fallback genuinely hits the HNSW index under the same forcing that defeats the literal query.
+
+This independently corroborates 5b.0's finding: it is a real, falsifiable result (confirmed falsified in the intended direction), not a shortcut or an unverified assumption carried forward.
+
+### 3. Isolation levels and the barrier-snapshot test -- non-vacuous, confirmed by reading the mechanism
+
+`Isolation.REPEATABLE_READ`/`READ_COMMITTED` map to the literal SQL keywords (`contracts.py`), and `PgVectorUnitOfWork.__enter__` passes `isolation_level=self.isolation.value` plus `postgresql_readonly=self.read_only` to SQLAlchemy's `execution_options` -- a real, observable transaction-level setting, not a no-op label.
+
+The barrier test (`_barrier_validate`) uses two genuine `threading.Event`s (`paused`, `resume`) and the adapter's `after_statement` hook (invoked with a real per-repository statement counter after every executed query) -- no `time.sleep` anywhere in the mechanism. The hook pauses exactly after the first statement (`find_nearest`'s own `_mark_statement()` call), a second, real connection (`_seed_raw`, its own `engine.connect()`) inserts and commits a closer phrase, then the paused thread resumes and runs `find_matches` on the same open transaction. `test_repeatable_read_snapshot_survives_a_concurrent_commit` asserts both `find_nearest`'s result and `find_matches`' page exclude the new row. Critically, `test_read_committed_control_sees_the_concurrent_commit` runs the identical scenario at READ COMMITTED and asserts the new row does appear in `find_matches`' page -- a genuine divergence between the two isolation levels on the same test harness, proving the REPEATABLE READ assertion is not vacuously true (it would fail under the control's isolation level, and does fail there in the intended direction). Confirmed green on direct re-run (both tests included in the 3 full-file reruns above).
+
+### 4. Advisory-lock tests -- two real connections, confirmed by reading the fixtures
+
+`_hold_lock_in_background` and `test_advisory_lock_serializes_two_real_connections`/`test_lock_timeout_produces_an_error_with_nothing_persisted`/`test_lock_released_after_the_holder_rolls_back_on_failure` each open independent `engine.connect()` calls, several inside a background `threading.Thread`, never two cursors sharing one connection object -- this genuinely exercises Postgres's own advisory-lock wait queue across sessions, not an in-process simulation.
+- Serialization: connection A acquires the lock, blocks on a real threading.Event; connection B's `lock_for_write()` is a real synchronous blocking call; the assertion order (about-to-release, second-acquired) is guaranteed by Postgres's mutual exclusion, not Python thread-scheduling luck -- no sleeps, no polling.
+- lock_timeout: connection B calls `lock_for_write(lock_timeout_ms=50)` while A holds the lock; raises LockTimeout (mapped from SQLSTATE 55P03); a fresh connection's `SELECT count(*) FROM phrases` afterward is 0 -- nothing persisted, confirmed with a real query, not an assumption.
+- Lock released on failure: A rolls back (rollback=True) instead of committing; a fresh connection's `lock_for_write(lock_timeout_ms=200)` succeeds without raising once A's rollback is confirmed complete via a second threading.Event -- a real second-acquisition-succeeds proof, exactly as the task instruction required.
+
+All three re-confirmed green on direct re-run.
+
+### 5. 23505 to DuplicateTextConflict mapping -- correctly scoped, not over-broad
+
+Read `_is_unique_violation_on` directly: it checks both `exc.orig.sqlstate == "23505"` and `exc.orig.diag.constraint_name == "phrases_unique_normalized_text_uidx"` before mapping to DuplicateTextConflict; any other IntegrityError (wrong SQLSTATE, or a 23505 on a different constraint) re-raises unchanged (bare `raise`, inside the `except IntegrityError` block in `add()`). This is a narrowly-scoped mapping, not a blanket "any unique violation becomes a domain conflict" -- confirmed by reading the code, and apply-progress.md's "Exception-shape verification" note records that the constraint name was empirically confirmed against a real duplicate INSERT before the mapping code was written (not assumed from driver docs).
+
+### 6. repository_contract.py tolerance widening (1e-9 to 1e-5) -- justified, not an arbitrary loosening
+
+`git show 1b605a4 -- .../repository_contract.py` shows exactly one line changed: `test_find_nearest_returns_a_below_threshold_neighbour`'s `pytest.approx(1.9, abs=1e-9)` -> `abs=1e-5`. Cross-checked directly against design.md's own "Why 1e-5 and not 1e-6" section: pgvector stores vector columns as float32, so a write/read round-trip costs ~1e-7 relative error per component, summing to a worst case above 1e-6 across 384 dimensions -- 1e-5 is design.md's own established, pre-existing tolerance (already used identically by Unit 5a's find_matches oracle test), not a number invented to make this one test pass. This is a shared-suite assertion exercised by both adapters via NearestNeighbourContractSuite; the in-memory adapter computes the distance in exact float64 and will still equal 1.9 to far better than 1e-5, so widening the tolerance does not weaken the in-memory adapter's own guarantee -- it only accommodates the newly-registered pgvector adapter's genuine float32 storage error, exactly as intended.
+
+### 7. Full test-suite re-run -- all counts match
+
+| Command | Expected | Actual | Result |
+|---|---|---|---|
+| pytest -m integration tests/integration/test_nearest_and_uow.py -q (x3) | 17 passed | 17 passed (x3) | MATCH |
+| pytest -m integration -q (x2) | 33 passed | 33 passed, 123 deselected (x2) | MATCH |
+| pytest -m "not integration and not slow" -q | 123 passed | 123 passed, 33 deselected | MATCH, no regression |
+| ruff check src tests | clean | All checks passed! | MATCH |
+| mypy src | clean | Success: no issues found in 30 source files | MATCH |
+| lint-imports | 5 kept, 0 broken | 5 kept, 0 broken | MATCH |
+
+### 8. size:exception documentation accuracy -- confirmed consistent across all three sources
+
+- tasks.md (line under 5b.3): states 696 changed lines (658 insertions / 38 deletions, 5 files), attributes the decision explicitly to "explicit user sign-off, not self-authorized," and records that the mandatory split-or-escalate step (trim pass + the unit's own pre-authorized seam) was followed first, leaving it ~232 over the cap before the user accepted the exception.
+- apply-progress.md's Unit 5b section: same final figure (696 changed lines / 658 ins / 38 del), the same narrative (pre-seam 679, post-seam-projection ~632, final 696 after the recall-miss retry-logic addition), and explicitly frames the user's decision as informed sign-off after being presented three options (accept exception, real split, something else) -- not the apply agent choosing unilaterally.
+- PR #19 body (gh pr view 19 --json body): leads with a "Review budget: size:exception (696 changed lines, explicit user sign-off)" callout, reproduces the same 658/38/696 figures and the same trim-then-seam-then-stop narrative, and a "Review budget" section near the bottom repeats the figure again.
+
+All three sources agree exactly on the final line count and attribute the decision correctly to user sign-off, not self-authorization. gh pr view's additions/deletions (910/43) are larger than the 658/38 code figure because they include openspec/ doc updates in the same PR diff -- consistent with the task context's own framing ("910 additions / 43 deletions across 2 commits") and not a discrepancy.
+
+### 9. Commit attribution check
+
+git show 1b605a4 -s --format="%B" and git show 18bc59f -s --format="%B": neither commit message contains Co-Authored-By, Generated with, or any other AI/Claude attribution line.
+
+### Spec Compliance Matrix
+| Requirement / Scenario | Test | Result |
+|---|---|---|
+| DC Server-side re-validation: Save does not use the approximate read | test_save_never_issues_find_nearest_on_201_or_409 | COMPLIANT |
+| DC Server-side re-validation: Save catches a duplicate the approximate index would miss | test_recall_miss_hnsw_alone_is_wrong_but_save_still_answers_409 | COMPLIANT (re-verified 8/8 green across this pass) |
+| SV Keyset match pagination: Exact scan on the save path | test_explain_shows_find_nearest_uses_hnsw_and_find_nearest_exact_never_does | COMPLIANT |
+| DC Concurrency: Concurrent similar saves / Concurrent identical saves without confirmation | test_concurrent_unconfirmed_saves_yield_exactly_one_201 (parametrized identical/similar-but-distinct) | COMPLIANT |
+| DC Concurrency: Concurrent confirmed saves | test_concurrent_confirmed_saves_of_near_duplicate_texts_both_succeed | COMPLIANT |
+| DC Concurrency: Lock wait is bounded | test_lock_timeout_produces_an_error_with_nothing_persisted | COMPLIANT |
+| DC Concurrency: Lock released on failure | test_lock_released_after_the_holder_rolls_back_on_failure | COMPLIANT |
+| DC Concurrency: Unique violation maps to 409, never 500 (adapter scope: maps only that constraint) | Adapter code inspection (_is_unique_violation_on); end-to-end 409 path exercised by test_save_never_issues_find_nearest_on_201_or_409's second call | COMPLIANT |
+| DC Concurrency: Persistent violation still yields 409 | Owned at the use-case level (Unit 3's test_save_phrase.py, always-raising repo double); adapter's mapping code confirmed correctly scoped here | COMPLIANT (adapter scope); use-case retry loop out of this unit's file, correctly so |
+| DC Failures never save: Database failure rolls back | test_lock_timeout_produces_an_error_with_nothing_persisted (count == 0 after failure) | COMPLIANT |
+| SV Validation result shape: Statelessness | NearestNeighbourContractSuite.test_add_inside_a_read_only_unit_of_work_raises_immediately, run against pgvector via TestPgVectorNearestNeighbourContract | COMPLIANT |
+| PM Persistence: Confirmed duplicate metadata | Not directly asserted on stored similarity_score/most_similar_phrase_id values against real Postgres in this unit's own file -- see WARNING below | PARTIAL |
+| ADR-015 Two isolation levels, REPEATABLE READ READ ONLY vs READ COMMITTED | test_repeatable_read_snapshot_survives_a_concurrent_commit + test_read_committed_control_sees_the_concurrent_commit (non-vacuous pair) | COMPLIANT |
+
+Compliance summary: 12/13 Covers-line items fully COMPLIANT with a passing test against real Postgres re-run by this pass; 1 PARTIAL (see WARNING below -- a real but low-risk documentation/coverage-precision gap, not a correctness defect).
+
+### Correctness (Static Evidence)
+| Item | Status | Notes |
+|---|---|---|
+| find_nearest k-NN-subquery fallback | Implemented | Independently re-confirmed via a fresh EXPLAIN run (see above) to hit the HNSW index under forcing |
+| find_nearest_exact literal two-key shape | Implemented | Independently re-confirmed to never show hnsw in its plan, even primed by a prior enable_seqscan=off |
+| platform/db.py::acquire_write_lock | Implemented | SET LOCAL lock_timeout + pg_advisory_xact_lock, both via set_config(..., true) (non-leaking, transaction-scoped) |
+| 23505 to DuplicateTextConflict mapping | Implemented | Correctly scoped to the named constraint only (see item 5 above) |
+| after_statement test hook | Implemented | Test-only instrumentation, does not affect production behavior (no-op when None) |
+| PgVectorUnitOfWork isolation/read-only wiring | Implemented | Passes real isolation_level/postgresql_readonly execution options to SQLAlchemy |
+
+### Coherence (Design)
+| Decision | Followed? | Notes |
+|---|---|---|
+| D1/D12: HNSW reserved for find_nearest only; find_nearest_exact/find_matches always exact | Yes | Confirmed via EXPLAIN guard test + independent re-run |
+| D3: pg_advisory_xact_lock, one global key | Yes | ADVISORY_LOCK_KEY = "phrases:validate_and_insert", single hashtext() key, matches design.md's stated rationale (semantic duplicates have different text, so a text-keyed lock protects nothing) |
+| ADR-015: UnitOfWork port, two isolation levels, validate REPEATABLE READ READ ONLY, save READ COMMITTED | Yes | Confirmed via the barrier test's non-vacuous pair |
+| Documented k-NN-subquery fallback for find_nearest | Yes | 5b.0's finding independently reproduced by this pass, not merely re-read |
+| Bounded lock_timeout, mapped to LockTimeout -> (eventually) 500 INTERNAL_ERROR | Yes | Mapping to HTTP is Unit 6/7's job (not yet wired); domain-level LockTimeout raised correctly here |
+
+### TDD Compliance
+| Check | Result | Details |
+|-------|--------|---------|
+| TDD Evidence reported | Yes | apply-progress.md documents RED->GREEN per sub-task plus the exception-shape verification and the recall-miss reliability investigation |
+| All tasks have tests | Yes | 5b.0 is a VERIFY-only measurement task (no RED/GREEN expected, same precedent as Unit 4's 4.0/Unit 5a's 5a.3); 5b.1-5b.3 all have real test files |
+| RED confirmed (tests exist) | Yes | tests/integration/test_nearest_and_uow.py exists, 17 tests, all traced to a named scenario |
+| GREEN confirmed (tests pass) | Yes | Re-confirmed by direct re-execution in this pass (3x full file, 5x recall-miss standalone, 2x full integration suite) |
+| Triangulation adequate | Yes | 17 distinct test functions, each exercising a distinct mechanism (recall, EXPLAIN, spy, recall-miss+save, oracle, 3 lock scenarios, 2 concurrency scenarios, 2 barrier scenarios) |
+| Safety Net for modified files | Yes | Full unit suite (123) and full integration suite minus the 17 new (16, Unit 4+5a) re-confirmed green before/around this unit per apply-progress.md and this pass's own reruns |
+
+TDD Compliance: 6/6 checks passed.
+
+### Test Layer Distribution
+| Layer | Tests | Files | Tools |
+|-------|-------|-------|-------|
+| Unit | 123 (unchanged) | unchanged | pytest |
+| Integration | 33 (16 unchanged from Unit 4+5a + 17 new) | 3 (test_schema.py, test_find_matches.py unchanged, test_nearest_and_uow.py new) | pytest + real Postgres/pgvector via Docker Compose |
+| Contract | 1 of the 17 new (test_add_inside_a_read_only_unit_of_work_raises_immediately, inherited via NearestNeighbourContractSuite) | shared repository_contract.py | pytest |
+| Total | 156 | | |
+
+### Assertion Quality
+No tautologies, no ghost loops over possibly-empty collections, no assertion-without-production-code-call found. Every assertion in test_nearest_and_uow.py exercises a real Postgres connection, a real PgVectorPhraseRepository/PgVectorUnitOfWork, real threads, or real EXPLAIN plan text -- none are mocked or stubbed. The _SpyRepo/_SpyUnitOfWork in the "save never issues find_nearest" test wrap the real adapter via __getattr__ delegation rather than replacing it, so the underlying query still runs for real; the spy only adds a counter.
+Assertion quality: All assertions verify real behavior.
+
+### Quality Metrics
+Linter: No errors
+Type Checker: No errors
+Import Linter: 5 kept, 0 broken
+
+### Issues Found
+
+CRITICAL: None. The recall-miss test -- the unit's own flagged flakiness risk -- was re-verified 8/8 green across this pass's independent runs (5 standalone + 3 full-file), on top of apply-progress.md's own reported 10/10 stress-test after the fix, comfortably clearing the ">=3 consecutive clean runs" bar the task set for treating it as CRITICAL rather than WARNING.
+
+WARNING:
+1. PM "Persistence: Confirmed duplicate metadata" is named in Unit 5b's Covers line but not directly asserted at the pgvector-integration level in this unit's own test file. test_concurrent_confirmed_saves_of_near_duplicate_texts_both_succeed does exercise a real duplicate_confirmed INSERT against pgvector and asserts on validation_status, but does not assert the returned phrase's similarity_score/most_similar_phrase_id values are correct. This scenario IS covered at the unit level with logic-correctness proof (test_save_phrase.py::test_duplicate_confirmed_persists_with_the_recorded_metadata, Unit 3, fake repo) and the DB-level pairing invariant is enforced by the phrases_confirmed_has_neighbor/phrases_metadata_paired CHECK constraints (Unit 4, test_schema.py) -- so an incorrect pairing (e.g. a NULL score on a confirmed row) would already be rejected by the database, and the adapter's add() is simple straight-through parameter binding with no transformation logic that could silently corrupt the values in between. The residual risk is therefore low, but the specific scenario named in the Covers line is not literally, explicitly re-proven end-to-end against real Postgres in this unit's own file the way, e.g., the recall-miss or barrier scenarios are. Not blocking; worth a one-line assertion addition in a follow-up if this unit's test file is revisited.
+
+SUGGESTION:
+1. Consider adding an explicit assertion on similarity_score/most_similar_phrase_id in test_concurrent_confirmed_saves_of_near_duplicate_texts_both_succeed (or a small dedicated test) the next time this file is touched, closing the WARNING above with a direct assertion rather than relying on the CHECK-constraint backstop plus the unit-level test.
+2. apply-progress.md's Unit 5b section is thorough but very long (its own recall-miss reliability investigation alone is ~25 lines); future units could consider a shorter top-line summary with the full investigation moved to a linked docs/evidence/ note, mirroring the pattern already used for docs/evidence/exact-scan-timings.md (Unit 5a) and docs/evidence/calibration.md (Unit 9), for easier scanning by a future verify pass.
+
+### Verdict
+PASS WITH WARNINGS -- all 4 sub-tasks complete and independently re-verified by direct re-execution against real Postgres/pgvector, not taken on faith: the literal Unit 5b Verify line reproduces 17 passed on 3 separate full-file runs, the full integration suite reproduces 33 passed on 2 separate runs, the full unit suite reproduces 123 passed with zero regression, all lint/type/import checks are clean, no AI co-authorship in either commit. The unit's own flagged highest risk -- the recall-miss test's reliability fix -- was scrutinized hardest per instruction: the retry loop genuinely rebuilds an independent, re-committed corpus per attempt (not a tautological retry), and this pass's own 8 additional real pytest invocations (5 standalone + 3 via the full file) were all green, clearing the ">=3 consecutive clean runs" bar that would otherwise make this CRITICAL. The 5b.0 planner-assumption reversal was independently reproduced with a fresh EXPLAIN script and a fresh corpus (not re-running the apply agent's own test), confirming both halves of the claim: the literal query never hits HNSW, and the adopted k-NN-subquery fallback does. The barrier-snapshot test's non-vacuous REPEATABLE READ vs READ COMMITTED pair, the two-real-connection advisory-lock tests, and the correctly-scoped 23505 mapping were each verified by reading the actual mechanism, not the narrative. The 1e-9 to 1e-5 tolerance widening matches design.md's own stated pgvector rationale and does not weaken the in-memory adapter's exactness. The size:exception documentation is accurate and consistent across tasks.md, apply-progress.md, and the PR #19 body, correctly attributed to explicit user sign-off. One WARNING (a named Covers-line scenario -- confirmed-duplicate metadata persistence -- lacking a direct end-to-end assertion in this unit's own file, though covered indirectly by a unit-level test plus a DB-level CHECK-constraint backstop) keeps this from a clean PASS; it is not a correctness defect and does not block archive.
 ## Verification Report - Unit 6
 
 **Change**: phrase-validation

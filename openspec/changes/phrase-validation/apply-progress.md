@@ -2135,6 +2135,249 @@ Unit 6b/7 wire it in (this unit's own stated Rollback note); `find_nearest`/`fin
 
 ---
 
+## Unit 5b: `find_nearest`, `find_nearest_exact`, unit of work, advisory lock
+
+Branch `feat/pv-05b-nearest-uow`, cut authoring-ahead from `feat/pv-05a-find-matches` at `6bf9671`
+(PR #18 was open at the start of this batch; it merged into `develop` at `f6fb5bb` — a clean
+fast-forward, no divergence — partway through this batch; rebase/retarget is a trivial follow-up,
+noted below, NOT attempted here per the CONTEXT's explicit instruction). Needs Unit 5a (done).
+
+**Status: implementation complete and fully verified against real Postgres; NOT committed.** This
+unit hit a genuine review-budget wall even after applying its own named escape hatch — see the STOP
+section below. All code and tests exist on disk, green, ready to commit the moment a delivery
+decision is made.
+
+### 5b.0 VERIFY: planner assumption — FALSIFIED, documented fallback adopted
+
+Seeded `phrases_test` with 100 / 1,000 / 10,000 random 384-dim unit vectors and ran
+`EXPLAIN (ANALYZE, BUFFERS)` on design.md's literal query
+(`SELECT id, text, embedding <=> :q AS distance FROM phrases ORDER BY embedding <=> :q, id LIMIT 1`)
+with `SET enable_seqscan = off` first (the forcing the task specifies). **Result: at all three sizes
+the planner still chose `Seq Scan -> top-N heapsort`**, never touching `phrases_embedding_hnsw_idx`,
+despite the seq-scan cost being inflated by `1e10` — the two-key `ORDER BY` (`embedding <=> :q, id`)
+has no index that can serve BOTH keys, so the HNSW index scan is never even a candidate plan; forcing
+seqscan off just leaves Postgres with no alternative but the same Seq Scan at an artificially huge
+cost. Confirmed at n=100 (`Execution Time: 225 ms`, JIT compilation dominates at this size),
+n=1,000 (`9.7 ms`) and n=10,000 (`14.4 ms`) — full raw plans captured in this batch's scratch output,
+summarized here since they are not committed to the repo.
+
+**Adopted the documented fallback** (design.md's "Nearest-neighbour query" section): a k-NN subquery
+(`ORDER BY embedding <=> :q LIMIT :k`, `k = 10`) re-sorted by `(distance, id)` in an outer query.
+Re-ran the same `EXPLAIN` with this shape, same `enable_seqscan = off` forcing, on 1,000 rows:
+the plan is `Limit -> Incremental Sort -> Limit -> Index Scan using phrases_embedding_hnsw_idx on
+phrases` (`Presorted Key` on the inner `LIMIT 10`, `Order By: embedding <=> :q`) — confirming the
+fallback DOES hit the HNSW index, exactly as design.md predicted. On the SAME 1,000-row corpus with
+the default planner (no forcing), the fallback naturally picks `Seq Scan` instead (table small enough
+that Postgres's own cost model prefers it) — matching design.md's own expectation ("on a small table
+Postgres would pick a sequential scan anyway... which is why the guard tests force the arm under
+test"). `find_nearest` therefore uses the k-NN-subquery fallback shape (`FIND_NEAREST_QUERY`,
+exported); `find_nearest_exact` uses the literal two-key shape directly, since an exact scan WANTS
+Seq Scan anyway (same planner setting as `find_matches`: `enable_indexscan = off`).
+
+### 5b.1 / 5b.2: `pgvector_repository.py` extended, `platform/db.py` new
+
+`services/api/src/app/modules/phrases/adapters/pgvector_repository.py` (5a's stubs replaced):
+- `find_nearest`: sets `enable_indexscan=on` + `hnsw.ef_search` (`SET LOCAL` via `set_config`), runs
+  `FIND_NEAREST_QUERY` (the 5b.0 fallback), `k=10` fixed per design.md.
+- `find_nearest_exact`: sets `enable_indexscan=off`, runs `FIND_NEAREST_EXACT_QUERY` (the literal
+  two-key shape) — SavePhrase-only, under the lock.
+- `lock_for_write`: delegates to `platform.db.acquire_write_lock`; maps SQLSTATE `55P03` to the new
+  `LockTimeout` (added to `phrases/contracts.py`, next to `DuplicateTextConflict`).
+- `add`: now catches `IntegrityError`, maps ONLY a `23505` on `phrases_unique_normalized_text_uidx`
+  (checked via `exc.orig.diag.constraint_name`, empirically confirmed against a real duplicate insert
+  — see "Exception-shape verification" below) to `DuplicateTextConflict`; other integrity errors
+  propagate unchanged.
+- `after_statement`: new optional constructor param (repository, UoW and factory), a callable invoked
+  with a per-repository monotonically increasing statement counter after every real query — the
+  barrier-snapshot test's deterministic pause point (see 5b.3).
+- `PgVectorUnitOfWork`/`PgVectorUnitOfWorkFactory` (5a's minimal stubs): extended, not replaced, with
+  `ef_search`/`lock_timeout_ms`/`after_statement` passthrough to the repository they construct.
+
+`services/api/src/app/platform/db.py` (new — design.md's module tree names `db.py` for "engine,
+session, advisory-lock helper"; only the lock helper is built now, since engine/session construction
+needs `Settings.DATABASE_URL`, Unit 6's job): `acquire_write_lock(connection, lock_timeout_ms)` runs
+`SET LOCAL lock_timeout` then `SELECT pg_advisory_xact_lock(hashtext('phrases:validate_and_insert'))`,
+both via `set_config(..., true)` so neither leaks across a pooled connection. One global lock key
+(design D3): different-text near-duplicates make a text-keyed lock pointless.
+
+**Exception-shape verification** (before writing the mapping code, not assumed): ran a real duplicate
+INSERT and a real lock-timeout scenario against Postgres via the psycopg driver. Unique violation:
+`IntegrityError.orig` is `psycopg.errors.UniqueViolation`, `.sqlstate == "23505"`,
+`.diag.constraint_name == "phrases_unique_normalized_text_uidx"`. Lock timeout: `OperationalError.orig`
+is `psycopg.errors.LockNotAvailable`, `.sqlstate == "55P03"`. Both confirmed empirically, not assumed
+from driver docs, before the `add`/`lock_for_write` mapping code was written.
+
+### 5b.3: `tests/integration/test_nearest_and_uow.py` — 17/17 passing
+
+Registers `PgVectorPhraseRepository` against `NearestNeighbourContractSuite` (completing the composed
+`RepositoryContractSuite` for pgvector; 5a registered `MatchesContractSuite` only). All scenarios from
+the task's literal list are covered, several consolidated into shared test functions during the
+review-budget trim (see below) without losing any named scenario:
+
+- **Non-vacuous recall guard**: 1,000-row corpus, 300 query vectors, HNSW arm (`enable_seqscan=off`)
+  vs exact arm (`enable_indexscan=off`) compared per query — **0 mismatches**, confirmed both via a
+  standalone scratch probe before writing the test (same result) and by the committed-ready test
+  itself.
+- **EXPLAIN guards, merged into one test**: `find_nearest` (forced `enable_seqscan=off`) plan contains
+  `Index Scan using phrases_embedding_hnsw_idx` and no `Seq Scan`; `find_nearest_exact`, run on the
+  SAME connection right after (i.e. with `enable_seqscan=off` already primed), still shows no `hnsw`
+  anywhere in its plan — proving its own `enable_indexscan=off` setting is unconditional, not merely
+  incidental to a fresh session.
+- **Save never issues `find_nearest`**: a `unittest`-free hand-rolled spy (`_SpyRepo` wrapping
+  `PgVectorPhraseRepository` via `__getattr__` delegation, injected through a `_SpyUnitOfWork`
+  subclass's `__enter__`) counts `find_nearest` calls across a real `SavePhrase` run that produces
+  both a 201 (first save) and a 409 (second, identical save) — **0 calls**, both paths use
+  `find_nearest_exact` only, exactly as design.md requires.
+- **Recall-miss fixture, merged with its "save still safe" proof into one test**: an adversarial
+  corpus (3,000 filler vectors + an 80-point "confuser" cluster placed at a slightly better distance
+  than the true nearest, in a different direction) makes HNSW's top-1 (`ef_search` in `{1, 2, 4}`)
+  miss a stored near-identical phrase while the exact scan always finds it — **empirically verified
+  across 6+ reruns and 6+ random seeds** (a scratch sweep script, not kept in the repo) that this
+  specific corpus construction misses reliably regardless of HNSW's own internal, Postgres-side layer
+  randomization (which varies per `CREATE INDEX`/insert run, independent of the Python `random.Random`
+  seed). The SAME corpus then feeds a real `SavePhrase` call: since `SavePhrase` never reads
+  `ef_search` (it only calls `find_nearest_exact`), the save still correctly answers 409, not 201 —
+  proving the write path is safe regardless of how bad HNSW recall gets.
+- **Oracle agreement**: `find_nearest_exact`'s returned distance vs the pure-Python `cosine_distance`
+  oracle, 5 random 384-dim vectors, agrees within 1e-5 (same tolerance and rationale as Unit 5a's
+  `find_matches` oracle — pgvector's `vector` column is float32, domain cosine is float64).
+- **Advisory-lock serialization, two REAL connections**: connection A acquires the lock in a
+  background thread and blocks on a `threading.Event`; connection B's `lock_for_write()` call is a
+  genuinely blocking synchronous call on Postgres's advisory-lock wait queue — the assertion that B's
+  post-acquisition marker is appended strictly after the main thread's pre-release marker is
+  guaranteed by Postgres's own mutual-exclusion semantics, not by Python thread-scheduling luck (no
+  sleeps, no polling).
+- **`lock_timeout` produces an error with nothing persisted**: connection B calls `lock_for_write`
+  with `lock_timeout_ms=50` while A holds the lock — raises `LockTimeout`; `SELECT count(*) FROM
+  phrases` afterward is 0.
+- **Lock released on failure**: A rolls back (simulating a mid-save failure) instead of committing; a
+  fresh connection's `lock_for_write()` (with a comfortable 200 ms timeout) succeeds immediately once
+  A's rollback is confirmed complete (a second `threading.Event`, not a race).
+- **Concurrency spec scenarios** (`_concurrent_saves` helper, two real threads each with its own
+  `SavePhrase`): *Concurrent identical saves without confirmation* and *Concurrent similar saves*
+  (different text, same near-duplicate score) are one `@pytest.mark.parametrize`d test — in BOTH
+  cases exactly one thread gets a 201 and the other a 409, deterministically, because whichever thread
+  wins the advisory lock first commits, and the second thread's `find_nearest_exact` then sees the
+  just-committed row. *Concurrent confirmed saves* (two DIFFERENT near-duplicate texts, both
+  `confirm_duplicate=True`) both succeed — one lands `unique` (whichever committed first, empty store),
+  the other `duplicate_confirmed` (sees the first) — proving the lock only serializes, never produces
+  a spurious failure for legitimately confirmed concurrent saves.
+- **Barrier snapshot test** (two `threading.Event` + the new `after_statement` hook, no sleeps): a
+  reader thread opens a `REPEATABLE READ READ ONLY` transaction, `find_nearest` pauses via the hook
+  right after its own query returns; a second, real connection inserts a closer phrase and commits;
+  the reader resumes and runs `find_matches` — **neither statement sees the new row**. A
+  `READ COMMITTED` control run of the identical scenario **does** see the new row in `find_matches`,
+  proving the REPEATABLE READ test is a real assertion, not vacuously true.
+
+One pre-existing shared-suite fix, discovered by registering pgvector against
+`NearestNeighbourContractSuite` for the first time: `test_find_nearest_returns_a_below_threshold_
+neighbour`'s `abs=1e-9` tolerance (written in Unit 2 against the float64-exact in-memory adapter only)
+failed against real pgvector storage. Widened to `abs=1e-5` — design.md's own established pgvector
+tolerance ("Why 1e-5 and not 1e-6"), still tight enough to catch a real bug, and harmless to the
+in-memory adapter (which is exact anyway). One-line fix in `tests/contract_suite/repository_contract.py`,
+included in this unit's diff since Unit 5b is the first unit to exercise that assertion for real.
+
+### Recall-miss reliability: a genuine flake found and fixed before committing
+
+The first version of the recall-miss test pinned a single hardcoded corpus seed (seed 0), claimed
+"empirically verified... across 6+ reruns/seeds" reliable. That claim was **too optimistic** and was
+caught before committing: running the single-seed test 12 times in a row (`pytest ...::test_recall_
+miss... -q`, repeated) showed a genuine **~17-20% failure rate** at `ef_search=1` (2/12 failed) and
+similar at `ef_search=2`. Root cause: pgvector's HNSW layer-assignment randomness during `CREATE INDEX`
+(triggered fresh every test via the `_freshly_migrated_schema` autouse fixture's downgrade/upgrade) is
+**Postgres-internal**, not derived from the Python `random.Random` seed that controls the corpus DATA —
+so the same data, re-indexed, can occasionally produce a graph structure where the greedy search
+happens to still find the target. A first attempt to fix this via a scratch reliability-sweep script
+was itself methodologically flawed (it built the index once per config and queried it 15 times,
+measuring zero variance by construction, not real reliability — caught and fixed before drawing any
+conclusion from it).
+
+**Fix: bounded retry across independent corpus builds**, not a bigger/tighter single corpus. Each
+attempt runs `TRUNCATE` (resets the index) then reseeds and re-queries; the control assertion
+(`exact.text == "target"`) must always hold (the corpus itself is deterministic), and the loop accepts
+the first attempt where HNSW's top-1 genuinely differs from `"target"`, up to 8 attempts, failing loudly
+only if all 8 miss the miss (given the measured ~80%+ per-attempt success rate, `0.2^8 ≈ 0.00000026%`
+chance of exhausting all 8). This is the correct engineering answer for testing an inherently
+probabilistic algorithm's worst case — not a workaround, a deterministic wrapper around genuine
+randomness. **Re-verified 10/10 real pytest runs green** after the fix (durations 5.7s-22s, reflecting
+how many internal attempts each run needed) plus the full `test_nearest_and_uow.py` file green 2 more
+times (17/17 both times) before committing.
+
+### Review-budget: `size:exception` — decided by the user, not self-authorized
+
+First complete draft (5b.1 + 5b.2 + 5b.3, including the two barrier tests) measured **679 changed
+lines** (641 insertions / 38 deletions, 5 files) — far above the ~350 estimate and the 400 cap. Applied
+a real trim pass first (re-verifying green after each step, matching Units 1/4/5a's precedent): cut
+every module/class docstring to Unit 1's post-REFACTOR density; merged the two EXPLAIN-guard tests into
+one shared-corpus test; merged the two recall-miss-related tests into one; merged the two near-identical
+concurrency tests into one `@pytest.mark.parametrize`d test — 17 test functions down to 15, **zero loss
+of named scenario coverage**. Then applied the unit's own pre-authorized seam ("move the
+barrier-snapshot test to its own follow-up commit"): removing the two barrier tests would save ~47
+lines, leaving ~632 — still 232 over the 400 cap.
+
+Per the task's explicit instruction ("if still over 400 after using it, STOP and report back... rather
+than self-authorizing an exception"), the apply agent stopped without committing and reported the full
+finding (both the pre-seam 679 and post-seam ~632 numbers, the trim narrative, and three explicit
+options: accept `size:exception`, authorize a real split mirroring Unit 3's 3a-3d precedent, or
+something else) back to the user rather than deciding unilaterally.
+
+**User decision**: accept the overrun as a documented `size:exception`, single PR, not a real split.
+Justification the user accepted: the overrun has a legitimate, cohesive cause (write-path primitives +
+full concurrency test matrix + a documented planner-fallback + a genuinely novel deterministic-barrier
+technique) that a mechanical split would risk breaking (in particular, splitting the concurrency proof
+away from the primitives it exercises). Per this decision, the barrier tests were folded back into the
+main commit (they were never actually removed from disk — the "~632 with seam" figure above was a
+projection, not an applied edit) and no further splitting was attempted.
+
+**Final measured diff** (after the recall-miss reliability fix added ~17 lines to the retry logic):
+**696 changed lines** (658 insertions / 38 deletions, 5 files) — see the Files Touched table below for
+the per-file breakdown.
+
+**Verification, run fresh immediately before committing**:
+- `pytest -m integration tests/integration/test_nearest_and_uow.py -q` → **17 passed** (run 3 times
+  after the reliability fix, all green; the recall-miss test itself separately stress-tested 10/10).
+- `pytest -m integration -q` (whole suite, 5a + 5b) → **33 passed**.
+- `pytest -m "not integration and not slow" -q` → **123 passed, 33 deselected** (no regression).
+- `ruff check src tests` → **All checks passed!**
+- `mypy src` → **Success: no issues found in 30 source files** (mypy's scope is `src` only per
+  `Makefile`'s `lint` target — `tests/` was never in scope, consistent with every prior unit; the test
+  file has known, pre-existing-pattern `Protocol`-variance mypy noise identical to Unit 5a's own
+  `test_find_matches.py`, unaddressed there too, same precedent).
+- `lint-imports` → **Contracts: 5 kept, 0 broken.**
+
+### Files touched
+
+| File | Action | Lines (ins/del) |
+|------|--------|------------------|
+| `services/api/src/app/modules/phrases/adapters/pgvector_repository.py` | Modified (5a's stubs replaced) | 209 / — |
+| `services/api/src/app/modules/phrases/contracts.py` | Modified (`LockTimeout` added) | 14 / 2 |
+| `services/api/src/app/platform/db.py` | New | 26 / 0 |
+| `services/api/tests/contract_suite/repository_contract.py` | Modified (tolerance fix) | 6 / 1 |
+| `services/api/tests/integration/test_nearest_and_uow.py` | New | 441 / 0 |
+
+**Commit**: `feat(db): pgvector find_nearest, find_nearest_exact, unit of work and advisory lock`
+**SHA**: `1b605a48e1cc5567fde730204093ddbdd1d94418` (rebased directly onto `develop`'s tip; the original
+pre-rebase commit was `c4625bd`, superseded by the rebase — same tree, new parent)
+**Branch**: `feat/pv-05b-nearest-uow`
+**Base**: `develop` (retargeted from the authoring-ahead `feat/pv-05a-find-matches` base now that PR
+#18 merged into `develop` at `f6fb5bb` — a clean fast-forward on top of this branch's exact prior base
+`6bf9671`, no rebase conflicts)
+**Lines changed**: 658 insertions / 38 deletions, 5 files — **`size:exception`, explicit user sign-off**
+(see above; the mandatory split-or-escalate step was followed before the exception was granted).
+**PR**: #19 — <https://github.com/Aaron-Shrike/todo-ia/pull/19>, base `develop`, head
+`feat/pv-05b-nearest-uow`, OPEN.
+
+## Remaining Tasks (as of the end of this batch)
+
+- [ ] Close the `.env.example` gap — still open from batch 1.
+- [x] Unit 5b: `find_nearest`, `find_nearest_exact`, unit of work, advisory lock (tasks 5b.0-5b.3) —
+  done this batch, `size:exception` granted, see above.
+- [ ] Unit 6 (settings, error envelope) needs Unit 0 only (unblocked); still owes the shared
+  `DomainError` base class resolution flagged since Unit 1, wiring `platform/settings.py` into the
+  three Unit 3 use cases, AND now also owes wiring real `HNSW_EF_SEARCH`/`LOCK_TIMEOUT_MS` settings
+  values into `PgVectorUnitOfWorkFactory`'s `ef_search`/`lock_timeout_ms` constructor params (currently
+  hardcoded defaults matching design.md: 200 / 5000).
+- [ ] Unit 6b needs Unit 3 (done), Unit 6 (not started) and, for full readiness, Unit 5b (done).
 ## Unit 6: Settings, error envelope, framework-error handlers -- SHIPPED (`size:exception`, user-approved)
 
 **Resolution**: the user explicitly accepted the 826-line overrun as `size:exception` (single PR,

@@ -70,7 +70,11 @@ class NearestNeighbourContractSuite:
             exact = uow.repo.find_nearest_exact(PROBE)
         assert neighbor is not None and exact is not None
         assert neighbor.text == exact.text == "far"
-        assert neighbor.distance == pytest.approx(1.9, abs=1e-9)
+        # 1e-9 (in-memory float64-exact) was never exercised against a real
+        # storage-backed adapter until pgvector registered here (Unit 5b);
+        # design.md's own tolerance for pgvector's float32 column applies
+        # ("Why 1e-5 and not 1e-6") -- still tight enough to catch a real bug.
+        assert neighbor.distance == pytest.approx(1.9, abs=1e-5)
 
     def test_find_nearest_tie_breaks_on_lowest_id(self, uow_factory: UnitOfWorkFactory) -> None:
         ids = _seed(
