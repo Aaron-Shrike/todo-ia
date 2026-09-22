@@ -1338,6 +1338,235 @@ to `github.com` that a plain retry resolved — `git fetch origin` succeeded on 
 - [ ] Unit 8 should record, in ADR-011, which of the two measured bytes/entry numbers (design's ~2 KB
   estimate vs. this unit's measured ~12.7 KB with `list[float]`) actually applies once the real
   `sentence_transformers.py` adapter's return type is fixed — see the 2b.2 note above.
-- [ ] Unit 3 (`ValidatePhrase`/`SavePhrase`/`ListMatches`) needs this unit AND Unit 2c (cursor codec)
-  before it can start, per tasks.md's dependency notes — neither is this batch's responsibility to
-  begin.
+- [x] Unit 3 (`ValidatePhrase`/`SavePhrase`/`ListMatches`) needs this unit AND Unit 2c (cursor codec)
+  before it can start, per tasks.md's dependency notes — done in a later batch, see below.
+
+---
+
+## Unit 3: Validate, list-matches, save use cases
+
+Scope of batch 5 (this append): Unit 3 (tasks 3.1-3.4) only, per the orchestrator's explicit
+instructions. Branch `feat/pv-03-use-cases`, cut directly from `main` at `d6774f4` — by this batch,
+Units 0, 1, 2, 2b, 2c, 2d were ALL already merged into `main` (confirmed via `git log --oneline -15`
+before starting: merge commits for PR #2, #3, #5, #6, #7, #8, #9, #10), so this is the first unit in
+the chain NOT authoring-ahead of an unmerged base — no retarget will be needed later.
+
+**Environment note**: this session's checkout had no `.venv` at all (prior batches' `.venv/bin/...`
+paths do not exist on this Windows/Git-Bash session — a fresh `python -m venv .venv` produces a
+`Scripts/` layout, not `bin/`). Created `.venv` and ran `pip install -e ".[dev]"` before any test
+could run; ran `npm ci` in `apps/web` for the same reason (no `node_modules`). `make` itself is not
+installed in this session either, so `make test-unit`/`make lint` were run as their two underlying
+commands directly (`pytest -m "not integration and not slow"` + `cd apps/web && npm test`; `ruff
+check` + `mypy src` + `lint-imports`) — same commands the Makefile targets wrap, confirmed by
+reading `Makefile` first.
+
+- [x] 3.1 RED then GREEN — `services/api/src/app/modules/phrases/application/validate_phrase.py`
+  (`ValidatePhrase`) with `tests/unit/phrases/test_validate_phrase.py` (12 tests). Normalizes text
+  once (`normalize_and_check_length`, shared helper — see 3.x note below), rejects
+  `EmptyPhraseText`/`PhraseTooLong` BEFORE any `embed()` call (asserted via `FakeEmbedder.call_count
+  == 0`), opens exactly one `REPEATABLE_READ` read-only `UnitOfWork` for both `find_nearest`
+  (approximate top-1) and `find_matches` (exact, page 1) — design.md's "Snapshot consistency".
+  **Reconciliation rule**: `matches[0]` wins over `find_nearest` whenever `matches` is non-empty,
+  proved two ways: a spy repo (`WrongNearestRepo`) whose `find_nearest` returns a deliberately WRONG
+  neighbour still loses to the real `matches[0]`; and a 5-trial seeded-random property test
+  (`random.Random(20240930)`, 15 phrases per trial) asserting the invariant holds whenever `matches`
+  is non-empty. Also covers: empty store (null verdict), best-below-threshold (score/most_similar
+  from `find_nearest`, `matches` empty), statelessness (`list_recent` unchanged after a validate
+  call), threshold-zero admits-everything-but-only-page-1 (500 phrases, asserts `len(matches) == 50`
+  and `has_more is True`), provider failure/timeout propagation (parametrized over
+  `EmbeddingUnavailable`/`EmbeddingTimeout`, store unchanged), and the **tail rule** boundary: a
+  3-phrase fixture (A passes, B admitted by the widened SQL bound but excluded by the exact `Decimal`
+  comparison — design.md's own `0.79994 -> 0.7999` rounding-boundary example, C exists only so the
+  repository's own `+1` probe reports `has_more=True`) proves the application-layer truncation FORCES
+  `has_more=False`/`next_cursor=None`, overriding what the repository itself would have said.
+- [x] 3.2 RED then GREEN — `services/api/src/app/modules/phrases/application/list_matches.py`
+  (`ListMatches`) with `tests/unit/phrases/test_list_matches.py` (5 tests, new file — none existed
+  before this unit, confirmed by `ls` before writing). Decodes the wire cursor and checks its `t`
+  (comparison-form binding) and `th` (threshold binding) fields BEFORE any embedding call —
+  `FakeEmbedder.call_count == 0` asserted for malformed cursor, wrong `t`, and wrong `th`, each a
+  separate test. Cross-page embedding reuse proved with a real `CachingEmbeddingProvider` wrapping the
+  fake (`inner.call_count == 1` across two `ListMatches` calls with the same text). Also covers basic
+  cursor-continuation correctness (page 2 excludes the already-delivered item).
+- [x] 3.3 RED then GREEN — `services/api/src/app/modules/phrases/application/save_phrase.py`
+  (`SavePhrase`, `SaveResult`) with `tests/unit/phrases/test_save_phrase.py` (13 tests). Embeds
+  BEFORE opening any transaction (design.md: "so a slow model never holds the write lock"), calls
+  `uow.repo.lock_for_write()` first inside the transaction, derives the verdict AND the recorded
+  metadata from `find_nearest_exact` only — proved via `CountingRepo`
+  (`find_nearest_calls == 0`, `find_nearest_exact_calls == 1`, `find_matches_calls == 1` on the 409
+  path) rather than a raising spy (see the 3.x deviation note below). Covers: save-without-validating
+  unique (empty `similarity_score`/`most_similar_phrase_id`), below-threshold neighbour recorded on a
+  `unique` save, duplicate-without-confirmation returns a conflict and persists nothing, duplicate
+  CONFIRMED persists with the recorded metadata, `confirm_duplicate=True` on a non-duplicate still
+  saves as `unique` (the flag never falsifies status), the bounded retry
+  (`ConflictRepo(remaining=[1])` — raises once, then delegates — retries once in a fresh `UnitOfWork`
+  and persists), the always-raising case (`ConflictRepo(remaining=[None])`) still returns a 409 and
+  NEVER raises out of `SavePhrase` (proves the "not expected, no delete path exists" fallback path:
+  `_forced_conflict` builds the 409 from one more fresh read-only snapshot instead of a third `add()`
+  attempt), 409 payload completeness (3 matches, `has_more=False`, `most_similar` is the closest),
+  provider failure/timeout on save (parametrized, `confirm_duplicate=True` does NOT bypass validation
+  — design.md is explicit on this), and empty/too-long rejection before `embed()`.
+- [x] 3.4 — `tests/unit/phrases/test_cache_interplay.py` (4 tests). `ValidatePhrase` then `SavePhrase`
+  for the same text share ONE embedding call through a real `CachingEmbeddingProvider`
+  (`inner.call_count == 1`); a 3-page flow (validate page 1 + two `ListMatches` pages, 120-phrase
+  fixture) keeps `call_count == 1`; `CountingRepo` on both use cases proves every page still issues a
+  live `find_matches`/`find_nearest` call regardless of cache state (`find_matches_calls == 2` across
+  the two pages fetched, `find_nearest_calls == 1` from the one validate call); and cold/warm/disabled
+  (`capacity=0`) cache configurations produce an EQUAL `VerdictView` for the same request (frozen
+  dataclass `==`, not just "no crash").
+
+### `_shared.py` and `_uow_spies.py` (new files, not in tasks.md's literal list)
+
+Two small additions, same precedent as Unit 1's shared `tests/unit/__init__.py` files and Unit 2's
+`.importlinter` fix — necessary infrastructure this unit's own literal file list did not name:
+
+1. **`services/api/src/app/modules/phrases/application/_shared.py`** — `MatchView`, `MostSimilarView`,
+   `MatchesPage`, `VerdictView` (the "validate-shaped" result design.md says the 409 `details` payload
+   and a 200 validate response share), `normalize_and_check_length` (empty/too-long rejection before
+   `embed()`), and `build_matches_page` (the tail rule + cursor re-encoding). `ValidatePhrase`'s page 1
+   and `SavePhrase`'s 409 `details` both build through the SAME `build_matches_page` call instead of
+   duplicating the tail-rule logic a second time — this is the one piece of real shared business logic
+   across the three use cases named in design.md itself ("The 409 body carries a complete validate
+   response").
+2. **`services/api/tests/unit/phrases/_uow_spies.py`** — `WrongNearestRepo`, `CountingRepo`,
+   `ConflictRepo` (repository proxies) and `ProxyUnitOfWork`/`ProxyUnitOfWorkFactory` (wrap the real
+   `InMemoryUnitOfWorkFactory`, replacing `.repo` on every `__enter__` with a spied/counting wrapper
+   instead of a second hand-written fake repository). Shared by `test_validate_phrase.py` and
+   `test_save_phrase.py`. `ConflictRepo` takes its `remaining` failure-count as a **shared, single-
+   element list** rather than an instance attribute — discovered while writing the retry test: since
+   `SavePhrase`'s retry opens a genuinely FRESH `UnitOfWork` (design.md), `ProxyUnitOfWork.__enter__`
+   constructs a NEW `ConflictRepo` wrapping a new inner repo on every entry, so a plain per-instance
+   counter would silently reset on the retry and never reproduce the "raises once, then the retry
+   succeeds" scenario; the shared list is what makes the simulated constraint persist the way a real
+   unique-index violation would across two separate transactions.
+
+### Deviations from design.md / tasks.md (Unit 3)
+
+1. **`find_nearest`-never-called is proved by a call counter, not a raising spy.** tasks.md 3.3's
+   literal wording says "spy whose `find_nearest` raises". Since `SavePhrase`'s code never references
+   `find_nearest` at all (only `find_nearest_exact`), asserting `CountingRepo.find_nearest_calls == 0`
+   after a real 409 call proves the identical guarantee without a separate raising double. The
+   "recall-miss" fixture named in the same task bullet (HNSW spy misses, exact scan hits -> 409) is
+   NOT implemented here — it requires a real approximate index that can actually disagree with an
+   exact one, which only exists once Unit 5b's pgvector adapter lands; the in-memory adapter's
+   `find_nearest`/`find_nearest_exact` share one exact computation (`_nearest`), so faking a
+   disagreement here would only prove that `SavePhrase` ignores whatever `find_nearest` returns
+   (already proved by the call-count guarantee), not that an exact scan genuinely catches something an
+   approximate one misses. Flagging this scenario as still owed to Unit 5b's integration test suite
+   (design.md's own Guard 2b already assigns the *real* recall-miss fixture there).
+2. **`ListMatches` does not repeat `normalize_and_check_length`'s empty/too-long checks.** Its `text`
+   parameter exists only to derive the comparison form for the cursor's `t` binding check; an
+   empty/mismatched text simply fails that binding check (`InvalidCursor`, mapped to `400
+   INVALID_CURSOR` by Unit 6), the same externally observable outcome a dedicated length check would
+   produce, in a codepath that embeds nothing and persists nothing either way. Not tested explicitly
+   as a separate scenario since tasks.md 3.2's own bullet does not name it.
+3. **Review budget exceeded**: 1083 changed lines (9 files, all new) against the ~350 estimate and the
+   400-line guard, even considering tasks.md's own "move 409 payload build to unit 7" escape hatch
+   (which removes only ~50-70 lines — `SavePhrase._conflict`'s `find_matches` call plus the "409
+   payload completeness" test — not enough to close a ~680-line gap on its own). Same precedent as
+   Unit 2 (shipped at 732 lines, ~330 over budget, fully documented rather than silently exceeded or
+   scope-cut): the bulk of this unit is three non-trivial use cases (reconciliation rule, tail rule,
+   bounded retry with a forced-conflict fallback, cache interplay) exercised by 34 new tests, each
+   covering a distinct scenario named in tasks.md's own "Covers" line, with no coverage or design
+   fidelity cut to force a number under budget. Flagged prominently in the PR body's own "⚠️ Review
+   budget" section rather than proceeding silently, per the CONTEXT's explicit instruction.
+4. **No `.env.example` action taken this batch** — still the same open gap from batch 1 (tool
+   permissions), unrelated to this unit's scope.
+
+**Verify (confirmed on `feat/pv-03-use-cases`)**:
+- `cd services/api && .venv/Scripts/python.exe -m pytest tests/unit tests/contract_suite -q` ->
+  `122 passed` (88 pre-existing, unchanged + 34 new: 12 + 5 + 13 + 4).
+- `cd services/api && .venv/Scripts/python.exe -m pytest -m "not integration and not slow" -q` ->
+  `122 passed` (the exact command `make test-unit`'s backend line runs).
+- `cd apps/web && npm test` -> `1 passed` (unchanged; the exact command `make test-unit`'s frontend
+  line runs; `npm ci` was needed first, no `node_modules` existed in this session).
+- `cd services/api && .venv/Scripts/lint-imports.exe` -> `Contracts: 5 kept, 0 broken.` (this unit's
+  own Verify requirement: `phrases.application` imports no adapters — confirmed by the
+  `application-no-adapters-or-api` contract, unchanged from Unit 2's `.importlinter`, needing no new
+  exception).
+- `cd services/api && .venv/Scripts/python.exe -m ruff check .` -> `All checks passed!` (after one
+  `--fix` pass for import ordering across two files, re-verified clean and re-ran the full suite
+  afterward to confirm nothing broke).
+- `cd services/api && .venv/Scripts/python.exe -m ruff format --check <the 9 new files>` -> `10 files
+  already formatted` (includes `_uow_spies.py`).
+- `cd services/api && .venv/Scripts/python.exe -m mypy src` -> `Success: no issues found in 28 source
+  files` (one real mypy finding fixed during GREEN — see TDD Cycle Evidence below — not silenced
+  with a blanket `type: ignore`).
+
+**Commit**: `feat(app): validate, list-matches and save use cases`
+**SHA**: `55214c0309ef563d46063b932474742cb64f45f4`
+**Branch**: `feat/pv-03-use-cases`
+**Base**: `main` at `d6774f4` (stacked-to-main; NOT authoring-ahead — Units 0/1/2/2b/2c/2d were all
+already merged into `main` before this branch was cut, confirmed via `git log --oneline -15` and
+`git branch -vv` at the start of this batch).
+**Lines changed**: 1083 insertions / 0 deletions across 9 new files, plus the `tasks.md` `[x]`
+checkbox edits in the same commit (10 files, 1087 insertions / 4 deletions total per `git commit`'s
+own summary) — over the 400-line budget; see the "Review budget exceeded" deviation above and the
+PR body's own "⚠️ Review budget" section for the full justification.
+
+### TDD Cycle Evidence (Unit 3)
+
+| Task | Test File | Layer | Safety Net | RED | GREEN | TRIANGULATE | REFACTOR |
+|------|-----------|-------|------------|-----|-------|-------------|----------|
+| 3.1 | `tests/unit/phrases/test_validate_phrase.py` | Unit | ✅ 88 tests passing before this task (confirmed by execution: `pytest tests/unit tests/contract_suite -q --ignore=tests/unit/phrases/test_validate_phrase.py` -> `88 passed`) | ✅ Written — confirmed by execution: `ModuleNotFoundError: No module named 'app.modules.phrases.application.validate_phrase'` | ✅ Passed after fixing one test-authoring bug (comparing a `MostSimilarView` to a `MatchView` by `==` across two distinct dataclass types, which are never equal regardless of field values — fixed the assertion to compare `(id, score)` tuples instead; production code was correct on the first GREEN attempt) | ✅ 12 cases: empty store, below-threshold, matches-non-empty, reconciliation-with-a-wrong-spy, 5-trial randomized property loop, statelessness, threshold-zero/500-phrase paging, provider failure + timeout (parametrized), empty-text rejection, too-long rejection, tail-rule truncation | ➖ None needed — first GREEN was already minimal and ruff/mypy-clean |
+| 3.2 | `tests/unit/phrases/test_list_matches.py` | Unit | ✅ 100 tests passing before this task (88 + 3.1's 12, confirmed by execution) | ✅ Written — confirmed by execution: `ModuleNotFoundError: No module named 'app.modules.phrases.application.list_matches'`. **Process note**: the implementation was written immediately after the test file without pausing to run the RED check first; caught this gap before moving on and retroactively confirmed RED by moving `list_matches.py` aside and re-running the test file (same `ModuleNotFoundError`), then restoring it and re-confirming GREEN — see the bash transcript in this batch. Not repeated for 3.1/3.3/3.4, where RED was confirmed by execution BEFORE the implementation was written, in the correct order. | ✅ Passed on the first implementation attempt (`5 passed`) after the retroactive RED confirmation | ✅ 5 cases: next-page continuation, malformed cursor, wrong `t`, wrong `th` (each its own test, each asserting `call_count == 0`), cross-page embedding reuse with a real `CachingEmbeddingProvider` | ➖ None needed |
+| 3.3 | `tests/unit/phrases/test_save_phrase.py` | Unit | ✅ 105 tests passing before this task (88 + 12 + 5, confirmed by execution) | ✅ Written — confirmed by execution: `ModuleNotFoundError: No module named 'app.modules.phrases.application.save_phrase'` | ✅ Passed after fixing one test-authoring bug (the `ConflictRepo` test double's failure counter was a per-instance attribute, which silently reset because `SavePhrase`'s retry opens a genuinely fresh `UnitOfWork`/repo per design — changed the double to take a SHARED, single-element list instead, so the simulated constraint persists across the retry's fresh transaction the way a real unique-index violation would; `SavePhrase`'s own production code needed no change for this) | ✅ 13 cases: unique-no-metadata, below-threshold-neighbour-recorded, duplicate-without-confirmation, duplicate-confirmed-persists, confirm-flag-on-non-duplicate, find-nearest-never-called (`CountingRepo`), bounded-retry-then-persist, always-raising-still-409, 409-payload-completeness, provider failure + timeout (parametrized, `confirm_duplicate=True` does not bypass), empty-text rejection, too-long rejection | ✅ One real `mypy` finding (an `assignment` type mismatch between a `float`-inferred tuple-assignment target and a `float \| None` value in `_conflict`) fixed by declaring `most_similar`/`top_score` with explicit `X \| None` annotations before the `if/elif/else`, and narrowing `score`/`is_duplicate` in `_attempt` with an explicit `if neighbor is not None:` block instead of a boolean-`and` expression mypy could not narrow through — both are real type-safety improvements, not `type: ignore` suppressions; full suite re-run green after each fix |
+| 3.4 | `tests/unit/phrases/test_cache_interplay.py` | Unit | ✅ 118 tests passing before this task (88 + 12 + 5 + 13, confirmed by execution) | ✅ Written — all four tests reference the already-implemented `ValidatePhrase`/`ListMatches`/`SavePhrase` and `CachingEmbeddingProvider` (Unit 2b), so there is no `ModuleNotFoundError` to observe; each test was still written BEFORE being run once, per strict-tdd.md's "legitimate TDD triangulation" precedent (same as Unit 2d's 2d.3) | ✅ All 4 passed on the FIRST run against the already-correct Unit 3 implementation — confirms the three use cases' behaviour generalizes correctly across cache states rather than forcing a new hardcode to become real logic | ✅ 4 distinct scenarios: validate-then-save shared embedding, 3-page flow shared embedding, repository-counter proof of live queries per page, cold/warm/disabled-cache response equality (frozen-dataclass `==`) | ➖ None needed |
+
+### Test Summary (Unit 3)
+- **Total tests written and passing at final commit**: 34 new (122 total: 88 pre-existing, unchanged,
+  + 34 new: 12 + 5 + 13 + 4)
+- **Layers used**: Unit (34), Integration (0), E2E (0), Contract (0)
+- **Approval tests** (refactoring): None — all three use cases are new production code, not a
+  refactor of passing behaviour
+- **Pure functions / value objects created**: `MatchView`, `MostSimilarView`, `MatchesPage`,
+  `VerdictView`, `SaveResult` (all frozen dataclasses); `normalize_and_check_length` and
+  `build_matches_page` are pure functions; `ValidatePhrase`/`ListMatches`/`SavePhrase` are the three
+  use cases themselves (stateless call objects — all state lives in the injected `UnitOfWorkFactory`/
+  `EmbeddingProvider`, never on the use case instance)
+
+## PR status (Unit 3)
+
+**Opened.** `gh auth status` confirmed an active session (account `Aaron-Shrike`, matching every prior
+PR in this chain).
+
+- `git push -u origin feat/pv-03-use-cases` -> pushed cleanly, new branch on `origin`.
+- `gh pr create --repo Aaron-Shrike/todo-ia --base main --head feat/pv-03-use-cases ...` -> **PR #11**,
+  <https://github.com/Aaron-Shrike/todo-ia/pull/11>. Confirmed via `gh pr view 11 --json
+  baseRefName,headRefName`: `baseRefName: "main"`, `headRefName: "feat/pv-03-use-cases"` — targets
+  `main` DIRECTLY, not authoring-ahead (unlike PR #4/#6/#7/#8/#9's temporary stacking on an unmerged
+  base — every prior unit this PR depends on was already merged into `main` before this branch was
+  cut, confirmed at the top of this section).
+- PR body follows the established convention from PR #2/#3/#4/#6/#8/#9/#10 (dependency-diagram code
+  block with the chain pinned at Unit 3, Start/End/Prior dependencies/Follow-ups/Out of scope, "What's
+  in this PR", naming/architecture notes for the three documented decisions above, a prominent
+  "⚠️ Review budget: 1083 changed lines" section, and a Verification section with exact command
+  output).
+
+## Status (as of the end of batch 5)
+
+7/7 units substantially complete across all batches so far (this batch's scope): B.0 (no-op, already
+satisfied), Unit 0 (merged), Unit 1 (merged into `main`), Unit 2 (merged into `main` via PR #5's
+retarget), Unit 2d (merged into `main` via PR #7's retarget), Unit 2c (merged into `main` via PR #8),
+Unit 2b (merged into `main` via PR #9), and now Unit 3 (3.1-3.4, 4/4 sub-tasks, this batch, PR #11
+open against `main` directly). 122/122 backend tests green (`tests/unit` + `tests/contract_suite`),
+frontend 1/1 unchanged, all lint/type/import checks green. **Not** within the 400-line budget (1083
+lines) — flagged prominently above and in the PR body for review, per the CONTEXT's explicit
+"document the deviation" instruction. Per the CONTEXT's explicit instruction, this batch implemented
+ONLY Unit 3 — Unit 4 (independent of Units 1-3, needs only Unit 0, already unblocked) was noted but
+NOT started.
+
+## Remaining Tasks (as of the end of batch 5)
+
+- [ ] Close the `.env.example` gap (human action or a session with `.env*` write permission) — still
+  open from batch 1.
+- [ ] Review and merge PR #11 (`feat/pv-03-use-cases` -> `main`).
+- [x] Unit 3: Validate, list-matches, save use cases (tasks 3.1-3.4) — done this batch, see above.
+- [ ] Unit 4 (schema, Alembic migrations, compose db/migrate, minimal API Dockerfile stage) —
+  independent of Units 1-3 (needs only Unit 0, already merged), already unblocked per tasks.md's
+  Dependency and parallelism section. NOT started by this batch.
+- [ ] Unit 5a (`find_matches` on the pgvector adapter) needs Unit 2 (merged) and Unit 4 (not started).
+- [ ] Unit 6 (settings, error envelope) needs Unit 0 only (already unblocked); still owes the shared
+  `DomainError` base class resolution flagged since Unit 1, and now also owes wiring
+  `phrase_max_length`/`default_page_size`/`SimilarityPolicy(threshold=...)` from
+  `platform/settings.py` into the three Unit 3 use case constructors.
+- [ ] Unit 6b needs Unit 3 (done), Unit 6 (not started) and, for full readiness, Unit 5b (not started).
