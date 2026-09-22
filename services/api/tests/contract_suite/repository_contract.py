@@ -1,16 +1,13 @@
 """Shared `PhraseRepository`/`UnitOfWork` contract suite (tasks.md 2.3/2d.3;
-design.md: "a shared contract test suite ... so the fast fake cannot drift
-from the real one"). Subclass `RepositoryContractSuite`, override the
-`uow_factory` fixture. Only in-memory is registered in Unit 2/2d; pgvector
-registers in Unit 5a/5b. Not `test_*.py` on purpose -- a shared base,
-collected only through subclasses.
+design.md: "so the fast fake cannot drift from the real one"). Not
+`test_*.py` on purpose -- collected only through subclasses.
 
-`find_matches` keyset scenarios (Complete ordered match set / Page
-consistency requirements, `specs/semantic-validation/spec.md`): bit-
-identical tie across a page boundary, displayed-tie ordering by raw
-distance, 500-match paging, perturbed-vector paging on a fixture away from
-grid edges -- restored here per tasks.md's Unit 2d (the review-budget
-deferral this note used to point at from Unit 2 is now resolved).
+Split into two mixins (Unit 5a) so a partial adapter registers only what it
+implements: `NearestNeighbourContractSuite` (in-memory only, until Unit 5b
+gives pgvector the write-path primitives) and `MatchesContractSuite`
+(in-memory since Unit 2d, pgvector since `tests/integration/
+test_find_matches.py`). `RepositoryContractSuite` composes both, unchanged
+for in-memory (all 8 scenarios).
 """
 
 from __future__ import annotations
@@ -52,7 +49,7 @@ def _seed(uow_factory: UnitOfWorkFactory, phrases: list[NewPhrase]) -> list[int]
     return ids
 
 
-class RepositoryContractSuite:
+class NearestNeighbourContractSuite:
     @pytest.fixture
     def uow_factory(self) -> UnitOfWorkFactory:
         raise NotImplementedError("subclasses must override the `uow_factory` fixture")
@@ -99,6 +96,12 @@ class RepositoryContractSuite:
         with uow_factory(read_only=True) as uow:
             with pytest.raises(Exception):  # noqa: B017 -- adapter-specific error type
                 uow.repo.add(_new_phrase("nope", PROBE))
+
+
+class MatchesContractSuite:
+    @pytest.fixture
+    def uow_factory(self) -> UnitOfWorkFactory:
+        raise NotImplementedError("subclasses must override the `uow_factory` fixture")
 
     def test_bit_identical_ties_split_cleanly_across_a_page_boundary(
         self, uow_factory: UnitOfWorkFactory
@@ -209,3 +212,9 @@ class RepositoryContractSuite:
                     break
 
         assert collected == ids  # none repeated, none skipped, order preserved
+
+
+class RepositoryContractSuite(NearestNeighbourContractSuite, MatchesContractSuite):
+    """Full suite: both mixins' scenarios. In-memory registers here (Unit
+    2/2d); a partial adapter registers a single mixin directly instead (see
+    this module's docstring)."""
