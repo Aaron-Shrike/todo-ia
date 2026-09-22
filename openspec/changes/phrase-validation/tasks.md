@@ -111,16 +111,17 @@ Unit 2's actual diff (contracts + 2 adapters + full contract-suite machinery, al
 
 Commit: `perf(similarity): caching embedding provider decorator`. Rollback: revert, or `EMBEDDING_CACHE_SIZE=0`; every test stays green (kill-switch test). Independently revertible.
 Covers: Embedding reuse: Normalization variants share an entry, Evicted entry (unit level); Cache is a pure optimization: Cold equals warm, Model identifier in key, Bounded size, Failures not cached.
-- [ ] 2b.1 RED then GREEN `similarity/adapters/caching.py` (`CachingEmbeddingProvider`, `OrderedDict` LRU keyed `(model_id, comparison_form)`, `threading.Lock` only around dict ops, `CacheStats(hits, misses, evictions, size, capacity)`, DEBUG log on miss, INFO log on first eviction) with `tests/unit/similarity/test_caching.py`: call counting (same text 1, different 2, different `model_id` 2), LRU vs FIFO (size=2: A,B, touch A, insert C keeps A), failures not cached (one-shot `FailingEmbedder` called twice), bit-identical after clear, thread-safety stress (`size <= capacity`), `size=0` bypass.
-- [ ] 2b.2 Estimate check: `tracemalloc` over a 512-entry fill; note the measured bytes/entry in the PR body (design estimate ~2 KB, unmeasured).
+- [x] 2b.1 RED then GREEN `similarity/adapters/caching.py` (`CachingEmbeddingProvider`, `OrderedDict` LRU keyed `(model_id, comparison_form)`, `threading.Lock` only around dict ops, `CacheStats(hits, misses, evictions, size, capacity)`, DEBUG log on miss, INFO log on first eviction) with `tests/unit/similarity/test_caching.py`: call counting (same text 1, different 2, different `model_id` 2), LRU vs FIFO (size=2: A,B, touch A, insert C keeps A), failures not cached (one-shot `FailingEmbedder` called twice), bit-identical after clear, thread-safety stress (`size <= capacity`), `size=0` bypass.
+- [x] 2b.2 Estimate check: `tracemalloc` over a 512-entry fill; note the measured bytes/entry in the PR body (design estimate ~2 KB, unmeasured). **Measured: ~12.7 KB/entry** (~6.2x the design estimate) — see apply-progress.md for the methodology and why (`Vector = Sequence[float]`, i.e. plain Python `list[float]` objects as currently typed, cost far more per element than the design's assumed packed float32 buffer).
 - Verify: `pytest tests/unit/similarity/test_caching.py -q`.
 
 ## Unit 2c: Opaque cursor codec (~150)
 
 Commit: `feat(domain): opaque cursor codec with strict validation`. Rollback: revert (no callers).
 Covers: Page consistency: Malformed cursor, Cursor bound to the query text, Cursor bound to the threshold (codec-level fields `v,t,d,i,th`); api-contract POST /phrases/matches: Malformed cursor, Cursor field violations (codec side).
-- [ ] 2c.1 RED then GREEN `modules/phrases/domain/cursor.py` (encode/decode base64url JSON `{v,t,d,i,th}`, size cap) with `tests/unit/phrases/test_cursor.py`, one table row per rule: bad base64url, non-object, `NaN`/`Infinity`, wrong `v`, non-string `t`, `d` negative/>2/NaN/string, `i` 0/negative/>int64/`true`, `th` <0/>1/non-finite, missing/extra key, oversized. All raise `InvalidCursor`.
-- Verify: `pytest tests/unit/phrases/test_cursor.py -q`.
+- [x] 2c.1 RED then GREEN `modules/phrases/domain/cursor.py` (encode/decode base64url JSON `{v,t,d,i,th}`, size cap) with `tests/unit/phrases/test_cursor.py`, one table row per rule: bad base64url, non-object, `NaN`/`Infinity`, wrong `v`, non-string `t`, `d` negative/>2/NaN/string, `i` 0/negative/>int64/`true`, `th` <0/>1/non-finite, missing/extra key, oversized. All raise `InvalidCursor`.
+- Verify: `pytest tests/unit/phrases/test_cursor.py -q` — 22 passed. Full backend suite `pytest tests/unit tests/contract_suite -q` — 80 passed; `lint-imports` 5 kept, 0 broken.
+- Branch: `feat/pv-02c-cursor-codec`, based on `feat/pv-02-ports-inmemory` at `b669eea` (stacked-to-main, authoring-ahead; retarget to `main` once PR #7 merges — see apply-progress.md). PR #8, base `feat/pv-02-ports-inmemory`. Actual diff: 354 insertions / 0 deletions, 2 files — well under the 400-line budget.
 
 ## Unit 3: Validate, list-matches, save use cases (~350)
 
