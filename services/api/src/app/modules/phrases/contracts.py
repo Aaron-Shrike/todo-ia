@@ -36,6 +36,7 @@ from app.modules.similarity.contracts import Vector
 __all__ = [
     "DuplicateTextConflict",
     "Isolation",
+    "LockTimeout",
     "Match",
     "MatchCursor",
     "Neighbor",
@@ -152,6 +153,13 @@ class DuplicateTextConflict(Exception):
     transaction."""
 
 
+class LockTimeout(Exception):
+    """`lock_for_write` waited longer than `LOCK_TIMEOUT_MS` (SQLSTATE
+    `55P03`). pgvector only -- in-memory's `lock_for_write` is a no-op.
+    Propagates through `SavePhrase` unchanged, rolled back on unwind; Unit
+    6/7 maps it to `500 INTERNAL_ERROR`."""
+
+
 class UnitOfWork(Protocol):
     """One transaction; lets the application say BEGIN/ROLLBACK/retry
     without importing a concrete adapter."""
@@ -190,7 +198,11 @@ class PhraseRepository(Protocol):
         """Same contract, EXACT scan. `SavePhrase` only, under the lock."""
         ...
 
-    def lock_for_write(self) -> None: ...  # advisory lock in pgvector; no-op in-memory
+    def lock_for_write(self) -> None:
+        """`pg_advisory_xact_lock` under a bounded `SET LOCAL lock_timeout`
+        in pgvector; no-op in-memory. Raises `LockTimeout` if the wait
+        exceeds the configured timeout."""
+        ...
 
     def find_matches(
         self, q: Vector, max_distance: float, limit: int, cursor: MatchCursor | None
