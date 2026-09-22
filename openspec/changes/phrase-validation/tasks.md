@@ -119,8 +119,9 @@ Covers: Embedding reuse: Normalization variants share an entry, Evicted entry (u
 
 Commit: `feat(domain): opaque cursor codec with strict validation`. Rollback: revert (no callers).
 Covers: Page consistency: Malformed cursor, Cursor bound to the query text, Cursor bound to the threshold (codec-level fields `v,t,d,i,th`); api-contract POST /phrases/matches: Malformed cursor, Cursor field violations (codec side).
-- [ ] 2c.1 RED then GREEN `modules/phrases/domain/cursor.py` (encode/decode base64url JSON `{v,t,d,i,th}`, size cap) with `tests/unit/phrases/test_cursor.py`, one table row per rule: bad base64url, non-object, `NaN`/`Infinity`, wrong `v`, non-string `t`, `d` negative/>2/NaN/string, `i` 0/negative/>int64/`true`, `th` <0/>1/non-finite, missing/extra key, oversized. All raise `InvalidCursor`.
-- Verify: `pytest tests/unit/phrases/test_cursor.py -q`.
+- [x] 2c.1 RED then GREEN `modules/phrases/domain/cursor.py` (encode/decode base64url JSON `{v,t,d,i,th}`, size cap) with `tests/unit/phrases/test_cursor.py`, one table row per rule: bad base64url, non-object, `NaN`/`Infinity`, wrong `v`, non-string `t`, `d` negative/>2/NaN/string, `i` 0/negative/>int64/`true`, `th` <0/>1/non-finite, missing/extra key, oversized. All raise `InvalidCursor`.
+- Verify: `pytest tests/unit/phrases/test_cursor.py -q` — 22 passed. Full backend suite `pytest tests/unit tests/contract_suite -q` — 80 passed; `lint-imports` 5 kept, 0 broken.
+- Branch: `feat/pv-02c-cursor-codec`, based on `feat/pv-02-ports-inmemory` at `b669eea` (stacked-to-main, authoring-ahead; retarget to `main` once PR #7 merges — see apply-progress.md). PR #8, base `feat/pv-02-ports-inmemory`. Actual diff: 354 insertions / 0 deletions, 2 files — well under the 400-line budget.
 
 ## Unit 3: Validate, list-matches, save use cases (~350)
 
