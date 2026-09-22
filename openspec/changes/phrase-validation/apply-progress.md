@@ -2671,6 +2671,27 @@ against every quality gate: exact Unit 6b Verify command
 (`pytest tests/contract/test_validate_health.py -q`) -> 17 passed; full regression
 (`pytest -m "not integration and not slow" -q`) -> 212 passed, 0 regressions (was 195, +17);
 `ruff check src tests` -> clean; `mypy src` -> `Success: no issues found in 37 source files`;
-`lint-imports` -> `Contracts: 5 kept, 0 broken.` 466 insertions / 2 deletions, 6 files -- a
-documented `size:exception`, user-approved after the mandatory stop-and-report step (see
-"Resolution" above). Commit SHA and PR number recorded below once made.
+`lint-imports` -> `Contracts: 5 kept, 0 broken.` 8 files changed, 735 insertions / 4 deletions total
+(including `openspec/` doc updates -- 466 insertions / 2 deletions across the 6 code/test files
+alone, per the measurement above), a documented `size:exception`, user-approved after the mandatory
+stop-and-report step (see "Resolution" above).
+
+**Commit**: `feat(api): validate endpoint and /health readiness`
+**SHA**: `ae247d1`
+**Branch**: `feat/pv-06b-validate-health`
+**Base**: `feat/pv-06-api-foundation` (authoring-ahead; PR #20 still open at ship time -- retarget to
+`develop` once #20 merges)
+
+## PR status (Unit 6b)
+
+**Opened.** Pushed `feat/pv-06b-validate-health` to `origin` (`git push -u origin
+feat/pv-06b-validate-health` -> succeeded first try, no auth issues) and opened **PR #21**,
+<https://github.com/Aaron-Shrike/todo-ia/pull/21>, via `gh pr create --repo Aaron-Shrike/todo-ia
+--base feat/pv-06-api-foundation --head feat/pv-06b-validate-health`. Confirmed via `gh pr view 21
+--json baseRefName,headRefName`: `baseRefName: "feat/pv-06-api-foundation"`, `headRefName:
+"feat/pv-06b-validate-health"` -- correct, authoring-ahead per PR #20 still being open
+(`gh pr view 20` -> `state: OPEN, mergedAt: null`, checked immediately before both the push and the
+PR creation). PR body carries a `size:exception` callout at the top (same convention as PR #19/#20)
+plus the dependency diagram, Start/End/Prior deps/Follow-ups/Out-of-scope sections, and the exact
+Verification command output. No CI run expected (`.github/workflows/ci.yml` fires on `main` only;
+this chain targets `develop`).
