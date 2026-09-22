@@ -4,9 +4,9 @@ re-implementing the same proxy plumbing per test file. Wraps the real
 `InMemoryUnitOfWorkFactory` instead of hand-rolling a second fake
 repository, so the wrapped methods stay behind the real ones.
 
-Grown incrementally as later Unit 3 sub-units need more doubles: this PR
-(`feat/pv-03a-validate`) adds only what `test_validate_phrase.py` needs;
-`feat/pv-03c-save` adds `CountingRepo`/`ConflictRepo` for `SavePhrase`.
+Grown incrementally as Unit 3 sub-units need more doubles: `WrongNearestRepo`/
+`ProxyUnitOfWork(Factory)` shipped in `feat/pv-03a-validate`; this PR
+(`feat/pv-03c-save`) adds `CountingRepo`/`ConflictRepo` for `SavePhrase`.
 """
 
 from __future__ import annotations
@@ -35,6 +35,56 @@ class WrongNearestRepo(_RepoProxy):
 
     def find_nearest(self, q: Any) -> Any:
         return self._neighbor
+
+
+class CountingRepo(_RepoProxy):
+    """Counts calls to the three read methods -- proves `SavePhrase` never
+    calls `find_nearest` (design.md Guard 2b) and that both `ValidatePhrase`
+    and `ListMatches` issue a live `find_matches` per call, cache or not."""
+
+    def __init__(self, inner: Any) -> None:
+        super().__init__(inner)
+        self.find_matches_calls = 0
+        self.find_nearest_calls = 0
+        self.find_nearest_exact_calls = 0
+
+    def find_matches(self, *args: Any, **kwargs: Any) -> Any:
+        self.find_matches_calls += 1
+        return self._inner.find_matches(*args, **kwargs)
+
+    def find_nearest(self, *args: Any, **kwargs: Any) -> Any:
+        self.find_nearest_calls += 1
+        return self._inner.find_nearest(*args, **kwargs)
+
+    def find_nearest_exact(self, *args: Any, **kwargs: Any) -> Any:
+        self.find_nearest_exact_calls += 1
+        return self._inner.find_nearest_exact(*args, **kwargs)
+
+
+class ConflictRepo(_RepoProxy):
+    """`add` raises `DuplicateTextConflict` for the first N calls (or
+    forever, if `remaining[0] is None`), then delegates -- covers
+    `SavePhrase`'s bounded-retry path (ADR-006). `remaining` is a shared,
+    single-element list: `SavePhrase`'s retry opens a FRESH `UnitOfWork`
+    (design.md), so a fresh `ConflictRepo` is constructed per `__enter__`
+    (see `ProxyUnitOfWork`) -- the shared list is what makes the underlying
+    "constraint" persist across that fresh transaction, the way a real
+    unique-index violation would."""
+
+    def __init__(self, inner: Any, *, remaining: list[int | None], error: Exception) -> None:
+        super().__init__(inner)
+        self._remaining = remaining
+        self._error = error
+        self.add_calls = 0
+
+    def add(self, phrase: Any) -> Any:
+        self.add_calls += 1
+        n = self._remaining[0]
+        if n is None or n > 0:
+            if n is not None:
+                self._remaining[0] = n - 1
+            raise self._error
+        return self._inner.add(phrase)
 
 
 class ProxyUnitOfWork:
