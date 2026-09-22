@@ -2399,3 +2399,11 @@ merged). PR body carries a `size:exception` callout at the top (same convention 
 5b) plus the dependency diagram, Start/End/Prior deps/Follow-ups/Out-of-scope sections, and the
 exact Verification command output. No CI run expected (`.github/workflows/ci.yml` fires on `main`
 only; this PR targets `develop`).
+
+**Updated after `sdd-verify`'s fix pass.** Fix-pass commit `25de861` -- `fix(api): map
+string_too_long to the too_long error code` -- pushed to the same branch (`3713df1..25de861`), no
+new PR opened. PR #20's body updated via `gh pr edit 20 --body-file ...` to add a "🔧 Fix pass: 2
+CRITICAL findings from `sdd-verify`, both resolved" section directly under the `size:exception`
+callout, summarizing both fixes and the re-run verify numbers (59/195 passed). Final PR state:
+`gh pr view 20` -> base `develop`, head `feat/pv-06-api-foundation`, 3 commits, 1407 additions / 4
+deletions total.
