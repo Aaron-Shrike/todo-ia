@@ -1897,3 +1897,238 @@ Unit 4 complete: 4/4 sub-tasks done (4.0-4.3), schema matches design.md exactly 
 unaffected, all lint/type/import checks green. 399/400 lines — a documented, legitimate trim (no
 `size:exception`, no invented seam), full before/after numbers above. First unit under the
 develop-target branch policy (Unit 4 onward); no CI run expected or required on its PR.
+
+---
+
+## Unit 5a: Exact keyset `find_matches` (pgvector adapter)
+
+Branch `feat/pv-05a-find-matches`, base **`develop`** at `38c6319` (PR #17 / Unit 4, merged) — an
+exact match, no rebase needed. Needs Unit 2 (merged) and Unit 4 (merged); unblocks Unit 5b.
+
+- [x] 5a.1 RED then GREEN `phrases/adapters/pgvector_repository.py::find_matches`: literal
+  `set_config('enable_indexscan', 'off', true)` at the start of the method (is_local=true, the
+  parameterizable `SET LOCAL`), `WHERE embedding <=> CAST(:q AS vector) <= :max_distance`,
+  `ORDER BY bucket, id`, `LIMIT :limit + 1`, keyset predicate on `(floor(d/1e-6), id)` — design.md's
+  SQL sample reproduced near-verbatim (the one addition is `CAST(:q AS vector)`; see "Deviations"
+  below). RED: confirmed by execution — temporarily moved the finished `pgvector_repository.py`
+  aside (`git`-free rename, no commit existed yet to `git stash`) and re-ran
+  `tests/integration/test_find_matches.py`, got `ModuleNotFoundError:
+  app.modules.phrases.adapters.pgvector_repository`, then restored the file and re-ran GREEN — same
+  "confirm RED by deletion" technique prior units used before a first commit exists. Matches the
+  in-memory adapter's `find_matches` behavior exactly: filters on the WIDENED `max_distance` bound
+  only (no `Decimal`/rounding/tail-rule logic in the repository — that stays the application layer's
+  job, `_shared.build_matches_page`, already built in Unit 3; confirmed by reading
+  `list_matches.py`/`validate_phrase.py`/`_shared.py` before writing any adapter code).
+- [x] 5a.2 Registered the pgvector adapter against `MatchesContractSuite` (NOT the full
+  `RepositoryContractSuite`) in `tests/integration/test_find_matches.py`, plus four pgvector-only
+  guards in the same file: (1) `test_explain_shows_no_hnsw_and_no_offset_and_set_local_does_not_leak`
+  — 250-row corpus (> `hnsw.ef_search` 200, a non-vacuous guard), `EXPLAIN` of the real query (via
+  `build_find_matches_query`, exported so the test never hand-copies the SQL) asserts no `hnsw`/no
+  `OFFSET` substring, then a **second, separate connection** confirms `enable_indexscan` reads back
+  `on` — proving `is_local=true` never leaks across pooled-connection reuse; (2)
+  `test_boundary_0_79996_in_0_79994_out_via_tail_rule` — seeds raw cosines 0.79996/0.79994 at
+  threshold 0.80, asserts the widened SQL bound admits BOTH rows (`{id_in, id_out}` from the raw
+  adapter call) but `_shared.build_matches_page` (the real Unit 3 application code, not a
+  reimplementation) keeps only the 0.79996 row and forces `has_more=False`; (3)
+  `test_oracle_agreement_with_pure_python_cosine_within_1e5` — 5 random 384-dim unit vectors,
+  compares each returned raw `distance` against `similarity.contracts.cosine_distance` (the
+  pure-Python oracle), asserts `< 1e-5` per the spec's float32-storage-tolerance scenario. 500-match
+  paging (10 pages, 500 distinct ids) and perturbed-vector paging are covered for free by
+  `MatchesContractSuite`'s existing scenarios, now exercised against real Postgres.
+- [x] 5a.3 VERIFY (estimate): `EXPLAIN (ANALYZE, BUFFERS)` on a throwaway seeded `phrases_test`
+  (500 then 10,000 rows, truncated and reseeded between runs) — `docs/evidence/exact-scan-timings.md`
+  records both raw plans plus a summary table. Both plans are `Seq Scan` -> top-N heapsort, no HNSW,
+  confirming the "sequential scan plus a top-N sort" description in design.md's "Match query and
+  keyset pagination". Measured: **500 rows -> 0.529 ms**, **10,000 rows -> 5.719 ms** (roughly linear
+  20x row growth -> ~10.8x time, consistent with the documented O(n) cost model). One local run, one
+  sample — flagged in the evidence file as needing averaging over several runs for the real ADR-008
+  entry (Unit 16), which this only feeds as a first estimate.
+
+### Scope decision: `MatchesContractSuite` split, not the full `RepositoryContractSuite`
+
+tasks.md's 5a.2 literally says "Register the pgvector adapter in
+`tests/contract_suite/repository_contract.py` (same suite as in-memory)". The existing
+`RepositoryContractSuite` (single class, pre-this-unit) bundled 8 tests: 3 `find_nearest`/
+`find_nearest_exact` scenarios, 1 read-only-`add`-guard scenario, and the 4 `find_matches` keyset
+scenarios. Registering pgvector against the WHOLE class as written would require `find_nearest`,
+`find_nearest_exact` and the read-only guard to work for real against Postgres — but design.md's own
+"Why 5 and 6 split" section is explicit that those are Unit 5b's write-path primitives ("5a is pure
+query work against an existing schema, 5b adds the top-1 reads and the write-path primitives"), and
+tasks.md's Unit 5a Notes line says the same ("Seam: 5a is pure query work on the 0001 schema").
+Implementing `find_nearest`/`find_nearest_exact` now to satisfy the shared suite's literal wording
+would be genuine 5b scope creep, not a legitimate interpretation of "register the adapter."
+
+Resolution: split `RepositoryContractSuite` (in `tests/contract_suite/repository_contract.py`) into
+two mixins — `NearestNeighbourContractSuite` (the 3 find_nearest scenarios + the read-only-add guard)
+and `MatchesContractSuite` (the 4 find_matches keyset scenarios) — and compose them back into
+`RepositoryContractSuite` for in-memory, which still registers the full composed class and still runs
+all 8 scenarios unchanged (`tests/contract_suite/test_in_memory_repository.py` needed no edit; its
+`class TestInMemoryRepositoryContract(RepositoryContractSuite)` line is untouched and the suite it
+subclasses now happens to be a composition instead of one flat class — same 8 tests, same pass/fail
+behavior, confirmed by re-running `tests/unit`/`tests/contract_suite` unchanged at 123 passed before
+and after). pgvector registers `MatchesContractSuite` only, in
+`tests/integration/test_find_matches.py`'s `TestPgVectorMatchesContract`.
+`NearestNeighbourContractSuite` registers pgvector once Unit 5b builds `find_nearest`,
+`find_nearest_exact` and the full read/write `UnitOfWork` semantics the read-only guard depends on.
+This is the same "restore the exact behavior, split only the seam the design already names" pattern
+Unit 2/2d used for this very method, applied one level down (splitting the TEST suite along the same
+5a/5b line the design already draws for the PRODUCTION code).
+
+### `add()` and `PgVectorUnitOfWork`: minimal, seeding-only
+
+`find_matches` alone cannot be tested without a way to seed rows, and `MatchesContractSuite`'s shared
+`_seed()` helper calls `uow_factory()...uow.repo.add(...)`. A genuinely minimal `add()` (plain
+`INSERT ... RETURNING id, created_at`, one `read_only` guard, no duplicate-conflict mapping) and a
+genuinely minimal `PgVectorUnitOfWork`/`PgVectorUnitOfWorkFactory` (connect, apply isolation level via
+`execution_options`, commit/rollback) were built for this reason alone — not a preview of Unit 5b's
+`add()` (5b.2 still owns `DuplicateTextConflict` mapping on the `23505` unique-violation and the
+advisory lock). `find_nearest`, `find_nearest_exact` and `lock_for_write` are explicit
+`NotImplementedError("... lands in Unit 5b")` stubs on `PgVectorPhraseRepository` — present so the
+class already shapes toward the `PhraseRepository` Protocol, but never silently claiming a contract
+they do not yet honor.
+
+### `tests/contract_suite/vectors.py`: padded to 384 dimensions
+
+The shared `vector_at_distance`/`PROBE` helpers built 2-dimensional vectors (fine for the in-memory
+adapter, which is dimension-agnostic). Migration 0001's real column is `vector(384)`; inserting a
+2-dim vector into it is a hard Postgres error. Fixed by zero-padding both `PROBE` and
+`vector_at_distance`'s output to 384 components: padding with zeros changes neither the dot product
+nor either vector's norm, so cosine distance from `PROBE` is mathematically unchanged — confirmed by
+running the full pre-existing in-memory suite unchanged (123 passed, identical assertions, before and
+after this edit) before writing any pgvector-facing code. This is exactly the kind of fix the file's
+own docstring anticipated ("so the two [adapters] never drift apart") — now that a second, dimension-
+aware adapter exists, the shared fixture had to become dimension-aware too.
+
+### Review-budget trim
+
+The first complete draft (adapter + test file + contract-suite split + vectors.py padding) diffed at
+**466 insertions, 16 deletions = 482 changed lines** — over the 400 hard cap, with no documented split
+seam in tasks.md's Unit 5a Notes line (unlike e.g. Unit 2's "split `find_matches` out" or Unit 2's
+generic escape hatch). Per the CONTEXT's explicit instruction, no `size:exception` was self-authorized
+and no seam was invented; the excess was cut through the same legitimate trim technique Units 1 and 4
+used — comment/docstring density reduction and structural consolidation, re-measuring and re-running
+the full verification suite (`pytest` unit + integration, `ruff`, `mypy`, `lint-imports`) after every
+step, never touching a test assertion or a line of production logic:
+
+1. Trimmed module/class docstrings in `pgvector_repository.py` and `test_find_matches.py` to Unit 1's
+   post-REFACTOR density (shorter, still fully cross-referenced to design.md/tasks.md/apply-progress).
+2. `Phrase(id=row.id, created_at=row.created_at, **vars(phrase))` replaces a 9-line field-by-field
+   reconstruction in `add()` — `vars()` on a frozen dataclass returns exactly its `__dict__`, and
+   `NewPhrase`'s 7 fields are named identically to `Phrase`'s matching 7 fields, so this is exact, not
+   approximate.
+3. Merged the "EXPLAIN shows no HNSW/no OFFSET" and "SET LOCAL scoping" tests into one function (they
+   share the same seeded-corpus setup) instead of two.
+4. Compacted the `find_matches`/`add()` parameter-dict literals from one-key-per-line to 2-3 lines
+   each; compacted a few single-use local variables (e.g. the oracle test's `query, *stored =
+   [...]` unpacking instead of two separate list-building lines).
+
+Final diff: **382 insertions, 17 deletions = 399 changed lines** across 4 files — 1 line under the
+400 cap. Full verification suite re-run and confirmed green after the LAST trim step, not just
+checked incrementally (see Verify below).
+
+**Verify (confirmed on `feat/pv-05a-find-matches`, `db`/`migrate` up via `docker compose up -d db
+migrate` from a clean `docker compose down -v` state)**:
+- `cd services/api && .venv/Scripts/python.exe -m pytest -m "not integration and not slow" -q` ->
+  `123 passed, 16 deselected` (no regression from Unit 4's 123-test baseline).
+- `cd services/api && .venv/Scripts/python.exe -m pytest -m integration -q` -> `16 passed, 123
+  deselected` (9 pre-existing from Unit 4's `test_schema.py` + 7 new: 4 `MatchesContractSuite`
+  scenarios via `TestPgVectorMatchesContract`, 3 pgvector-only guards).
+- `cd services/api && .venv/Scripts/python.exe -m pytest -m integration
+  tests/integration/test_find_matches.py tests/contract_suite -q` (the unit's own literal Verify
+  line) -> `7 passed, 8 deselected` (the 8 deselected are the in-memory-only, non-`integration`-marked
+  contract-suite tests in the same directory tree, correctly skipped by the `-m integration` filter).
+- `cd services/api && .venv/Scripts/ruff.exe check src tests` -> `All checks passed!`
+- `cd services/api && .venv/Scripts/mypy.exe src` -> `Success: no issues found in 29 source files`
+- `cd services/api && .venv/Scripts/lint-imports.exe` -> `Contracts: 5 kept, 0 broken.` (unchanged —
+  `pgvector_repository.py` sits inside `phrases.adapters`, importing only `sqlalchemy`,
+  `phrases.contracts` and `similarity.contracts`, all already-permitted edges; no `.importlinter`
+  change needed).
+
+**Commit**: `feat(db): exact keyset find_matches` (pending — committed immediately after this
+apply-progress update, per strict-tdd.md's single squashed RED+GREEN commit per unit).
+**Branch**: `feat/pv-05a-find-matches`
+**Base**: `develop` at `38c6319` (PR #17 / Unit 4, merged; exact tip, confirmed via `git merge-base`
+before starting — no rebase needed). No CI run expected on this PR (`.github/workflows/ci.yml` only
+fires against `main`), per the develop-target branch policy Unit 4 established.
+**Lines changed**: 382 insertions / 17 deletions, 4 files (see "Review-budget trim" above).
+
+### TDD Cycle Evidence (Unit 5a)
+
+| Task | Test File | Layer | Safety Net | RED | GREEN | TRIANGULATE | REFACTOR |
+|------|-----------|-------|------------|-----|-------|-------------|----------|
+| 5a.1 | `tests/integration/test_find_matches.py` (all) | Integration | 9 pre-existing `test_schema.py` tests passing | ✅ Confirmed by execution — the finished adapter file was moved aside and the test run failed with `ModuleNotFoundError: app.modules.phrases.adapters.pgvector_repository`, then restored | ✅ All 8 tests passed after fixing one bind-param bug (`:q::vector` is not parsed by SQLAlchemy `text()`; switched to `CAST(:q AS vector)`, itself confirmed by a real `ProgrammingError: syntax error at or near ":"` before the fix) | ✅ 4 `MatchesContractSuite` scenarios (tie, displayed-tie-ordering, 500-match paging, perturbed-vector) + 3 pgvector-only guards (EXPLAIN/SET-LOCAL, boundary tail-rule, oracle) all exercise distinct code paths | ✅ Review-budget trim (see above) re-verified green after every step |
+| 5a.2 | `tests/integration/test_find_matches.py::TestPgVectorMatchesContract` + 2 standalone tests | Integration (marked `contract` via the inherited `MatchesContractSuite`, plus plain `integration`) | Same as above | ✅ Same RED as 5a.1 (one file, one adapter, one RED/GREEN cycle per strict-tdd.md's "squash into one commit") | ✅ Passed | ✅ See above | ✅ Merged EXPLAIN+SET-LOCAL tests into one function during the trim pass, re-verified |
+| 5a.3 | N/A (VERIFY, not RED/GREEN — measurement only, matching Unit 4's 4.0 precedent) | N/A | N/A | N/A | N/A | N/A | N/A |
+
+### Test Summary (Unit 5a)
+- **Total tests written and passing at final commit**: 7 new integration tests (16 total integration,
+  9 unchanged from Unit 4 + 7 new; 123 unit tests unchanged, 0 regressions)
+- **Layers used**: Integration (7 new, 16 total), Unit (123, unchanged), Contract (4 of the 7 new, via
+  the inherited `MatchesContractSuite` methods)
+- **Approval tests** (refactoring): None — `find_matches`'s pgvector implementation is new production
+  code on this branch, not a refactor of passing behaviour
+- **Genuine RED caught mid-development**: the `CAST(:q AS vector)` bind-param bug (5a.1's TRIANGULATE
+  column) — a real SQLAlchemy `text()` parsing limitation the strict-TDD cycle surfaced while
+  confirming GREEN, not a contrived example
+
+### Deviations from design.md / tasks.md (Unit 5a)
+
+1. **`MatchesContractSuite`/`NearestNeighbourContractSuite` split** — tasks.md 5a.2 says "register the
+   pgvector adapter in the same suite as in-memory" without anticipating that the existing single
+   `RepositoryContractSuite` class bundles `find_matches` scenarios together with `find_nearest`/
+   read-only-guard scenarios that design.md itself assigns to Unit 5b. See the dedicated section above
+   for the full rationale; in-memory's own test count and pass/fail behavior are unchanged.
+2. **`find_nearest`, `find_nearest_exact`, `lock_for_write` are `NotImplementedError` stubs** on
+   `PgVectorPhraseRepository` — not implemented, not tested, explicitly Unit 5b's scope per design.md's
+   "Why 5 and 6 split" section and tasks.md's own Unit 5a Notes line ("Seam: 5a is pure query work").
+3. **`add()` and `PgVectorUnitOfWork`/`PgVectorUnitOfWorkFactory` exist but are deliberately minimal**
+   — no duplicate-conflict mapping (`DuplicateTextConflict`), no advisory lock, no `READ_COMMITTED`
+   vs. `REPEATABLE_READ` behavioral distinction beyond the isolation-level string passed to
+   `execution_options`. Built only because `MatchesContractSuite`'s shared `_seed()` helper and this
+   unit's own tests need a working `add()` to populate fixtures. Unit 5b.2 owns the real write-path
+   semantics and may extend (not replace) these classes.
+4. **`tests/contract_suite/vectors.py` changed from 2-dimensional to 384-dimensional (zero-padded)
+   vectors** — required for any vector to be insertable into migration 0001's `vector(384)` column;
+   mathematically exact (padding with zeros preserves cosine distance), not an approximation. Not
+   anticipated by any unit's literal task text; the in-memory suite is unaffected (confirmed unchanged
+   pass/fail behavior before and after).
+5. **`CAST(:q AS vector)` instead of design.md's literal `:q::vector`** in all SQL string constants —
+   SQLAlchemy's `text()` bind-parameter parser does not recognize a `:name` immediately followed by
+   `::`; functionally identical cast, confirmed by a real `ProgrammingError` before the fix (see TDD
+   Cycle Evidence above).
+6. **`LIMIT :limit + 1` binds `limit` directly** (SQL computes `+ 1`) rather than precomputing
+   `limit + 1` in Python — matches design.md's literal SQL text exactly; noted only because the Unit
+   2d in-memory adapter's equivalent computes `limit + 1` in Python (`window = candidates[: limit +
+   1]`), a harmless difference in WHERE the arithmetic happens, not in behavior.
+7. **Review-budget trim** (comments/docstrings/structural consolidation only, no coverage or
+   production-logic loss) — see the dedicated section above; 482 -> 399 changed lines.
+
+## Remaining Tasks (as of the end of this batch)
+
+- [ ] Close the `.env.example` gap (human action or a session with `.env*` write permission) — still
+  open from batch 1, still blocking Units 14/15 directly; does not block Unit 5a (compose defaults
+  cover it, as in Unit 4).
+- [ ] Push `feat/pv-05a-find-matches` and open its PR against `develop` (no CI run expected).
+- [x] Unit 5a: Exact keyset `find_matches` (tasks 5a.1-5a.3) — done this batch, see above.
+- [ ] Unit 5b (`find_nearest`, `find_nearest_exact`, `UnitOfWork`, advisory lock) needs Unit 5a
+  (**done**, pending PR merge to `develop`) — now unblocked once this PR merges. Will extend, not
+  replace, this unit's `PgVectorUnitOfWork`/`PgVectorUnitOfWorkFactory` and register pgvector against
+  `NearestNeighbourContractSuite`.
+- [ ] Unit 6 (settings, error envelope) needs Unit 0 only (already unblocked); still owes the shared
+  `DomainError` base class resolution flagged since Unit 1.
+- [ ] Unit 6b needs Unit 3 (done), Unit 6 (not started) and, for full readiness, Unit 5b (not started).
+
+## Status (after Unit 5a)
+
+Unit 5a complete: 3/3 sub-tasks done (5a.1-5a.3), `find_matches` on the real pgvector adapter proven
+bit-for-bit compatible with the in-memory adapter (same `MatchesContractSuite`, both green), EXPLAIN
+confirms no HNSW scan and no OFFSET on a non-vacuous 250-row corpus, `SET LOCAL` scoping confirmed
+non-leaking across pooled-connection reuse, the 0.79996/0.79994 tail-rule boundary confirmed through
+the REAL Unit 3 application code (`_shared.build_matches_page`, not a reimplementation), oracle
+agreement confirmed within 1e-5 against 384-dim random vectors, exact-scan timings recorded
+(0.529 ms @ 500 rows, 5.719 ms @ 10,000 rows) in `docs/evidence/exact-scan-timings.md` for ADR-008.
+16/16 integration tests green (9 unchanged + 7 new), 123/123 unit tests unaffected, all lint/type/
+import checks green. 399/400 lines — a documented, legitimate trim (no `size:exception`, no invented
+seam), full before/after numbers above. `find_matches` remains unused by any transport/API layer until
+Unit 6b/7 wire it in (this unit's own stated Rollback note); `find_nearest`/`find_nearest_exact`/
+`lock_for_write`/full write-path semantics remain Unit 5b's job.
