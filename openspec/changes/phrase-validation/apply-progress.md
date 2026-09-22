@@ -1697,3 +1697,203 @@ slices under/at the 400-line cap; the fourth, 3a, is the closest a real content-
 could achieve, documented transparently rather than exception-flagged). 123/123 backend tests green
 across the full stack (cumulative, verified independently per slice), all lint/type/import checks
 green on every branch. PR #11 closed; PRs #12-#15 open, correctly stacked, ready for review.
+
+---
+
+## Unit 4: Schema, Alembic raw-SQL migrations, compose db/migrate, minimal API Dockerfile stage
+
+Branch `feat/pv-04-schema-migrations`, base **`develop`** (branch strategy change effective this
+unit — see tasks.md's Review Workload Forecast note; `develop` currently points at the same commit
+as `main`). Independent of Units 1-3 (needs only Unit 0, merged); first unit under the new
+develop-target policy. Docker and Docker Compose confirmed available in this environment
+(`docker version` / `docker compose version`) and used directly for verification.
+
+- [x] 4.0 VERIFY: `docker pull pgvector/pgvector:pg16` → **621 MB**, base **Debian GNU/Linux 12
+  (bookworm)**, Postgres **16.15**. Once `db` was up: `CREATE EXTENSION vector; SELECT extversion
+  FROM pg_extension WHERE extname='vector';` → **0.8.6**, well above the 0.5.0 HNSW floor. No
+  fallback to `postgres:16-alpine` was needed; the Docker Compose table's fallback note is
+  unchanged (still documented, just not triggered).
+- [x] 4.1 Root `docker-compose.yml`: `db` (`pgvector/pgvector:pg16`, `pg_isready` healthcheck,
+  named volume `pgdata`, `infra/db/init.sql` mounted at `/docker-entrypoint-initdb.d/init.sql`
+  creating the throwaway `phrases_test` database) and `migrate` (`build: { context:
+  ./services/api, target: migrate }`, `restart: "no"`, `depends_on: db: condition:
+  service_healthy`). `services/api/Dockerfile`: multi-stage, `base` (python:3.11-slim) then a
+  `migrate` stage that copies `pyproject.toml`/`src`/`alembic.ini`/`migrations`, `pip install .`,
+  `CMD ["alembic", "upgrade", "head"]` — no torch, no model (Unit 8 extends this same file for the
+  `api` stage). `api`/`web` services are NOT added (Unit 14's job, per tasks.md 4.1's literal
+  scope). All `${VAR:-default}` values in the compose file inline the same placeholders recorded
+  for `.env.example` in the Unit 0 note (`todo_ia`/`todo_ia`/`todo_ia`), since `.env.example` still
+  does not exist — see "`.env.example` still blocked" below — so `docker compose up -d db migrate`
+  works out of the box without an `.env` file; copying `.env.example` to `.env` later overrides
+  these the normal way once that file exists.
+- [x] 4.2 RED then GREEN `services/api/migrations/env.py` (resolves the DB URL from a pre-set
+  `Config` value — used by the integration tests against `phrases_test` — or `DATABASE_URL`;
+  `target_metadata = None`, raw SQL only, no autogenerate), `alembic.ini` (`script_location =
+  migrations`, `sqlalchemy.url` deliberately unset so neither resolution path is shadowed), and
+  `migrations/versions/0001_create_phrases.py`: the exact DDL from design.md's "Data Model and
+  Migrations" (`phrases` table, `phrases_metadata_paired`/`phrases_confirmed_has_neighbor` CHECKs,
+  `ON DELETE RESTRICT`, `phrases_embedding_hnsw_idx` HNSW `vector_cosine_ops`,
+  `phrases_created_at_id_idx`, the partial `phrases_unique_normalized_text_uidx`). `upgrade()` runs
+  `CREATE EXTENSION IF NOT EXISTS vector` then `_assert_hnsw_is_supported()` — reads `extversion`
+  and raises `RuntimeError` before creating the HNSW index if it is below 0.5.0 (fail-fast per the
+  task's literal wording); `downgrade()` drops the table then the extension, both `IF EXISTS`.
+  RED: ran `pytest -m integration` against `phrases_test` before any migration file existed (import
+  error / no `phrases` table). GREEN: confirmed via `alembic upgrade head` (CLI) and the integration
+  suite below.
+- [x] 4.3 Integration tests `services/api/tests/integration/test_schema.py` (marker `integration`,
+  connects to `phrases_test` via `DATABASE_URL` with a `localhost`-based default when unset).
+  `TestDatabaseLevelUniqueness` (3 tests): second `unique` row same `normalized_text` → rejected,
+  `phrases_unique_normalized_text_uidx` named in the error; `duplicate_confirmed` same text →
+  accepted; different text → accepted. `TestPersistenceChecks`: one `pytest.mark.parametrize`
+  (3 cases) proving `phrases_metadata_paired`/`phrases_confirmed_has_neighbor` reject
+  score-without-neighbor, neighbor-without-score and confirmed-without-neighbor rows, plus one
+  positive-control test proving a valid confirmed pair is accepted. `TestMigrationLifecycle` (2
+  tests): upgrade from empty creates the table and extension; downgrade to base drops both. An
+  autouse `_freshly_migrated_schema` fixture gives every test a clean slate via Alembic's own
+  `downgrade("base")` then `upgrade("head")` — **not** a raw `DROP TABLE`, which was tried first and
+  found to desync the `alembic_version` bookkeeping table (a manual drop leaves `alembic_version`
+  claiming `head` is already applied, so the next `upgrade("head")` becomes a silent no-op and the
+  very next test fails with `relation "phrases" does not exist` — a real RED caught during this
+  unit's own TDD cycle, not a hypothetical). 9 tests total, all real INSERT/constraint/migration
+  assertions (no trivial assertions).
+  - **Deviation — typmod-reader test deferred, not shipped**: tasks.md 4.3's literal text does not
+    mention a typmod check at all; only the Unit 4 Covers line's parenthetical ("Embedding
+    dimension mismatch fails fast (typmod reader; boot wiring in 8)") implies one. A test asserting
+    `SELECT atttypmod FROM pg_catalog.pg_attribute WHERE attrelid='phrases'::regclass AND
+    attname='embedding'` equals 384 was written, verified green (empirically confirmed pgvector's
+    `atttypmod` equals the declared dimension directly, no offset unlike `varchar(n)`), then cut
+    during the review-budget trim below since it is not in 4.3's literal scope. The query itself is
+    preserved here verbatim so Unit 8's boot-time dimension coherence check (`platform/settings.py`
+    or wherever it lands) can reuse it without re-deriving it.
+
+### Review-budget trim
+
+The first complete draft (including `migrations/script.py.mako` and the typmod test) diffed at
+**575 insertions, 0 deletions** — well above the ~340 estimate and the 400-line hard cap, with no
+documented split seam in tasks.md's Unit 4 Notes (unlike e.g. Unit 2's "split `find_matches`
+out"). Per the orchestrator's explicit instruction, no `size:exception` was self-authorized and no
+seam was invented; instead the excess was traced and cut through legitimate scope/density trims
+only, re-measuring after each:
+
+1. **Removed `migrations/script.py.mako`** (-31 lines): not required by any Unit 4 task (4.2 lists
+   only `env.py`, `alembic.ini`, `versions/0001_create_phrases.py`) and not needed for
+   `command.upgrade`/`command.downgrade` to work — it is only consulted by `alembic revision`,
+   which this unit never runs (0001 is hand-authored). Confirmed by re-running the full integration
+   suite after removal.
+2. **Minimized `alembic.ini`** (-38 lines): dropped the `[loggers]`/`[handlers]`/`[formatters]`
+   sections (cosmetic CLI log formatting only, not required for migrations to run) along with the
+   matching `fileConfig(...)` call in `env.py` (-6 lines there); kept `path_separator = os` to
+   avoid the alembic deprecation warning seen during the initial GREEN run.
+3. **Trimmed comments/docstrings** across `docker-compose.yml`, `Dockerfile`,
+   `0001_create_phrases.py` and `env.py` (~-30 lines combined) — same density as Unit 1's REFACTOR
+   pass; no DDL, no logic, no assertion changed.
+4. **Consolidated the four `TestPersistenceChecks` CHECK-rejection tests into one
+   `pytest.mark.parametrize`d test** (3 cases) plus the kept positive-control test — same coverage,
+   fewer function bodies. Required explicit per-field parameters (not a generic `dict[str, object]`
+   unpack) to keep `mypy` clean against `_insert`'s typed signature.
+5. **Dropped the typmod-reader test** (-15 lines) as out-of-scope for 4.3's literal text — see the
+   4.3 deviation note above.
+6. **Rewrote `test_schema.py`'s helpers more compactly** (shorter positional `_insert` signature,
+   single-line SQL, a shared `_schema_state` tuple helper) without dropping any of the 9 required
+   assertions.
+
+Final diff: **399 insertions, 0 deletions, 9 files** — under the 400-line cap. Re-verified green
+after every trim step (`ruff check`, `mypy src`, `lint-imports`, unit suite, integration suite),
+not just at the end.
+
+### `.env.example` still blocked
+
+Same hard tool-permission deny on any `.env*` path as Unit 0 (confirmed again this batch via `ls`
+and `Glob` — both report the file does not exist and `ls` is denied outright on the path). This
+unit does **not** depend on `.env.example` existing: `docker-compose.yml`'s `${VAR:-default}`
+interpolation supplies working defaults for `db`/`migrate` directly (see task 4.1 above), so
+`docker compose up -d db migrate` succeeds without it. The gap remains open for Unit 14 (full
+compose wiring) and Unit 15 (README `cp .env.example .env` step), per Unit 0's original note.
+
+**Verify (confirmed on `feat/pv-04-schema-migrations`, from a clean `docker compose down -v`)**:
+- `docker pull pgvector/pgvector:pg16` → 621MB, Debian 12 bookworm, Postgres 16.15;
+  `extversion` = `0.8.6`.
+- `docker compose up -d db migrate && docker compose ps -a` → `db` healthy,
+  `todo-ia-migrate-1  Exited (0)`.
+- `docker exec todo-ia-db-1 psql -U todo_ia -d todo_ia -c "\d phrases"` → table, all four indexes
+  (`phrases_pkey`, `phrases_created_at_id_idx`, `phrases_embedding_hnsw_idx` HNSW, the partial
+  `phrases_unique_normalized_text_uidx`), both CHECK constraints, the `ON DELETE RESTRICT` FK —
+  matches design.md exactly.
+- `cd services/api && .venv/Scripts/python.exe -m pytest -m "not integration and not slow" -q` →
+  `123 passed, 9 deselected` (no regression from the 123 baseline after Unit 3d).
+- `cd services/api && .venv/Scripts/python.exe -m pytest -m integration
+  tests/integration/test_schema.py -q` → `9 passed`.
+- `cd services/api && .venv/Scripts/ruff.exe check src tests migrations` → `All checks passed!`
+- `cd services/api && .venv/Scripts/mypy.exe src` → `Success: no issues found in 28 source files`
+- `cd services/api && .venv/Scripts/lint-imports.exe` → `Contracts: 5 kept, 0 broken.` (unchanged;
+  `migrations/` and `tests/integration/` sit outside the `app` root package import-linter scans)
+
+**Commit**: `feat(db): phrases schema, alembic raw-sql migrations, compose db/migrate and minimal
+api dockerfile` (pending — committed immediately after this apply-progress update, per
+strict-tdd.md's single squashed RED+GREEN commit per unit).
+**Branch**: `feat/pv-04-schema-migrations`
+**Base**: `develop` (first unit under the new develop-target policy; no CI run expected on this PR,
+by design — `.github/workflows/ci.yml` only fires against `main`)
+**Lines changed**: 399 insertions / 0 deletions, 9 files (see "Review-budget trim" above).
+
+### TDD Cycle Evidence (Unit 4)
+
+| Task | Test File | Layer | Safety Net | RED | GREEN | TRIANGULATE | REFACTOR |
+|------|-----------|-------|------------|-----|-------|-------------|----------|
+| 4.0 | N/A (verification only, no test file) | N/A | N/A | N/A | N/A — VERIFY task, not RED/GREEN | N/A | N/A |
+| 4.1 | N/A (infra config, no test file; verified by 4.3 + `docker compose ps`) | N/A | N/A (new) | N/A — structural compose/Dockerfile config | ✅ `migrate` exits 0 against real Postgres | N/A | ✅ Comment/density trim, re-verified |
+| 4.2 | `tests/integration/test_schema.py` (`TestMigrationLifecycle`) | Integration | N/A (new) | ✅ Written — ran against no migration file / empty `phrases_test`, failed (`relation "phrases" does not exist`) | ✅ Passed after `0001_create_phrases.py` + `env.py` + `alembic.ini` | ✅ Upgrade-from-empty and downgrade-to-base are two distinct code paths, both asserted | ✅ Comment trim; alembic.ini logging sections dropped, re-verified green |
+| 4.3 | `tests/integration/test_schema.py` (all classes) | Integration | N/A (new) | ✅ Written — failed before schema existed; the `_freshly_migrated_schema` fixture's first raw-`DROP TABLE` version also caught a genuine RED (`alembic_version` desync) mid-development | ✅ 9/9 passed | ✅ 3-case parametrize for the CHECK constraints (score-without-neighbor / neighbor-without-score / confirmed-without-neighbor) plus positive control; 3 distinct DB-uniqueness scenarios | ✅ Helper functions compacted (`_insert`, `_schema_state`), parametrized rejection tests, re-verified green after each step |
+
+### Test Summary (Unit 4)
+- **Total tests written and passing at final commit**: 9 new integration tests (123 unit tests
+  unchanged, 0 regressions)
+- **Layers used**: Integration (9, marker `integration`), Unit (123, unchanged), Contract (0 new)
+- **Approval tests** (refactoring): None — no pre-existing schema to preserve
+- **Genuine RED caught mid-development**: the `alembic_version` bookkeeping desync (see 4.3 above)
+  — a real bug the strict-TDD cycle surfaced, not a contrived example
+
+### Deviations from design.md / tasks.md (Unit 4)
+
+1. **Typmod-reader test deferred** — written, verified green, then cut for the review budget as
+   out-of-scope for 4.3's literal text. See the 4.3 note above; the query is preserved for Unit 8.
+2. **`migrations/script.py.mako` omitted** — not required by any Unit 4 task and not used by
+   `command.upgrade`/`downgrade`; only needed by `alembic revision`, never invoked this unit. Add it
+   if a future unit needs to author a new migration via the CLI generator instead of by hand.
+3. **`alembic.ini` ships without logging configuration** (`[loggers]`/`[handlers]`/`[formatters]`)
+   — cosmetic only; migrations run identically, just without alembic's pretty `INFO [alembic...]`
+   CLI log lines. Can be re-added later with no functional impact if a future unit wants them.
+4. **`.env.example` remains uncreated** — same tool-permission block as Unit 0; worked around via
+   inline `${VAR:-default}` compose defaults so this unit's own Verify line does not depend on it.
+   Still an open item for Units 14/15 (see "`.env.example` still blocked" above).
+5. **`docker-compose.yml` ships `db` + `migrate` only** — `api`/`web` are explicitly Unit 14's job
+   per tasks.md 4.1's literal scope; not a deviation, just confirming no scope crept in.
+
+## Remaining Tasks (as of the end of this batch)
+
+- [ ] Close the `.env.example` gap (human action or a session with `.env*` write permission) —
+  still open from batch 1, now also blocking Units 14/15 directly.
+- [ ] Review and merge PR #11 (`feat/pv-03-use-cases` -> `main`) — superseded by PRs #12-#15
+  (3a-3d); review those instead.
+- [ ] Push `feat/pv-04-schema-migrations` and open its PR against `develop` (first PR under the new
+  branch policy; no CI run expected — `.github/workflows/ci.yml` only fires against `main`).
+- [x] Unit 4: Schema, Alembic raw-SQL migrations, compose db/migrate, minimal API Dockerfile stage
+  (tasks 4.0-4.3) — done this batch, see above.
+- [ ] Unit 5a (`find_matches` on the pgvector adapter) needs Unit 2 (merged) and Unit 4 (**done**,
+  pending PR merge to `develop`) — now unblocked once this PR merges.
+- [ ] Unit 5b needs Unit 5a.
+- [ ] Unit 6 (settings, error envelope) needs Unit 0 only (already unblocked); still owes the
+  shared `DomainError` base class resolution flagged since Unit 1, and wiring
+  `phrase_max_length`/`default_page_size`/`SimilarityPolicy(threshold=...)` from
+  `platform/settings.py` into the three Unit 3 use case constructors.
+- [ ] Unit 6b needs Unit 3 (done), Unit 6 (not started) and, for full readiness, Unit 5b (not
+  started).
+
+## Status (after Unit 4)
+
+Unit 4 complete: 4/4 sub-tasks done (4.0-4.3), schema matches design.md exactly (verified via
+`\d phrases` against a real migrated database), `migrate` compose service exits 0 from a clean
+`docker compose down -v` state, 9/9 new integration tests green, 123/123 pre-existing unit tests
+unaffected, all lint/type/import checks green. 399/400 lines — a documented, legitimate trim (no
+`size:exception`, no invented seam), full before/after numbers above. First unit under the
+develop-target branch policy (Unit 4 onward); no CI run expected or required on its PR.
