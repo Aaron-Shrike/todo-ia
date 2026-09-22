@@ -12,12 +12,35 @@ from fastapi.testclient import TestClient
 from pydantic import BaseModel
 
 from app.main import create_app
+from app.modules.phrases.api.schemas import raw_phrase_text
 from app.platform.settings import Settings
 
 pytestmark = pytest.mark.contract
 
 _ORIGIN = "http://localhost:3000"
 _DISALLOWED_ORIGIN = "http://evil.example"
+
+
+class _Probe(BaseModel):
+    text: str
+
+
+class _RawTextProbe(BaseModel):
+    text: raw_phrase_text(280)  # type: ignore[valid-type]
+
+
+# Both probe models MUST live at module scope, not nested inside `_client()`:
+# with `from __future__ import annotations` active, a route function's
+# parameter annotations are unevaluated strings, and FastAPI/pydantic resolve
+# them via the function's `__globals__` only (never the enclosing closure's
+# locals). A locally-scoped model class is therefore unresolvable and FastAPI
+# silently falls back to treating the parameter as a query param named
+# "body" instead of a JSON body model -- a real bug caught while writing this
+# file's newest test (it produced `{"field": "query", "reason": "required"}`
+# instead of validating `text` at all). The pre-existing `/probe` route
+# happened to never expose this because `test_malformed_json_is_422_
+# validation_error` posts genuinely malformed JSON, which 422s during
+# parsing itself, before the route's parameter types are ever consulted.
 
 
 def _client(*, max_request_bytes: int = 1_048_576) -> TestClient:
@@ -32,11 +55,12 @@ def _client(*, max_request_bytes: int = 1_048_576) -> TestClient:
     def _list_phrases() -> dict[str, object]:
         return {"data": []}
 
-    class _Probe(BaseModel):
-        text: str
-
     @app.post("/probe")
     def _probe(body: _Probe) -> dict[str, object]:
+        return {"data": body.text}
+
+    @app.post("/probe-raw-text")
+    def _probe_raw_text(body: _RawTextProbe) -> dict[str, object]:
         return {"data": body.text}
 
     @app.get("/boom")
@@ -78,6 +102,20 @@ def test_oversized_body_is_413_payload_too_large() -> None:
     response = _client(max_request_bytes=4096).post("/probe", content=b"x" * 5000)
     assert response.status_code == 413
     assert response.json()["error"]["code"] == "PAYLOAD_TOO_LARGE"
+
+
+def test_raw_length_cap_is_422_too_long_with_max_length_detail() -> None:
+    """api-contract spec's "Raw length cap" scenario: a raw string over
+    `4 * PHRASE_MAX_LENGTH` code points must be 422 `VALIDATION_ERROR` with
+    `details.fields[0].reason == "too_long"` and `details.max_length ==
+    PHRASE_MAX_LENGTH` (design.md line 937), NOT the generic
+    `invalid_type` fallback with no detail."""
+    response = _client().post("/probe-raw-text", json={"text": "a" * 1121})
+    assert response.status_code == 422
+    body = response.json()
+    assert body["error"]["code"] == "VALIDATION_ERROR"
+    assert body["error"]["details"]["fields"][0]["reason"] == "too_long"
+    assert body["error"]["details"]["max_length"] == 280
 
 
 def test_allowed_origin_is_echoed_on_a_normal_response() -> None:

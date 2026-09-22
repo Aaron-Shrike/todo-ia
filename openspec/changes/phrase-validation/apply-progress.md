@@ -2302,14 +2302,91 @@ feature-branch-chain or stacked-to-develop sequence, mirroring the precedent alr
 2/2b/2c/2d and 3a-3d. **Declined**: the user explicitly chose `size:exception` for a single PR
 instead, after reviewing this proposal (see "Resolution" at the top of this section).
 
+### TDD Cycle Evidence (Unit 6)
+
+| Task | Test File | Layer | Safety Net | RED | GREEN | TRIANGULATE | REFACTOR |
+|------|-----------|-------|------------|-----|-------|-------------|----------|
+| 6.1 | `tests/unit/platform/test_settings.py` | Unit | N/A (new) | ✅ Confirmed by execution -- `settings.py` moved aside via `mv` to `/tmp`, re-run failed with `ModuleNotFoundError: app.platform.settings`, then restored | ✅ 38 passed after restore | ✅ Per-field boundary+reject pairs for all 17 validated settings; `SIMILARITY_THRESHOLD` gets 3-way coverage (boundary/out-of-range/non-numeric) matching the spec's own "x3" scenario count; provider-enum split across `Settings`/`FakeProviderSettings` | ✅ Renamed `TestSettings`→`FakeProviderSettings` and `TestEmbeddingProviderName`→`FakeEmbeddingProviderName` after a real `PytestCollectionWarning` was observed on first GREEN run (not hypothetical -- see module docstring); consolidated 2 pairs of near-duplicate CORS/revision tests into parametrized ones during the budget trim, re-verified green after each cut |
+| 6.2 (errors) | `tests/unit/platform/test_errors.py` | Unit | N/A (new) | ✅ Confirmed by execution -- `errors.py` moved aside, re-run failed with `ModuleNotFoundError: app.platform.errors`, then restored | ✅ 10 passed after restore | ✅ 5-row parametrized `ERROR_REGISTRY` table (one row per concrete exception type) plus dedicated envelope-shape and details-payload tests | ✅ Module docstring shortened during the budget trim (884→826), no logic change, re-verified green |
+| 6.2 (schemas) | `tests/unit/phrases/test_schemas.py` | Unit | N/A (new) | ✅ Confirmed by execution -- `schemas.py` moved aside, re-run failed with `ModuleNotFoundError: app.modules.phrases.api.schemas`, then restored | ✅ 12 passed after restore (13 after the fix-pass addition below) | ✅ `PhraseId` (2 cases: wire string vs. internal int), `page_limit` (2 boundary-accept + 5 reject, incl. `"10"`/`true`/`10.5` strictness), `raw_phrase_text` (accept-at-cap, reject-over-cap, reject-non-string) | ✅ Docstrings shortened during the budget trim; no logic change |
+| 6.2 (main.py factory + middlewares) | `tests/contract/test_framework_errors.py` (10 of 11 tests; the 11th is the fix-pass addition below) | Contract | N/A (new) | ✅ Confirmed by execution -- `main.py` moved aside, re-run failed with `ModuleNotFoundError: app.main`, then restored | ✅ 10 passed after restore, including the forced-500-with-CORS-headers test on the FIRST attempt (no middleware-order adjustment needed) | ✅ 10 distinct scenarios: 404/405/500(no-stack-trace)/422(malformed-JSON)/413, allowed/disallowed origin, preflight allowed/disallowed, forced-500-carries-CORS | ✅ Docstrings/comments shortened during the budget trim; consolidated nothing further here (each test is a distinct named scenario) |
+| 6.3 | (same `test_framework_errors.py` -- 6.2 and 6.3 share one test file and one commit per the unit's own task grouping) | Contract | N/A (new) | (see 6.2 row) | (see 6.2 row) | (see 6.2 row) | (see 6.2 row) |
+| Fix pass: `string_too_long` → `too_long` mapping (post-`sdd-verify` CRITICAL 1) | `tests/contract/test_framework_errors.py::test_raw_length_cap_is_422_too_long_with_max_length_detail`, `tests/unit/phrases/test_schemas.py::test_raw_phrase_text_error_reports_the_semantic_max_length_not_the_raw_cap` | Contract + Unit | 23 pre-existing Unit 6 tests in the same two files, re-run green before and after | ✅ Confirmed by execution -- new contract test failed `assert 'invalid_type' == 'too_long'` against the unfixed `main.py`; after fixing the probe-model scoping bug it failed correctly on the real assertion `assert 1120 == 280` before the `schemas.py` fix | ✅ Fixed in two steps, each re-verified failing before its own fix: (1) `main.py`'s `_reason_for`/`_validation_error_handler` now map `string_too_long`→`too_long` and populate `details.max_length`; (2) `raw_phrase_text()` now raises a custom `PydanticCustomError` carrying the SEMANTIC `max_length` (280) instead of pydantic's default raw-cap value (1120) | ✅ Both new tests + all 23 pre-existing Unit 6 tests in the two touched files re-run green after each fix | Extracted `_check_raw_cap`'s custom-error construction so `main.py`'s mapping logic did not need to special-case the ×4 relationship |
+
+### Test Summary (Unit 6)
+- **Total tests written and passing at final commit (original + fix pass)**: 70 (38 settings + 10
+  errors + 13 schemas + 11 contract; up from 67 before the fix pass, in the same 4 files)
+- **Layers used**: Unit (61: 38 settings + 10 errors + 13 schemas), Contract (11 named
+  framework/CORS/validation scenarios against the real `create_app()`), Integration (0 -- no business
+  endpoint exists yet), E2E (0)
+- **Approval tests** (refactoring): None -- all four production files are new in this unit, no
+  pre-existing behaviour to protect
+- **Pure functions/types created**: `error_envelope`, `build_error_response`, `page_limit`,
+  `raw_phrase_text`, `_reason_for` (all pure given their inputs); `Settings`/`FakeProviderSettings`
+  are pydantic models (validation is deterministic and side-effect-free per construction)
+- **Genuine bugs the strict-TDD cycle surfaced, not contrived examples**: the `TestSettings` pytest
+  collection-name collision (caught on first GREEN run of 6.1); the `tests/contract/conftest.py`
+  env-var leak into `test_settings.py::test_required` (caught on the first full-command run combining
+  both directories); the `string_too_long`→`invalid_type` mapping gap and the raw-vs-semantic
+  `max_length` mismatch (both caught by `sdd-verify`'s direct pydantic reproduction, then independently
+  re-reproduced here before fixing -- see "sdd-verify fix pass" below); and a THIRD, previously
+  undetected bug found while writing the fix-pass test: the probe `BaseModel` classes were defined
+  *inside* `_client()`, which silently breaks FastAPI's body-vs-query-param resolution under
+  `from __future__ import annotations` (see that section for the full mechanism) -- moved to module
+  scope, which also retroactively fixed `_probe`'s never-before-exercised body-model resolution.
+
+### sdd-verify fix pass (2 CRITICAL findings, both resolved)
+
+`sdd-verify`'s report on PR #20 (`verify-report.md`, "Verification Report - Unit 6") returned **PASS
+WITH WARNINGS** with 2 CRITICAL findings. Both are fixed in a follow-up commit on the same branch
+(`feat/pv-06-api-foundation`), not a new PR, per the coordinator's instruction.
+
+**CRITICAL 1 -- `string_too_long` not mapped to `too_long`, `details.max_length` never populated for
+schema-level bounds.** Verify's finding was correct and reproduced independently here (see the
+`ctx.max_length` shape confirmed by direct pydantic execution). Fixing it surfaced a SECOND, deeper
+issue verify's static reproduction did not exercise end-to-end: `raw_phrase_text()`'s
+`Field(max_length=max_length * 4)` reports the RAW wire-level bound (1120) in pydantic's own
+`ctx.max_length`, not the SEMANTIC `PHRASE_MAX_LENGTH` (280) the api-contract spec's "Raw length cap"
+scenario and design.md's error registry both require. A generic `ctx.max_length` passthrough in
+`main.py` would have shipped `details.max_length == 1120` -- still wrong, just differently wrong.
+Fixed at the source: `raw_phrase_text()` now enforces the raw cap via a custom `AfterValidator`
+raising a `PydanticCustomError` typed `string_too_long` with `ctx = {"max_length": max_length}` (the
+SEMANTIC value), so `main.py`'s generic mapping (`string_too_long` → reason `too_long`, `ctx.max_length`
+→ `details.max_length`) needed no special-casing of the ×4 relationship. New tests: a contract-level
+test (`test_raw_length_cap_is_422_too_long_with_max_length_detail`, exercising the real HTTP path) and
+a schema-level test (`test_raw_phrase_text_error_reports_the_semantic_max_length_not_the_raw_cap`,
+asserting the error's `ctx` directly) -- both RED-confirmed against the unfixed code, both GREEN after
+the fix, per the TDD Cycle Evidence table above.
+
+**Bonus bug found while writing CRITICAL 1's own test**: the first draft of the new contract test
+failed with `{"field": "query", "reason": "required"}` -- not the expected `invalid_type`/`too_long`
+progression at all. Root cause: `tests/contract/test_framework_errors.py` has
+`from __future__ import annotations` at module scope, so a route function's parameter annotations
+become unevaluated strings; FastAPI resolves them via the function's `__globals__` only, never an
+enclosing closure's locals. The probe `BaseModel` classes were defined *inside* the `_client()`
+helper function, so `_RawTextProbe`/`_Probe` were unresolvable from `__globals__`, and FastAPI
+silently fell back to treating the `body` parameter as a required QUERY parameter instead of a JSON
+body model. Fixed by moving both probe models to module scope (see the new code comment in
+`test_framework_errors.py`). This retroactively means the pre-existing `/probe` route's body-model
+resolution was NEVER actually exercised correctly before this fix pass -- `test_malformed_json_is_422_
+validation_error` happened not to expose it, since malformed JSON 422s during parsing itself, before
+the route's parameter types are ever consulted. All 10 pre-existing contract tests were re-run green
+after this fix, confirming no behavior regressed.
+
+**CRITICAL 2 -- missing TDD Cycle Evidence table.** Added the table and Test Summary block above,
+matching every other unit's format (Unit 5a used as the direct template, per the coordinator's
+instruction), covering both the original 6.1-6.3 work and this fix pass in one place.
+
 ### Status
 
-All code for 6.1-6.3 is written, RED->GREEN confirmed per task (see evidence above), and green
-against every quality gate: exact Unit 6 Verify command (`pytest -m "unit or contract" tests/unit/
-platform tests/contract -q`) -> 58 passed; full regression (`pytest -m "not integration and not slow"
--q`) -> 193 passed, 0 regressions; `ruff check src tests` -> clean; `mypy src` -> `Success: no issues
-found in 33 source files`; `lint-imports` -> `Contracts: 5 kept, 0 broken.` Committed as `1edd12d`
-on `feat/pv-06-api-foundation`; PR number recorded below once opened.
+All code for 6.1-6.3 plus the `sdd-verify` fix pass is written, RED->GREEN confirmed per task and per
+fix (see evidence above), and green against every quality gate: exact Unit 6 Verify command
+(`pytest -m "unit or contract" tests/unit/platform tests/contract -q`) -> 59 passed (was 58, +1 new
+contract test); full regression (`pytest -m "not integration and not slow" -q`) -> 195 passed, 0
+regressions (was 193, +2: the new contract test + the new schema test); `ruff check src tests` ->
+clean; `mypy src` -> `Success: no issues found in 33 source files`; `lint-imports` -> `Contracts: 5
+kept, 0 broken.` Original commit `1edd12d`, fix-pass commit recorded below once made, both on
+`feat/pv-06-api-foundation`; PR #20 already open, updated in place (no new PR).
 
 ## PR status (Unit 6)
 

@@ -53,6 +53,18 @@ def test_raw_phrase_text_rejects_one_over_the_raw_cap() -> None:
         _TextModel(text="a" * 1121)
 
 
+def test_raw_phrase_text_error_reports_the_semantic_max_length_not_the_raw_cap() -> None:
+    """The error's `ctx.max_length` must be `PHRASE_MAX_LENGTH` (280), not
+    the raw `4x` bound (1120) pydantic would report by default -- this is
+    what `main.py`'s generic `too_long` mapping surfaces as
+    `details.max_length` (design.md's "Raw length cap" scenario)."""
+    with pytest.raises(ValidationError) as exc_info:
+        _TextModel(text="a" * 1121)
+    (error,) = exc_info.value.errors()
+    assert error["type"] == "string_too_long"
+    assert error["ctx"]["max_length"] == 280
+
+
 def test_raw_phrase_text_rejects_non_string() -> None:
     with pytest.raises(ValidationError):
         _TextModel(text=123)

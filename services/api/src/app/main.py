@@ -19,6 +19,7 @@ from app.platform.settings import Settings
 
 _FRAMEWORK_CODES = {404: "NOT_FOUND", 405: "METHOD_NOT_ALLOWED"}
 _MISSING_TYPES = {"missing"}
+_TOO_LONG_TYPES = {"string_too_long"}
 _OUT_OF_RANGE_TYPES = {"greater_than", "greater_than_equal", "less_than", "less_than_equal"}
 
 
@@ -131,6 +132,8 @@ async def _http_exception_handler(_request: Request, exc: StarletteHTTPException
 def _reason_for(error_type: str) -> str:
     if error_type in _MISSING_TYPES:
         return "required"
+    if error_type in _TOO_LONG_TYPES:
+        return "too_long"
     if error_type in _OUT_OF_RANGE_TYPES:
         return "out_of_range"
     return "invalid_type"
@@ -141,17 +144,29 @@ async def _validation_error_handler(
 ) -> JSONResponse:
     """Covers both field-level pydantic failures and malformed JSON
     (FastAPI wraps `json.JSONDecodeError` as one `json_invalid` error with
-    `loc: ("body",)`) -- both are 422 `VALIDATION_ERROR` per design.md."""
+    `loc: ("body",)`) -- both are 422 `VALIDATION_ERROR` per design.md. A
+    schema-level `max_length` bound (e.g. `raw_phrase_text()`'s raw 4x cap)
+    maps to reason `too_long` with a top-level `details.max_length`, taken
+    from pydantic's own `ctx.max_length` (design.md line 937: "schema field
+    bound -> too_long")."""
+    errors = exc.errors()
     fields = [
         {
             "field": ".".join(str(part) for part in error["loc"] if part != "body") or "body",
             "reason": _reason_for(error["type"]),
         }
-        for error in exc.errors()
+        for error in errors
     ]
+    details: dict[str, object] = {"fields": fields}
+    for error in errors:
+        if error["type"] in _TOO_LONG_TYPES:
+            max_length = error.get("ctx", {}).get("max_length")
+            if max_length is not None:
+                details["max_length"] = max_length
+            break
     return JSONResponse(
         status_code=422,
-        content=error_envelope("VALIDATION_ERROR", "request validation failed", {"fields": fields}),
+        content=error_envelope("VALIDATION_ERROR", "request validation failed", details),
     )
 
 
