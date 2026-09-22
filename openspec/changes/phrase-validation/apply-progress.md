@@ -2132,3 +2132,170 @@ import checks green. 399/400 lines — a documented, legitimate trim (no `size:e
 seam), full before/after numbers above. `find_matches` remains unused by any transport/API layer until
 Unit 6b/7 wire it in (this unit's own stated Rollback note); `find_nearest`/`find_nearest_exact`/
 `lock_for_write`/full write-path semantics remain Unit 5b's job.
+
+---
+
+## Unit 6: Settings, error envelope, framework-error handlers -- IMPLEMENTED, NOT COMMITTED (budget STOP)
+
+Branch `feat/pv-06-api-foundation`, cut from `develop` at `f6fb5bb` (Units 0-5a merged; Unit 5b
+still open/unmerged in PR #19, not a dependency of Unit 6 per tasks.md's "6 needs 0 only").
+
+All three sub-tasks are fully implemented, RED->GREEN confirmed per task, and green against every
+quality gate below. **Not committed** and **no PR opened**: after a genuine review-budget trim pass
+the diff still measures 826 changed lines against this unit's 400-line hard cap, and tasks.md
+records no split seam for Unit 6 (unlike e.g. Unit 2's explicit "split `find_matches` out" note).
+Per the orchestrator's explicit instruction for this batch -- "if you're at genuine risk of
+exceeding 400 after a real trim pass, STOP and report back... rather than self-authorizing an
+exception or inventing a seam" -- this batch stops here instead of committing. See "Budget
+measurement" and "Proposed split (not yet actioned)" below.
+
+- [x] 6.1 RED then GREEN `platform/settings.py` (`Settings`: every var from design.md's
+  Configuration table this service itself reads, each with its stated validation range;
+  `EmbeddingProviderName` runtime enum has exactly ONE value, `sentence_transformers`;
+  `FakeProviderSettings` subclass adds the `fake` value) + `tests/unit/platform/test_settings.py`
+  (38 tests: boundary 0/1 accepted and out-of-range/non-numeric rejected for
+  `SIMILARITY_THRESHOLD`; range boundaries for every other bounded field; `DATABASE_URL` required +
+  scheme-checked; CORS comma-split + wildcard/non-absolute rejection; `EMBEDDING_MODEL_REVISION`
+  40-hex validation; provider enum split between the two classes).
+  - **Scope decision**: `POSTGRES_USER`/`PASSWORD`/`DB` (compose/healthcheck-only, per design.md's
+    own row comment) and the three web-only build args are deliberately NOT modeled as `Settings`
+    fields -- this app never reads them; documented in the module docstring.
+  - **Naming deviation from tasks.md's literal wording**: the "separate test settings class" is
+    named `FakeProviderSettings`, not the more obvious `TestSettings` -- naming it `TestSettings`
+    produced a real `PytestCollectionWarning` (pytest's default `python_classes = Test*` pattern
+    tries to collect it as a test class the moment any test module imports the name). Caught during
+    this unit's own GREEN run, not hypothetical; documented in the module docstring for the next
+    reader who reaches for the obvious name.
+- [x] 6.2 RED then GREEN `platform/errors.py` (`DomainError` base, `ERROR_REGISTRY` mapping
+  `InvalidCursor`/`EmptyPhraseText`/`PhraseTooLong`/`EmbeddingUnavailable`/`EmbeddingTimeout` to
+  their design.md status/code, `error_envelope()` building `{"error": {code, message, details}}`,
+  `build_error_response()`), `main.py` (app factory; `BodySizeLimitMiddleware` draining+counting the
+  body before any JSON parsing, 413 `PAYLOAD_TOO_LARGE`; `CatchAllMiddleware` hand-rolled ASGI
+  catch-all for anything with no registered handler, 500 `INTERNAL_ERROR`, no stack trace; framework
+  handlers for `StarletteHTTPException`/`RequestValidationError`; middleware registration order),
+  `phrases/api/schemas.py` (`PhraseId` string-serializing Annotated type, `page_limit(max_value)` and
+  `raw_phrase_text(max_length)` factories) + `tests/unit/platform/test_errors.py` (10 tests) +
+  `tests/unit/phrases/test_schemas.py` (12 tests).
+  - **Resolved the open `DomainError` base-class question flagged since Unit 1's apply-progress**:
+    `EmptyPhraseText`/`PhraseTooLong`/`EmbeddingUnavailable`/`EmbeddingTimeout` (Unit 1) and
+    `InvalidCursor` (Unit 2c) are deliberately NOT retrofitted to inherit from a shared
+    `DomainError` -- that would require those already-merged domain modules to import
+    `app.platform.errors`, inverting the domain -> platform dependency direction (no import-linter
+    contract currently forbids it, but it is backwards, and `platform/errors.py` importing fastapi
+    would then transitively reach `*.domain` and break the `domain-purity` contract -- the exact
+    "forbidden checks the FULL transitive import graph" mechanism Unit 2 already discovered).
+    Resolution: `ERROR_REGISTRY` is keyed by CONCRETE exception type; `main.py` registers the SAME
+    handler function once per key via `add_exception_handler`. Starlette's
+    `_lookup_exception_handler` walks `type(exc).__mro__` against every REGISTERED key, not only
+    base classes, so N registrations of one function are functionally identical to design.md's
+    literal "single `@app.exception_handler(DomainError)`" wording for every type this registry
+    knows about, without touching any already-merged domain file. `DomainError` itself still exists
+    as a base FUTURE domain errors may opt into.
+  - `phrases/api/schemas.py`'s `page_limit`/`raw_phrase_text` are FACTORY functions (`(max_value) ->
+    Annotated[...]`), not fixed Annotated types: `MATCHES_PAGE_SIZE`/`PHRASE_MAX_LENGTH` are runtime
+    settings, not compile-time constants, so the shared-bound rule design.md describes can only be
+    enforced by injecting the value at the call site (Unit 6b/7 will call these with
+    `settings.matches_page_size`/`settings.phrase_max_length`).
+  - **Middleware-ordering finding -- worked on the FIRST attempt, no adjustment needed.**
+    `Starlette.add_middleware` PREPENDS to `user_middleware`, and `build_middleware_stack` wraps in
+    `reversed(middleware)` order (confirmed by reading the actually-installed `starlette` 1.6.0
+    source, not from memory alone -- `add_middleware`/`build_middleware_stack` in
+    `starlette/applications.py`), so the LAST `add_middleware` call ends up OUTERMOST. Registering
+    `CatchAllMiddleware`, then `BodySizeLimitMiddleware`, then `CORSMiddleware` last puts CORS
+    outermost and both custom middlewares inside it. All 10 contract tests in 6.3 (below), including
+    "a forced 500 for an allowed Origin still carries CORS headers", passed on the first run with
+    this ordering -- no trial-and-error was needed, unlike tasks.md's framing ("if it fails, adjust
+    the order") anticipated as a real possibility.
+  - Domain-registered errors (`InvalidCursor` etc.) do NOT need `CatchAllMiddleware` at all: FastAPI/
+    Starlette's built-in exception-handler dispatch (`wrap_app_handling_exceptions`, inside
+    `ExceptionMiddleware`) already runs INSIDE every user middleware including CORS by construction,
+    for ANY type registered via `add_exception_handler` -- not just `HTTPException` subclasses.
+    `CatchAllMiddleware` is needed ONLY for the residual case (no handler registered at all), which
+    would otherwise reach Starlette's `ServerErrorMiddleware` (always outermost, never relocatable).
+- [x] 6.3 RED then GREEN `tests/contract/test_framework_errors.py` (10 tests against the real
+  `create_app()`, with throwaway probe routes registered on the app under test, never on the shared
+  `app.main.app` singleton): `GET /nope` -> 404; `DELETE /phrases` -> 405; forced exception -> 500,
+  response body checked to contain neither `RuntimeError` nor `Traceback`; malformed JSON -> 422;
+  oversized body -> 413; allowed/disallowed Origin on a normal response; preflight allowed
+  (Allow-Origin + POST in allow-methods + Content-Type in allow-headers + no Allow-Credentials) and
+  disallowed; the forced-500-with-CORS-headers scenario. `tests/contract/conftest.py` and
+  `tests/unit/platform/conftest.py` supply/clear `DATABASE_URL` respectively, directory-scoped (see
+  "A real bug found and fixed" below).
+
+### A real bug found and fixed during this batch: env-var leak across test files
+
+First full run of the exact Unit 6 Verify command (`pytest -m "unit or contract" tests/unit/platform
+tests/contract -q`) failed one test: `TestDatabaseUrl::test_required` (expects `Settings()` with no
+`DATABASE_URL` to raise) started passing spuriously once `tests/contract/conftest.py` ran first in
+the same pytest process and called `os.environ.setdefault("DATABASE_URL", ...)` -- `setdefault`
+mutates the REAL process environment for the rest of that pytest run, and pydantic-settings reads
+real env vars automatically, not just explicit kwargs, so `test_required`'s bare `Settings()` call
+silently picked up the leaked value from the OTHER test file's conftest. Root cause: `app.main`
+builds a production `Settings()` at IMPORT time (design.md's own fail-fast intent — "instantiated
+... before the app is created"), so anything importing `app.main` (only `tests/contract/*` does)
+needs a valid `DATABASE_URL` in the environment before that import happens, which is BEFORE any
+fixture (function-scoped `monkeypatch`) can run — collection-time module execution, not
+execution-time. Fixed with two directory-scoped conftests instead of a shared/root one: `tests/
+contract/conftest.py` sets `DATABASE_URL` (needed so `app.main` is importable there), and `tests/
+unit/platform/conftest.py` adds an autouse `monkeypatch.delenv` fixture clearing every `Settings`-
+readable env var before each test in that directory — hermetic against BOTH the contract conftest's
+leak and any real ambient env var (a developer's shell, CI, docker compose `--env-file`). This is a
+generally-correct fix, not just a patch for the specific collision observed.
+
+### Budget measurement
+
+First complete draft (all three sub-tasks, RED->GREEN, all green): **884 insertions**, 12 files
+(`platform/settings.py` 117, `platform/errors.py` 103, `main.py` 203, `phrases/api/schemas.py` 34,
+`tests/unit/platform/test_settings.py` 125, `tests/unit/platform/test_errors.py` 63, `tests/unit/
+platform/conftest.py` 38, `tests/unit/phrases/test_schemas.py` 58, `tests/contract/
+test_framework_errors.py` 129, `tests/contract/conftest.py` 14, two empty `__init__.py`).
+
+Applied a genuine trim pass, re-measuring after each cut (same discipline as Unit 1's and Unit 2's
+review-budget trims): shortened every module/class docstring to its essential "why" (cut verbose
+cross-references and restated design.md quotes), consolidated two pairs of near-duplicate CORS-
+origin and cursor-length test cases into single parametrized tests. Re-ran the full test set after
+each cut to confirm zero coverage loss (same test count and same scenarios, fewer or shorter
+assertions/docstrings). Result: **826 insertions**, same 12 files (`main.py` 184, `platform/
+errors.py` 93, `platform/settings.py` 107, `phrases/api/schemas.py` 31, `tests/contract/
+test_framework_errors.py` 126, `tests/contract/conftest.py` 9, `tests/unit/platform/test_settings.py`
+119, `tests/unit/platform/test_errors.py` 63, `tests/unit/platform/conftest.py` 36, `tests/unit/
+phrases/test_schemas.py` 58, two empty `__init__.py`).
+
+**826 is still ~2.1x the 400-line hard cap**, and every remaining line is either genuinely load-
+bearing production code, or a test that exercises a distinct, spec-named scenario (settings: 17
+validated fields x boundary+reject cases per design.md's Configuration table; errors: 5 registry
+entries x mapping+details; schemas: 3 shared types; contract: 10 named framework/CORS scenarios from
+tasks.md's own Covers line) with zero redundancy left to consolidate without losing coverage. Cutting
+further would mean shipping untested production code (a strict-TDD violation) or narrower scope than
+task 6.1-6.3's literal requirements. Unlike Unit 2's precedent (which shipped 732/400 lines as a
+documented, self-authorized exception with the maintainer's prior "flag it, don't block" instruction
+for that batch), THIS batch's explicit instruction is the opposite: stop and ask rather than
+self-authorize. Stopping here.
+
+### Proposed split (not yet actioned -- awaiting the user's chain-strategy decision)
+
+The three sub-tasks already implemented split cleanly along their own 6.1/6.2/6.3 boundaries, each
+comfortably under 400 on its own:
+
+| Slice | Files | Lines | Task |
+|-------|-------|-------|------|
+| 6-settings | `platform/settings.py`, `tests/unit/platform/{test_settings.py,conftest.py,__init__.py}` | 262 | 6.1 |
+| 6-errors-schemas | `platform/errors.py`, `tests/unit/platform/test_errors.py`, `phrases/api/schemas.py`, `tests/unit/phrases/test_schemas.py` | 245 | 6.2 (registry half) |
+| 6-app-foundation | `main.py`, `tests/contract/{test_framework_errors.py,conftest.py,__init__.py}` | 319 | 6.2 (app-factory half) + 6.3 |
+
+Dependency order is linear (`errors-schemas` needs nothing from `settings`; `app-foundation` imports
+both `platform.errors` and `platform.settings`, so it must land last) -- a natural 3-PR
+feature-branch-chain or stacked-to-develop sequence, mirroring the precedent already used for Units
+2/2b/2c/2d and 3a-3d. **Not actioned in this batch** -- this is a proposal for the user to accept,
+adjust, or reject (e.g. in favor of a `size:exception`) before any commit is made, per this batch's
+explicit "stop and report back" instruction.
+
+### Status
+
+All code for 6.1-6.3 is written, RED->GREEN confirmed per task (see evidence above), and green
+against every quality gate: exact Unit 6 Verify command (`pytest -m "unit or contract" tests/unit/
+platform tests/contract -q`) -> 58 passed; full regression (`pytest -m "not integration and not slow"
+-q`) -> 193 passed, 0 regressions; `ruff check src tests` -> clean; `mypy src` -> `Success: no issues
+found in 33 source files`; `lint-imports` -> `Contracts: 5 kept, 0 broken.` **Nothing is committed and
+no PR is open** -- working tree has all Unit 6 files present and passing, staged but uncommitted,
+pending the user's decision on the proposed split (or an explicit `size:exception`) above.
