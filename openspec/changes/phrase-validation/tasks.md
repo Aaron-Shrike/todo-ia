@@ -37,7 +37,11 @@ Rule: branch N is cut from `main` after PR N-1 has merged (or from branch N-1 wh
 | 2 | `feat/pv-02-ports-inmemory` | `main` | ports, fakes, contract suite | ~340 |
 | 2b | `perf/pv-02b-embedding-cache` | `main` | caching decorator | ~180 |
 | 2c | `feat/pv-02c-cursor-codec` | `main` | cursor codec | ~150 |
-| 3 | `feat/pv-03-use-cases` | `main` | use cases | ~350 |
+| 3 | ~~`feat/pv-03-use-cases`~~ | ~~`main`~~ | ~~use cases~~ — **superseded by the 3a-3d split below** (PR #11 closed unmerged; budget CRITICAL from `sdd-verify`) | ~~~350~~ |
+| 3a | `feat/pv-03a-validate` | `main` | validate use case | ~430 |
+| 3b | `feat/pv-03b-list-matches` | `feat/pv-03a-validate`* | list-matches use case | ~140 |
+| 3c | `feat/pv-03c-save` | `feat/pv-03b-list-matches`* | save use case | ~390 |
+| 3d | `feat/pv-03d-cache-interplay` | `feat/pv-03c-save`* | cache-interplay tests | ~125 |
 | 4 | `feat/pv-04-schema-migrations` | `main` | schema + compose db/migrate | ~340 |
 | 5a | `feat/pv-05a-find-matches` | `main` | exact keyset `find_matches` | ~330 |
 | 5b | `feat/pv-05b-nearest-uow` | `main` | `find_nearest`, exact, UoW, lock | ~350 |
@@ -54,14 +58,22 @@ Rule: branch N is cut from `main` after PR N-1 has merged (or from branch N-1 wh
 | 15 | `docs/pv-15-readme-architecture` | `main` | README + architecture | ~300 |
 | 16 | `docs/pv-16-decision-log` | `main` | ADRs | ~340 |
 
+*3b/3c/3d are cut authoring-ahead from the immediately preceding sub-unit's branch (same pattern
+already used for 2/2d/2c/2b against an unmerged `feat/pv-02-ports-inmemory`) and MUST be rebased
+onto `main` and retargeted the moment the branch they were cut from merges — each will show as
+stacked on its parent in GitHub until then, which is expected, not a mistake.
+
 ### Dependency and parallelism
 
 Merge order is strictly linear (1 PR at a time on `main`). Authoring can overlap where there is no code dependency:
-- After 2 merges: **2b and 2c can be authored in parallel** (both need only the ports); 3 needs 2, 2b, 2c.
+- After 2 merges: **2b and 2c can be authored in parallel** (both need only the ports); 3a needs 2,
+  2b, 2c (same as the original Unit 3); 3b needs 3a merged (or authored-ahead against it) for
+  `_shared.py`; 3c needs 3b for the same reason; 3d needs 3a, 3b AND 3c (it exercises all three use
+  cases together).
 - **4 is independent of 1-3** (needs only 0); it can be authored any time after 0. 5a needs 2 and 4; 5b needs 5a.
-- 6 needs 0 only; 6b needs 3, 6 and (for readiness) 5b; 7 needs 6b, 2c, 5b.
+- 6 needs 0 only; 6b needs 3d (the full Unit 3 use-case set), 6 and (for readiness) 5b; 7 needs 6b, 2c, 5b.
 - 8 needs 2b and 7. 9 needs 8. 10 needs 7 (`docs/openapi.json`). 11 -> 12 -> 13 sequential (shared `copy.es.ts`, machine). 14 needs 8, 13. 15, 16 last (they cite measured values from 5a, 8, 9, 14).
-- Bottleneck: 3 (needs 2, 2b, 2c) and 7 (gates the whole web track and OpenAPI). Sole owner per unit is the apply agent; no shared-file ownership conflicts except `openspec/config.yaml` (touched by 0 only) and `docs/decisions/*` (touched by 16 only; earlier units append measured numbers to `docs/evidence/` notes, not ADRs).
+- Bottleneck: 3a-3d (needs 2, 2b, 2c, then each other in sequence) and 7 (gates the whole web track and OpenAPI). Sole owner per unit is the apply agent; no shared-file ownership conflicts except `openspec/config.yaml` (touched by 0 only) and `docs/decisions/*` (touched by 16 only; earlier units append measured numbers to `docs/evidence/` notes, not ADRs).
 
 ---
 
@@ -123,15 +135,37 @@ Covers: Page consistency: Malformed cursor, Cursor bound to the query text, Curs
 - Verify: `pytest tests/unit/phrases/test_cursor.py -q` — 22 passed. Full backend suite `pytest tests/unit tests/contract_suite -q` — 80 passed; `lint-imports` 5 kept, 0 broken.
 - Branch: `feat/pv-02c-cursor-codec`, based on `feat/pv-02-ports-inmemory` at `b669eea` (stacked-to-main, authoring-ahead; retarget to `main` once PR #7 merges — see apply-progress.md). PR #8, base `feat/pv-02-ports-inmemory`. Actual diff: 354 insertions / 0 deletions, 2 files — well under the 400-line budget.
 
-## Unit 3: Validate, list-matches, save use cases (~350)
+## Unit 3: Validate, list-matches, save use cases (~350) — SPLIT into 3a-3d
 
-Commit: `feat(app): validate, list-matches and save use cases`. Rollback: revert (no transport yet). Seam if over budget: move 409 payload build to 7.
-Covers: Validation result shape x4 (Empty store, Best below threshold, most_similar equals first match, Statelessness), Complete ordered match set: Threshold zero, Page consistency: Phrase saved between pages, Exact duplicates: Confirmable, Model failure and timeout x3 (use-case level), Embedding reuse: Validate then pages, Validate then save, Blind save; Server-side re-validation: Similarity re-run despite warm cache, Query count on save, Save does not use the approximate read, Save catches a duplicate the approximate index would miss (spy level), Save without validating (unique/duplicate), Forged client score, Stale validation; Explicit flag: Duplicate confirmed, Flag on a non-duplicate, Exact duplicate confirmable, Cancel saves nothing (backend: no call); 409 payload: Payload completeness, Large match set on 409; Failures never save: Model down on save, Model down with confirmation, Timeout on save; Concurrency: Unique violation maps to 409 never 500, Persistent violation still yields 409, Confirmed save cannot violate the index; Persistence: Unique phrase metadata, Below-threshold neighbor is recorded, Confirmed duplicate metadata; Threshold changed via env (policy injected).
-- [ ] 3.1 RED then GREEN `phrases/application/validate_phrase.py`: normalizes once, rejects empty/too-long before any `embed()`, opens `REPEATABLE_READ` read-only UoW, runs `find_nearest` then `find_matches`, reconciliation rule (`matches[0]` wins), tail rule, `has_more`; tests in `tests/unit/phrases/test_validate_phrase.py` (spy repo: worse `find_nearest` neighbour loses to `matches[0]`; property loop `most_similar == matches[0]` over a random corpus on the in-memory adapter).
-- [ ] 3.2 RED then GREEN `phrases/application/list_matches.py`: cursor decode before embedding (`FakeEmbedder.call_count == 0` on any invalid cursor, wrong `t`, wrong `th`), zero extra embeddings across pages 2..n, `find_matches` on every page.
-- [ ] 3.3 RED then GREEN `phrases/application/save_phrase.py`: `READ_COMMITTED` UoW, advisory lock through the UoW, `find_nearest_exact` exactly once and `find_nearest` zero times (spy whose `find_nearest` raises), `unique` records below-threshold neighbour as `NewPhrase(score, most_similar_id)`, empty store `(None, None)`, 409 builds the full validate-shaped payload (`find_matches` page 1), `DuplicateTextConflict` -> one retry in a FRESH UoW -> 409 (always-raising repo still 409), rollback on exception, no persistence on embedder failure/timeout, recall-miss fixture (HNSW spy misses, exact hits -> 409).
-- [ ] 3.4 Cache interplay tests `tests/unit/phrases/test_cache_interplay.py`: validate then save shares one provider (`call_count == 1`), 3 pages keep `call_count == 1`, repo counters prove live queries on every request even on cache hit, response byte-identical for empty/warm/disabled cache.
-- Verify: `make test-unit`; `lint-imports` (use cases import no adapters).
+First shipped as one PR (`feat/pv-03-use-cases`, 1083 lines) and flagged by `sdd-verify` as a
+review-budget CRITICAL: 2.7x the 400-line cap, with the Notes line's own named seam ("move 409
+payload build to unit 7") measured to save only ~50-70 lines — not enough to close the gap alone.
+Per this file's own Review Workload Forecast rule ("If a unit exceeds 400, split at the seam named
+in its Notes instead of asking for `size:exception`") and the change's `ask-on-risk` delivery
+strategy, the unit was re-split into four stacked sub-unit PRs along its natural dependency seams
+(`_shared.py`'s consumers) instead of shipping a `size:exception`. Original commit `55214c0` /
+fix-pass commit `c1e7b2f` on the now-superseded `feat/pv-03-use-cases` branch (PR #11, closed)
+contain the pre-split history; task assignment below is unchanged, only the delivery unit boundary
+moved. See apply-progress.md's Unit 3 "Fix pass" section for the full measurement and the four new
+branches/PRs/commit SHAs.
+
+Covers (unchanged, now spread across 3a-3d as noted per task): Validation result shape x4 (Empty store, Best below threshold, most_similar equals first match, Statelessness), Complete ordered match set: Threshold zero, Page consistency: Phrase saved between pages, Exact duplicates: Confirmable, Model failure and timeout x3 (use-case level), Embedding reuse: Validate then pages, Validate then save, Blind save; Server-side re-validation: Similarity re-run despite warm cache, Query count on save, Save does not use the approximate read, Save catches a duplicate the approximate index would miss (spy level), Save without validating (unique/duplicate), Forged client score, Stale validation; Explicit flag: Duplicate confirmed, Flag on a non-duplicate, Exact duplicate confirmable, Cancel saves nothing (backend: no call); 409 payload: Payload completeness, Large match set on 409; Failures never save: Model down on save, Model down with confirmation, Timeout on save; Concurrency: Unique violation maps to 409 never 500, Persistent violation still yields 409, Confirmed save cannot violate the index; Persistence: Unique phrase metadata, Below-threshold neighbor is recorded, Confirmed duplicate metadata; Threshold changed via env (policy injected).
+
+### Unit 3a: Validate use case (`feat/pv-03a-validate`, base `main`, ~430 lines)
+- [x] 3.1 RED then GREEN `phrases/application/validate_phrase.py` + `_shared.py` (view types + tail rule, shared by 3a/3c): normalizes once, rejects empty/too-long before any `embed()`, opens `REPEATABLE_READ` read-only UoW, runs `find_nearest` then `find_matches`, reconciliation rule (`matches[0]` wins), tail rule, `has_more`; tests in `tests/unit/phrases/test_validate_phrase.py` (spy repo: worse `find_nearest` neighbour loses to `matches[0]`; property loop `most_similar == matches[0]` over a random corpus; threshold-injection test added in the fix pass — see apply-progress.md).
+- Verify: `pytest tests/unit tests/contract_suite -q`; `lint-imports`.
+
+### Unit 3b: List-matches use case (`feat/pv-03b-list-matches`, base `feat/pv-03a-validate`, ~140 lines)
+- [x] 3.2 RED then GREEN `phrases/application/list_matches.py`: cursor decode before embedding (`FakeEmbedder.call_count == 0` on any invalid cursor, wrong `t`, wrong `th`), zero extra embeddings across pages 2..n, `find_matches` on every page; tests in `tests/unit/phrases/test_list_matches.py`.
+- Verify: `pytest tests/unit tests/contract_suite -q`; `lint-imports`.
+
+### Unit 3c: Save use case (`feat/pv-03c-save`, base `feat/pv-03b-list-matches`, ~390 lines)
+- [x] 3.3 RED then GREEN `phrases/application/save_phrase.py` (+ `_uow_spies.py`'s `CountingRepo`/`ConflictRepo`, extending 3a's file): `READ_COMMITTED` UoW, advisory lock through the UoW, `find_nearest_exact` exactly once and `find_nearest` zero times (delivered as a call-counter proof, not a raising spy — see apply-progress.md deviation note), `unique` records below-threshold neighbour as `NewPhrase(score, most_similar_id)`, empty store `(None, None)`, 409 builds the full validate-shaped payload (`find_matches` page 1), `DuplicateTextConflict` -> one retry in a FRESH UoW -> 409 (always-raising repo still 409), rollback on exception, no persistence on embedder failure/timeout; tests in `tests/unit/phrases/test_save_phrase.py`.
+- Verify: `pytest tests/unit tests/contract_suite -q`; `lint-imports`.
+
+### Unit 3d: Cache-interplay tests (`feat/pv-03d-cache-interplay`, base `feat/pv-03c-save`, ~125 lines)
+- [x] 3.4 Cache interplay tests `tests/unit/phrases/test_cache_interplay.py` (needs all three use cases from 3a-3c): validate then save shares one provider (`call_count == 1`), 3 pages keep `call_count == 1`, repo counters prove live queries on every request even on cache hit, response byte-identical for empty/warm/disabled cache.
+- Verify: `pytest tests/unit tests/contract_suite -q`; `lint-imports` (use cases import no adapters — the unit's original Verify line, now satisfied cumulatively by 3a-3d).
 
 ## Unit 4: Schema, Alembic raw-SQL migrations, compose db/migrate, minimal API Dockerfile stage (~340)
 
