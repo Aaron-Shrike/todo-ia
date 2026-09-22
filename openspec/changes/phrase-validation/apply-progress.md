@@ -3230,8 +3230,35 @@ against every quality gate: exact Unit 7 Verify command
 regression (`pytest -m "not integration and not slow" -q`) -> 232 passed, 0 regressions; full
 integration (`pytest -m integration -q`) -> 35 passed, 0 regressions; `ruff check src tests` ->
 clean; `mypy src` -> `Success: no issues found in 38 source files`; `lint-imports` -> `Contracts: 5
-kept, 0 broken.` 6 files changed, 554 insertions / 12 deletions (566 total), a documented
+kept, 0 broken.` 6 code/test files changed, 554 insertions / 12 deletions (566 total), a documented
 `size:exception`, user-approved after the mandatory stop-and-report step (see "Resolution" above).
+
+**Commit**: `feat(api): save, list and match paging endpoints`
+**SHA**: `f12c23e6394d7b6a15dbb0d19d242ae4cf610e24`
+**Branch**: `feat/pv-07-save-list-matches`
+**Base**: `develop` at `ea0a2c4` (Units 0-6b merged and reconciled)
+**Lines changed**: 554 insertions / 12 deletions, 6 files in `services/api` (892 insertions / 19
+deletions including the `openspec/` doc updates in the same commit) -- **`size:exception`, explicit
+user sign-off** (see above; the mandatory split-or-escalate step was followed before the exception
+was granted).
+
+## PR status (Unit 7)
+
+**Opened.** `gh auth status` confirmed an active, authenticated session; pushed the branch and
+opened the PR myself, per the CONTEXT's explicit delivery instructions for this batch.
+
+- `git push -u origin feat/pv-07-save-list-matches` -> pushed cleanly, no auth issues (`gh auth
+  status` confirmed active account `Aaron-Shrike` before pushing).
+- `gh pr create --repo Aaron-Shrike/todo-ia --base develop --head feat/pv-07-save-list-matches
+  --title "feat(api): save, list and match paging endpoints" --body-file ...` -> **PR #22**,
+  <https://github.com/Aaron-Shrike/todo-ia/pull/22>. Confirmed via `gh pr view 22
+  --json baseRefName,headRefName,state`: `baseRefName: "develop"`, `headRefName:
+  "feat/pv-07-save-list-matches"`, `state: "OPEN"` -- correct, not stacked on anything (`develop`'s
+  tip at `ea0a2c4` matches this branch's merge-base exactly, confirmed before pushing, so no rebase
+  was needed). PR body carries a `size:exception` callout at the top (same convention as
+  PR #19/#20/#21) plus the dependency diagram, a Branch policy note (base `develop`, no CI expected),
+  Start/End/Prior deps/Follow-ups (mentioning Unit 7b's deferred scope)/Out-of-scope sections, and
+  the exact Verification command output.
 
 ## Remaining Tasks (as of the end of this batch)
 
@@ -3240,8 +3267,8 @@ kept, 0 broken.` 6 files changed, 554 insertions / 12 deletions (566 total), a d
 - [ ] Unit 7b (`GET /phrases` + OpenAPI documentation): NOT started, needs Unit 7 merged first (the
   OpenAPI snapshot should document the full `/phrases` surface). Fully specified in tasks.md and in
   this section's 7.1/7.2 notes (the deleted code was working and green before removal).
-- [ ] Unit 8 (sentence-transformers adapter) needs Unit 2b (done) + Unit 7 (now shipped, not yet
-  merged into `develop` -- confirm this unit's PR has merged before starting Unit 8; see "PR status"
-  below for the PR number once opened).
+- [ ] Unit 8 (sentence-transformers adapter) needs Unit 2b (done) + Unit 7 (now shipped as PR #22,
+  <https://github.com/Aaron-Shrike/todo-ia/pull/22>, not yet merged into `develop` -- confirm it has
+  merged before starting Unit 8).
 - [ ] Unit 10 (web scaffold + generated types) needs `docs/openapi.json`, which now only exists after
   Unit 7b, not Unit 7 -- note this dependency shift explicitly for whoever picks up Unit 10.
