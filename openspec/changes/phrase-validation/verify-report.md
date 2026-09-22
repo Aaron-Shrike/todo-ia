@@ -863,3 +863,351 @@ SUGGESTION:
 
 ### Verdict
 PASS WITH WARNINGS -- all 4 sub-tasks complete and independently re-verified by direct re-execution against real Postgres/pgvector, not taken on faith: the literal Unit 5b Verify line reproduces 17 passed on 3 separate full-file runs, the full integration suite reproduces 33 passed on 2 separate runs, the full unit suite reproduces 123 passed with zero regression, all lint/type/import checks are clean, no AI co-authorship in either commit. The unit's own flagged highest risk -- the recall-miss test's reliability fix -- was scrutinized hardest per instruction: the retry loop genuinely rebuilds an independent, re-committed corpus per attempt (not a tautological retry), and this pass's own 8 additional real pytest invocations (5 standalone + 3 via the full file) were all green, clearing the ">=3 consecutive clean runs" bar that would otherwise make this CRITICAL. The 5b.0 planner-assumption reversal was independently reproduced with a fresh EXPLAIN script and a fresh corpus (not re-running the apply agent's own test), confirming both halves of the claim: the literal query never hits HNSW, and the adopted k-NN-subquery fallback does. The barrier-snapshot test's non-vacuous REPEATABLE READ vs READ COMMITTED pair, the two-real-connection advisory-lock tests, and the correctly-scoped 23505 mapping were each verified by reading the actual mechanism, not the narrative. The 1e-9 to 1e-5 tolerance widening matches design.md's own stated pgvector rationale and does not weaken the in-memory adapter's exactness. The size:exception documentation is accurate and consistent across tasks.md, apply-progress.md, and the PR #19 body, correctly attributed to explicit user sign-off. One WARNING (a named Covers-line scenario -- confirmed-duplicate metadata persistence -- lacking a direct end-to-end assertion in this unit's own file, though covered indirectly by a unit-level test plus a DB-level CHECK-constraint backstop) keeps this from a clean PASS; it is not a correctness defect and does not block archive.
+## Verification Report - Unit 6
+
+**Change**: phrase-validation
+**Unit**: 6 - Settings, error envelope, framework-error handlers
+**Branch**: feat/pv-06-api-foundation, base develop, PR #20 (open, `size:exception` documented, 1021 additions / 4 deletions across 2 commits per `gh pr view 20`)
+**Version**: N/A
+**Mode**: Strict TDD
+
+### Completeness
+| Metric | Value |
+|--------|-------|
+| Tasks total (Unit 6) | 3 (6.1-6.3) |
+| Tasks complete | 3 |
+| Tasks incomplete | 0 |
+
+All three sub-tasks are checked [x] in tasks.md and match the code state on this branch.
+
+### Build & Tests Execution (all commands re-run directly, not trusted from apply-progress.md)
+
+**Unit's own literal Verify line** (`pytest -m "unit or contract" tests/unit/platform tests/contract -q`):
+58 passed - matches apply-progress.md's claim exactly. Re-run with `-W error::pytest.PytestCollectionWarning`: still 58 passed, zero collection warnings (only two unrelated third-party DeprecationWarnings from starlette/fastapi's own test client).
+
+**Full regression** (`pytest -m "not integration and not slow" -q`): 193 passed, 16 deselected - matches apply-progress.md's claim exactly, zero regression.
+
+**Lint/type/import**:
+- `ruff check src tests` -> All checks passed!
+- `mypy src` -> Success: no issues found in 33 source files
+- `lint-imports` -> Contracts: 5 kept, 0 broken (4 ignored imports on the phrases/similarity facade contract, unchanged from Unit 2/2c).
+
+**Coverage**: not configured for this project (no coverage tool detected) - skipped, not a failure.
+
+### 1. Middleware-ordering claim - scrutinized directly (task instruction 1)
+
+This is the unit's own flagged "from memory" item, so it got the deepest scrutiny.
+
+- Read `main.py`'s actual `add_middleware` calls directly: `CatchAllMiddleware`, then `BodySizeLimitMiddleware`, then `CORSMiddleware` last (lines 169-177).
+- Read the actually-installed starlette 1.6.0 source directly (not from the apply agent's claim): `Starlette.add_middleware` does `self.user_middleware.insert(0, ...)` (prepend), and `build_middleware_stack` does `middleware = [ServerErrorMiddleware] + self.user_middleware + [ExceptionMiddleware]` then builds the ASGI chain via `for cls in reversed(middleware): app = cls(app, ...)`. Traced by hand: with the three `add_middleware` calls above, `user_middleware` ends up `[CORS, BodySizeLimit, CatchAll]` (each new call prepends), so the final wrap order is `ServerErrorMiddleware(CORS(BodySizeLimit(CatchAll(ExceptionMiddleware(router)))))` - CORS is outermost among the user middlewares, both custom middlewares sit inside it. The claim is correct, confirmed independently by reading source, not by trusting the docstring.
+- Found and read the forced-500-with-allowed-Origin test: `test_a_forced_500_for_an_allowed_origin_still_carries_cors_headers` in `tests/contract/test_framework_errors.py`. Confirmed it calls a `/boom` route that does `raise RuntimeError("deliberate failure for the contract test")` - a genuine unhandled exception, NOT a deliberately-raised `HTTPException` that would bypass `CatchAllMiddleware` via the framework's own exception-handler dispatch. Confirmed it asserts `response.headers["access-control-allow-origin"] == _ORIGIN` on the resulting 500 - a real, non-trivial assertion.
+- Re-ran this single test standalone three times: 1 passed each run, no flakiness.
+- Checked for cross-test-file pollution risk in this exact area (the unit's own apply-progress.md documents a real env-var leak between `tests/contract/conftest.py` and `tests/unit/platform/test_settings.py` in this same batch): ran `pytest tests/contract tests/unit/platform -q` (58 passed) and the reverse file order `pytest tests/unit/platform/test_settings.py tests/contract/test_framework_errors.py -q` (48 passed) - no order dependency found. `tests/contract/conftest.py` sets `DATABASE_URL` via `os.environ.setdefault` at collection time (needed because `app.main` builds a production `Settings()` at import time); `test_framework_errors.py` never touches the module-level `Settings()` directly (it builds its own `Settings(...)` instance with explicit kwargs, including a hardcoded `database_url`), so it cannot leak into or be leaked into by the settings tests. No similar pollution risk found for the CORS/framework-error test file specifically.
+
+**Verdict on item 1**: COMPLIANT. The middleware-ordering claim is genuinely correct, genuinely tested with a real forced exception, and reproducibly green.
+
+### 2. The two self-reported bugs - verified as real fixes, not narrative (task instruction 2)
+
+**`TestSettings` -> `FakeProviderSettings` rename**: `grep -rn "^class Test" src tests` finds no lingering `Test*`-named class in `platform/settings.py` or its tests; the only remaining `Test*` classes in the whole backend tree are pytest test-grouping classes with actual test methods inside (`TestSimilarityThreshold`, `TestOtherRanges`, `TestDatabaseUrl`, `TestEmbeddingProvider`, `TestCorsOrigins`, `TestEmbeddingModelRevision` in `test_settings.py`, plus unrelated ones in `test_schema.py`/`test_find_matches.py`/`test_in_memory_repository.py`), which pytest is supposed to collect. Re-ran `pytest -m "unit or contract" tests/unit/platform tests/contract -q -W error::pytest.PytestCollectionWarning`: 58 passed, 0 collection warnings - confirmed, not narrative.
+
+**`monkeypatch.delenv` autouse fixture / env-var leak fix**: read `tests/unit/platform/conftest.py` directly - a function-scoped `autouse=True` fixture that iterates a hardcoded list of every `Settings`-readable env var name and calls `monkeypatch.delenv(var, raising=False)` before each test in that directory. This is genuinely hermetic (a `monkeypatch` teardown auto-restores the original env after each test, so it cannot leak forward either). Re-ran the exact condition that caused the original leak - `pytest "tests/unit/platform/test_settings.py::TestDatabaseUrl::test_required" tests/contract -q` (the contract conftest's `DATABASE_URL` `setdefault` running in the same process as the settings test that requires its absence) - 11 passed. Confirmed fixed, not narrative.
+
+**Verdict on item 2**: COMPLIANT. Both self-reported bugs are real, independently reproduced, and genuinely fixed.
+
+### 3. Configuration table cross-reference (task instruction 3)
+
+Read design.md's Configuration table (lines 807-851) and `platform/settings.py` side by side, field by field:
+
+| design.md var | In Settings? | Notes |
+|---|---|---|
+| DATABASE_URL | Yes | required, postgresql+psycopg:// scheme-checked |
+| POSTGRES_USER/PASSWORD/DB | No (documented) | design.md's own row says compose/healthcheck-only; docstring explains the exclusion |
+| SIMILARITY_THRESHOLD | Yes | float, [0,1] |
+| MATCHES_PAGE_SIZE | Yes | int, 1..200 |
+| PHRASE_MAX_LENGTH | Yes | int, 1..4000 |
+| PHRASES_LIST_LIMIT | Yes | int, 1..1000 |
+| MAX_REQUEST_BYTES | Yes | int >= 4096 |
+| EMBEDDING_PROVIDER | Yes | runtime enum, ONE value |
+| EMBEDDING_MODEL | Yes | non-empty |
+| EMBEDDING_MODEL_REVISION | Yes | 40-hex pattern |
+| EMBEDDING_DIMENSIONS | Yes | gt=0 (the typmod/provider coherence cross-check is Unit 8 runtime wiring, correctly out of scope here) |
+| EMBEDDING_TIMEOUT_SECONDS | Yes | float > 0 |
+| EMBEDDING_MAX_CONCURRENCY | Yes | int >= 1 |
+| EMBEDDING_CACHE_SIZE | Yes | int >= 0 |
+| HNSW_EF_SEARCH | Yes | int, 1..1000 |
+| LOCK_TIMEOUT_MS | Yes | int >= 1 |
+| CORS_ORIGINS | Yes | comma-split, no wildcard, absolute-origin-only |
+| LOG_LEVEL | Yes | enum |
+| HF_HUB_OFFLINE/TRANSFORMERS_OFFLINE/SENTENCE_TRANSFORMERS_HOME | No (documented) | image-fixed, correctly excluded |
+| NEXT_PUBLIC_API_URL/NEXT_PUBLIC_PHRASE_MAX_LENGTH/API_INTERNAL_URL | No (documented) | web-only build args, correctly excluded |
+
+No var from the table is silently missing; no field in code is untraceable to the table. Every excluded var has an explicit, correct justification in either design.md or the module docstring.
+
+**Boundary tests** (`tests/unit/platform/test_settings.py`, all re-run and passing): 0.0/1.0 accepted for SIMILARITY_THRESHOLD (task's explicit ask), -0.0001/1.0001/-1.0/2.0 rejected, "not-a-number" rejected; boundary accept/reject pairs for matches_page_size, phrase_max_length, phrases_list_limit, max_request_bytes, embedding_timeout_seconds, embedding_max_concurrency, embedding_cache_size, hnsw_ef_search, lock_timeout_ms. Independently verified two edge cases the spec text names but the test suite does not: `Settings(similarity_threshold=float("nan"))` and `similarity_threshold=""` both correctly raise ValidationError at runtime (confirmed by direct execution), even though neither is asserted by a dedicated test - see WARNING below.
+
+**Verdict on item 3**: COMPLIANT, with one WARNING (test-completeness gap, not a behavior defect - see Issues).
+
+### 4. Error registry mapping (task instruction 4)
+
+`platform/errors.py`'s ERROR_REGISTRY maps exactly the concrete exception types this unit owns: InvalidCursor -> 400 INVALID_CURSOR, EmptyPhraseText -> 422 VALIDATION_ERROR, PhraseTooLong -> 422 VALIDATION_ERROR (with details.max_length), EmbeddingUnavailable -> 503 EMBEDDING_UNAVAILABLE, EmbeddingTimeout -> 504 EMBEDDING_TIMEOUT - matches design.md's registry table exactly for every row this unit is responsible for. Malformed JSON/schema violations route through RequestValidationError -> 422 VALIDATION_ERROR (FastAPI folds json.JSONDecodeError into one json_invalid RequestValidationError, confirmed by the passing test_malformed_json_is_422_validation_error contract test). Oversized body routes through BodySizeLimitMiddleware -> 413 PAYLOAD_TOO_LARGE, confirmed by test_oversized_body_is_413_payload_too_large. Envelope shape verified byte-exact via test_envelope_shape_without_details/test_envelope_shape_with_details: {"error": {code, message, details?}}, no extra keys. The forced-500 test (test_unhandled_exception_is_500_internal_error_with_no_stack_trace) asserts the response body contains neither "RuntimeError" nor "Traceback" - genuinely checked, not assumed.
+
+**Gap found - "Raw length cap" is claimed but not actually provable in this unit, and the underlying reason-mapping logic is demonstrably wrong for it.** `phrases/api/schemas.py`'s `raw_phrase_text()` factory enforces the 4x-length raw cap via a pydantic `Field(max_length=...)` constraint, which - when it fires - produces a RequestValidationError with pydantic error type `string_too_long` (confirmed by direct execution: `Field(strict=True, max_length=1120)` on `"a"*1121` raises `string_too_long`, not `greater_than`/`less_than` etc.). `main.py`'s `_validation_error_handler`/`_reason_for` only special-cases `_MISSING_TYPES = {"missing"}` and `_OUT_OF_RANGE_TYPES = {"greater_than", "greater_than_equal", "less_than", "less_than_equal"}`; `string_too_long` falls through to the default `"invalid_type"` reason. Additionally, the generic `_validation_error_handler` never populates `details.max_length` for any RequestValidationError - only the domain-level `PhraseTooLong`-specific `_too_long_details` builder does that, and that path is never reached for a schema-level bound (schema violations short-circuit before any domain exception is raised). This means: once `raw_phrase_text()` is actually wired to a live endpoint (Unit 6b/7), a request that trips the raw 4x-length cap will currently produce 422 with reason "invalid_type" and no details.max_length - not reason "too_long" with details.max_length == 280 as the api-contract spec's "Raw length cap" scenario (and design.md's own explicit "schema field bound -> too_long" note, line 937) require. Confirmed by direct pydantic reproduction, not speculation. tasks.md's traceability table assigns "Raw length cap" to Unit 6 exclusively (no other unit's Covers line mentions it), and no test anywhere in this unit exercises the schema-bound path through the real main.py handler (`tests/unit/phrases/test_schemas.py` only asserts pytest.raises(ValidationError) at the pydantic-model level, never through `_validation_error_handler`) - so this is currently an UNTESTED, and when tested would be a FAILING, scenario. See CRITICAL below.
+
+**Verdict on item 4**: PARTIAL. The registry mapping for the five concrete exception types Unit 6 introduces is correct and well-tested. The "Raw length cap" scenario Unit 6's own Covers line claims is not actually deliverable correctly by the code as written - see CRITICAL below.
+
+### 5. CORS scenarios - all 5 have real covering tests (task instruction 5)
+
+| Scenario | Test | Result |
+|---|---|---|
+| Allowed origin | test_allowed_origin_is_echoed_on_a_normal_response | PASS - asserts the exact Access-Control-Allow-Origin value |
+| Disallowed origin | test_disallowed_origin_has_no_cors_header | PASS - asserts the header is absent |
+| Preflight allowed | test_preflight_from_an_allowed_origin_is_accepted | PASS - asserts origin echo, POST in allow-methods, content-type in allow-headers, no allow-credentials |
+| Preflight disallowed | test_preflight_from_a_disallowed_origin_is_rejected | PASS - asserts the header is absent |
+| Errors carry CORS headers | test_a_forced_500_for_an_allowed_origin_still_carries_cors_headers | PASS - see item 1 above |
+
+All five re-run directly and green; none is a smoke test (each asserts a specific header value or absence, not just status 200).
+
+### 6. Re-ran both verify commands, ruff/mypy/lint-imports (task instruction 6)
+
+See "Build & Tests Execution" above - all match apply-progress.md's claims exactly: 58 passed (own Verify line), 193 passed / 16 deselected (full regression, zero regression), ruff clean, mypy clean (33 source files), lint-imports 5 kept / 0 broken.
+
+### 7. size:exception documentation consistency (task instruction 7)
+
+- tasks.md line 210: "826 changed lines (after a real trim pass from 884), no split seam named for this unit. Accepted by explicit user sign-off after the mandatory stop-and-report step."
+- apply-progress.md's Unit 6 section: same 884 -> 826 trim narrative, the same proposed 3-slice split table (6-settings/6-errors-schemas/6-app-foundation, 262/245/319 lines), explicitly "Declined - the user explicitly chose size:exception for a single PR instead."
+- PR #20 body (gh pr view 20): same 884 -> 826 narrative, same declined 3-way split, opens with "Review budget: size:exception (826 changed lines, explicit user sign-off)".
+- Independently re-measured the actual diff, not trusted from any of the three documents: `git diff --stat f6fb5bb 1edd12d -- services/api/src services/api/tests` -> exactly 826 insertions, 0 deletions, 12 files - matches the code-only figure in all three documents exactly. `git diff --stat f6fb5bb 3713df1` (both commits, full repo) -> 1021 insertions(+), 4 deletions(-), 14 files - matches the task brief's "1021 additions / 4 deletions across 2 commits" and PR #20's own additions/deletions fields (`gh pr view 20 --json additions,deletions` -> 1021/4) exactly.
+- Narrative check: none of the three documents overstates the justification beyond what is true. Each explicitly names the exact trim actions taken (docstring/comment density, two consolidated test pairs), explicitly states no split seam was pre-authorized in tasks.md (verified true - Unit 6's Notes line, unlike Unit 2's, names no seam), and explicitly frames the outcome as the user's choice against a real, viable, presented alternative (the 3-way split) rather than as an unavoidable necessity.
+
+**Verdict on item 7**: COMPLIANT. Fully consistent across all three documents and independently re-measured to match.
+
+### 8. Commit co-authorship (task instruction 8)
+
+`git log --format="%H %s%n%b" -2 1edd12d 3713df1`: neither commit message contains "Co-Authored-By", "Claude", or any AI-attribution line. Both commits list Aarón Rojas as author.
+
+**Verdict on item 8**: COMPLIANT.
+
+### Spec Compliance Matrix
+
+| Requirement / Scenario | Test | Result |
+|---|---|---|
+| Threshold configuration validation: Out of range | TestSimilarityThreshold::test_out_of_range_rejected | COMPLIANT |
+| Threshold configuration validation: Non-numeric | TestSimilarityThreshold::test_non_numeric_rejected | COMPLIANT |
+| Threshold configuration validation: Boundary values accepted | TestSimilarityThreshold::test_boundary_and_default_values_accepted | COMPLIANT |
+| Threshold changed via env | already proven at the use-case level by Unit 3's fix pass, test_threshold_changed_via_env_reflects_the_injected_policy | COMPLIANT (cross-unit) - see note below |
+| Maximum length: Configurable limit / Invalid limit config | TestOtherRanges (phrase_max_length 0/4001 rejected) | COMPLIANT |
+| Raw input cap before normalization ("Raw length cap") | test_schemas.py::test_raw_phrase_text_rejects_one_over_the_raw_cap (schema-level only; no HTTP-contract-level test exists, and the handler mapping is provably wrong for this path) | FAILING (latent) / UNTESTED at contract level - see CRITICAL |
+| Response envelopes: Unknown route / Wrong method / Unhandled exception | test_unknown_route_is_404_not_found, test_wrong_method_on_a_known_route_is_405_method_not_allowed, test_unhandled_exception_is_500_internal_error_with_no_stack_trace | COMPLIANT |
+| Error codes: Empty text | test_errors.py::test_registry_mapping[EmptyPhraseText], _empty_text_details | COMPLIANT |
+| Error codes: Too long (post-normalization) | test_registry_mapping[PhraseTooLong], test_phrase_too_long_details_carry_max_length | COMPLIANT |
+| Error codes: Malformed JSON | test_malformed_json_is_422_validation_error | COMPLIANT |
+| Error codes: Oversized body | test_oversized_body_is_413_payload_too_large | COMPLIANT |
+| Error codes: Provider failure / Provider timeout (registry mapping) | test_registry_mapping[EmbeddingUnavailable]/[EmbeddingTimeout] | COMPLIANT |
+| CORS x5 | see table in item 5 | COMPLIANT (5/5) |
+| Empty text rejection: Missing or non-string field | test_raw_phrase_text_rejects_non_string (non-string case only; no dedicated "missing field" case, though this is standard pydantic required-field behavior) | COMPLIANT, minor gap noted (SUGGESTION) |
+| id string serialization | test_id_serializes_to_a_decimal_string_on_the_wire, test_id_stays_an_int_for_internal_python_use | COMPLIANT |
+| Strict PageLimit | test_page_limit_boundary_values_accepted, test_page_limit_rejects_out_of_range_and_non_strict_values | COMPLIANT |
+
+**Compliance summary**: 15/16 scenario groups compliant; 1 (Raw length cap) has a real, reproduced defect that will surface as a FAILING contract test the moment the schema is wired to an endpoint.
+
+### TDD Compliance
+| Check | Result | Details |
+|-------|--------|---------|
+| TDD Evidence reported | FAIL | Apply-progress.md's Unit 6 section has no "TDD Cycle Evidence" table and no "Test Summary" block - every other unit in this file (0, 1, 2, 2b, 2c, 2d, 3, 4, 5a) has one. See CRITICAL below. |
+| All tasks have tests | PASS | 3/3 tasks have test files (test_settings.py, test_errors.py + test_schemas.py, test_framework_errors.py) |
+| RED confirmed (tests exist) | PASS | All 4 test files exist in the codebase and were independently collected/run |
+| GREEN confirmed (tests pass) | PASS | 58/58 (own Verify line) and 193/193 (full regression) pass on independent re-run |
+| Triangulation adequate | PASS | Settings: per-field boundary+reject pairs; errors: 5-row parametrized registry table; CORS: 5 distinct scenarios; no single-case coverage of a multi-scenario requirement found |
+| Safety Net for modified files | N/A | All 4 test files and all 4 production files are new in this unit (no pre-existing behavior to protect) |
+
+**TDD Compliance**: 5/6 checks passed (the missing evidence table is a reporting-completeness gap, not demonstrated evidence that RED->GREEN was skipped - the narrative prose in apply-progress.md does assert "RED then GREEN" per task, and all tests independently verified passing/well-formed, but the protocol requires the structured table for a verifier to confirm this mechanically rather than by inference).
+
+### Test Layer Distribution
+| Layer | Tests | Files | Tools |
+|-------|-------|-------|-------|
+| Unit | 48 (platform) + 9 (test_schemas.py, separate scope) = 57 | 3 | pytest |
+| Contract | 10 | 1 (test_framework_errors.py, real create_app() + TestClient) | pytest + fastapi TestClient |
+| Integration | 0 | 0 | n/a (no business endpoint yet) |
+| E2E | 0 | 0 | n/a |
+| Total | 67 new tests this unit | 4 | |
+
+### Assertion Quality
+
+Scanned all four Unit 6 test files (test_settings.py, test_errors.py, test_schemas.py, test_framework_errors.py) for banned patterns (tautologies, ghost loops, orphan empty checks, type-only-alone assertions, smoke-test-only, implementation-detail coupling, mock-heavy ratio).
+
+**All assertions verify real behavior.** Every test calls production code (Settings(...), build_error_response(...), _client().get/post/delete/options(...)) and asserts a specific value, exception type, or header presence/absence - never a bare toBeDefined()/assert True equivalent, never an assertion inside a possibly-empty loop, no mock-heavy tests (this unit uses zero mocks - it exercises real Settings/errors/create_app() objects throughout).
+
+### Correctness (Static Evidence)
+| Requirement | Status | Notes |
+|------------|--------|-------|
+| Settings covers every design-table field this service reads | Implemented | see item 3 table |
+| ERROR_REGISTRY matches design's error table for Unit 6's 5 owned types | Implemented | see item 4 |
+| Envelope shape error/code/message/details | Implemented | byte-exact tests |
+| No stack trace on 500 | Implemented | explicit string-absence assertions |
+| raw_phrase_text() raw-cap maps to too_long reason plus max_length detail | Not implemented correctly | see CRITICAL |
+
+### Coherence (Design)
+| Decision | Followed? | Notes |
+|----------|-----------|-------|
+| Middleware order: CatchAll, BodySizeLimit, CORS (CORS outermost) | Yes | independently re-derived from starlette 1.6.0 source, see item 1 |
+| ERROR_REGISTRY keyed by concrete type instead of retrofitting DomainError onto Unit 1/2c classes | Yes | avoids inverting the domain to platform import direction; documented rationale matches the actual importlinter risk from Unit 2's transitive-import discovery |
+| Body-size guard checks Content-Length then drains and counts before parsing | Yes | matches design.md's stated mechanism exactly |
+| page_limit/raw_phrase_text as injected-bound factories, not fixed Annotated types | Yes | correctly reasoned: MATCHES_PAGE_SIZE and PHRASE_MAX_LENGTH are runtime settings, not compile-time constants |
+| Schema field bound maps to too_long reason per design.md line 937 | No | see CRITICAL, the generic RequestValidationError handler cannot currently produce this |
+
+### Issues Found
+
+**CRITICAL**:
+
+1. "Raw length cap" scenario is unprovable end-to-end in this unit and the underlying mapping logic is wrong. main.py's _reason_for/_validation_error_handler does not translate pydantic's string_too_long error type to reason "too_long", and never populates details.max_length for any schema-level RequestValidationError. Confirmed by direct reproduction (see item 4). tasks.md's traceability table assigns this scenario to Unit 6 exclusively; no other unit's Covers line names it. Unless fixed before raw_phrase_text() is wired to a real endpoint (Unit 6b/7), the api-contract spec's "Raw length cap" scenario and design.md's own "schema field bound maps to too_long" note will both be violated by a real, reachable HTTP response. Recommended fix: extend _OUT_OF_RANGE_TYPES (or add a dedicated branch) to map string_too_long/string_too_short to "too_long", and extend _validation_error_handler to attach details.max_length when that reason fires (the bound value could be surfaced via the pydantic error's ctx, which errors() already exposes for string_too_long). This does not block Unit 6b/7 from starting, but it must be fixed and tested with a real HTTP-level test before either of those units claims this scenario done.
+
+2. Apply-progress.md's Unit 6 section omits the mandatory "TDD Cycle Evidence" table and "Test Summary" block that every other unit in this file includes (0, 1, 2, 2b, 2c, 2d, 3, 4, 5a all have one). Per strict-tdd-verify.md Step 5a, a missing evidence table is a CRITICAL finding under Strict TDD Mode - the protocol requires a verifier to confirm RED/GREEN/TRIANGULATE/SAFETY NET mechanically from a structured table, not by inferring it from prose. This is mitigated by: the underlying tests independently verified passing, well-formed, and free of trivial-assertion patterns (see Assertion Quality above); every task in tasks.md is explicitly labeled "RED then GREEN"; and the squash-per-unit commit convention used throughout this change (not unique to Unit 6) means RED states are never separately committed for any unit, so this gap is a documentation-completeness issue for this unit specifically, not evidence the cycle was skipped. Recommended fix: append the missing table to apply-progress.md's Unit 6 section (a follow-up documentation edit, no code change needed) before this unit is considered fully closed out.
+
+**WARNING**:
+
+1. SIMILARITY_THRESHOLD's NaN and empty-string rejection (both named explicitly in semantic-validation spec's Threshold configuration validation requirement text: "out of range, non-numeric, NaN, empty") are not exercised by a dedicated test case, even though the current validator (0 <= value <= 1, which is False for NaN by IEEE-754 comparison semantics) does correctly reject both - confirmed by direct execution, not merely inferred. Regression risk if a future refactor of _threshold_in_unit_interval changes the comparison style.
+
+2. "Threshold changed via env" (Unit 6's Covers line) is not independently re-proven at the Settings layer via an actual os.environ mutation - every existing settings test passes values as constructor kwargs, never via monkeypatch.setenv plus a bare Settings() call. The scenario's behaviorally significant half (an injected non-default threshold actually changing a validation verdict) is already proven at the use-case layer by Unit 3's fix pass (test_threshold_changed_via_env_reflects_the_injected_policy), so this is a minor, layer-specific completeness gap, not a functional risk.
+
+3. .env.example is still not tracked in the repo (git ls-files search for env.example returns nothing) - a pre-existing gap from Unit 0's apply-progress (blocked by a tool-permission deny on .env-prefixed paths, not a Unit 6 regression), carried forward unresolved. Not a Unit 6 defect, but flagged again since Unit 6's own env-var-driven Settings class makes this gap more visible: the .env.example content documented in Unit 0's apply-progress.md has not been reconciled against Unit 6's actual final field set and should be spot-checked before Unit 14/15 depend on it.
+
+**SUGGESTION**:
+
+1. "Empty text rejection: Missing or non-string field" has a real test for the non-string case (text=123) but no dedicated test asserting a request body with text entirely absent raises the expected error - relies on default pydantic required-field behavior rather than an explicit assertion.
+
+2. PHRASE_MAX_LENGTH set to "abc" (the spec's own literal "Invalid limit config" example) is not explicitly parametrized in TestOtherRanges, though confirmed by direct execution to already raise ValidationError correctly (pydantic's int coercion fails on a non-numeric string).
+
+3. Boundary-accepted cases for phrase_max_length (1, 4000) and max_request_bytes (4096) are not explicitly asserted as accepted (only their reject-side neighbors are tested) - matches_page_size and phrases_list_limit do get explicit accept-boundary tests; the same pattern could be extended to the other bounded fields for full symmetry.
+
+### Verdict
+
+**PASS WITH WARNINGS**
+
+All shipped code is correct, well-tested, and green against every quality gate, including the unit's own hardest, previously-uncertain claim (middleware ordering), which is independently re-derived from source and reproducibly green. The size:exception process was followed correctly and is documented consistently and honestly across all three artifacts (tasks.md, apply-progress.md, PR #20 body), each independently re-measured to match the real diff exactly. Two CRITICAL findings exist but neither invalidates what was actually shipped and tested: (1) a real, reproducible defect in error-reason mapping for a scenario ("Raw length cap") that this unit claims but cannot yet prove end-to-end since no endpoint exists until Unit 6b/7 - must be fixed before that scenario is truly closed; (2) a documentation-completeness gap (missing TDD Cycle Evidence table) that does not itself indicate the underlying work is flawed, given independently reproduced GREEN test runs and clean assertion quality throughout. Neither CRITICAL blocks Unit 6b or other independent units from proceeding, but both should be tracked and closed (recommend folding finding 1 into Unit 6b's own fix-pass discipline, and finding 2 as a same-session documentation append) rather than silently carried forward.
+
+## Verification Report - Unit 6b
+
+**Change**: phrase-validation
+**Unit**: 6b -- Validate endpoint and /health readiness
+**Version**: N/A
+**Mode**: Strict TDD
+
+### Completeness
+| Metric | Value |
+|--------|-------|
+| Tasks total | 2 (6b.1, 6b.2) |
+| Tasks complete | 2 |
+| Tasks incomplete | 0 |
+
+### Build & Tests Execution
+**Build**: N/A (interpreted service, no separate build step)
+
+**Tests**: independently re-run, both commands, on feat/pv-06b-validate-health:
+```text
+$ cd services/api && .venv/Scripts/python.exe -m pytest tests/contract/test_validate_health.py -q
+17 passed, 2 warnings in 0.62s
+
+$ cd services/api && .venv/Scripts/python.exe -m pytest -m "not integration and not slow" -q
+212 passed, 16 deselected, 2 warnings in 1.70s
+```
+Both counts match apply-progress.md exactly (17 passed for the unit's own suite; 212 passed, up from 195 pre-Unit-6b, zero regressions).
+
+**Quality gates** (all re-run independently, all clean, matching apply-progress.md verbatim):
+```text
+$ ruff check src tests   -> All checks passed!
+$ mypy src               -> Success: no issues found in 37 source files
+$ lint-imports           -> Contracts: 5 kept, 0 broken.
+```
+
+**Coverage**: not configured for this backend -- not available, not a failure.
+
+### TDD Compliance
+| Check | Result | Details |
+|-------|--------|---------|
+| TDD Evidence reported | Yes | Full "TDD Cycle Evidence (Unit 6b)" table present in apply-progress.md |
+| All tasks have tests | Yes | Both 6b.1 and 6b.2 map to tests/contract/test_validate_health.py |
+| RED confirmed (tests exist) | Yes (narrative, plausible, not re-executed) | apply-progress.md describes moving the 4 new production files aside plus stashing main.py, re-running, and getting ModuleNotFoundError: app.modules.phrases.container before restoring -- internally consistent with the file's actual import graph; not independently re-enacted by this verify pass (would require destructively moving committed files), but nothing contradicts it |
+| GREEN confirmed (tests pass) | Yes | Independently re-run: 17/17 pass now |
+| Triangulation adequate | Yes | Every one of the 15 named Covers-line scenarios maps to a specific assertion or parametrized case (see Spec Compliance Matrix below); confirmed by reading the test file directly, not just trusting the write-up |
+| Safety Net for modified files | Yes | All 5 production files are new (N/A (new) is correct); main.py is the only modified file and its 10 pre-existing test_framework_errors.py tests are included in, and pass within, the 212-test full regression |
+
+**TDD Compliance**: 6/6 checks passed
+
+### Test Layer Distribution
+| Layer | Tests | Files | Tools |
+|-------|-------|-------|-------|
+| Contract | 17 cases (10 functions, 3 parametrized) | 1 (test_validate_health.py) | fastapi.testclient.TestClient |
+| Unit | 0 new (reuses Unit 6's page_limit/raw_phrase_text tests unmodified) | -- | pytest |
+| Integration / E2E | 0 | -- | -- |
+| **Total** | **17** | **1** | |
+
+### Assertion Quality
+Reviewed the full test file (tests/contract/test_validate_health.py, 241 lines). No tautologies, no assertion-free tests, no ghost loops, no smoke-test-only patterns, no CSS/implementation-detail coupling found. Two tests assert embedder.call_count (== 0 for health, == 1 for cold/warm caching) -- this reads as mock-call-count coupling at first glance, but it is the literal spec requirement being tested (D10's "caching is invisible AND the saving is real", and the health route's "zero embeddings issued" contract), not an incidental implementation detail; treated as justified, not flagged.
+
+**Assertion quality**: All assertions verify real behavior
+
+### Spec Compliance Matrix
+| Requirement | Scenario | Test | Result |
+|-------------|----------|------|--------|
+| POST /phrases/validate | Duplicate found | test_duplicate_found_returns_the_full_verdict_payload | COMPLIANT |
+| POST /phrases/validate | Empty store | test_empty_store_returns_a_null_verdict | COMPLIANT |
+| POST /phrases/validate | Page 1 carries the verdict | test_page_1_carries_the_verdict_using_the_default_limit | COMPLIANT |
+| POST /phrases/validate | Limit bounds | test_limit_bounds_are_enforced_inclusively[*] | COMPLIANT |
+| POST /phrases/validate | Strict integer limit | test_strict_integer_limit_rejects_non_strict_values[*] | COMPLIANT |
+| POST /phrases/validate | Default limit | test_page_1_carries_the_verdict_using_the_default_limit (folded -- same request shape, no limit in body) | COMPLIANT |
+| POST /phrases/validate | Cursor not accepted | test_duplicate_found_returns_the_full_verdict_payload (folded -- request body includes a cursor key, response proves it was ignored) | COMPLIANT |
+| POST /phrases/validate | Nothing persisted | test_duplicate_found_returns_the_full_verdict_payload (folded -- trailing uow.repo.list_recent(10) length assertion) | COMPLIANT |
+| GET /health | Ready | test_health_ready_returns_every_required_key_and_issues_zero_embeddings | COMPLIANT |
+| GET /health | Model not loaded | test_health_not_ready_reports_which_component_is_down[False-True-...] | COMPLIANT |
+| GET /health | Database down | test_health_not_ready_reports_which_component_is_down[True-False-...] | COMPLIANT |
+| Caching is invisible to the contract | Cold and warm responses identical | test_cold_and_warm_validate_responses_are_byte_identical -- asserts first.content == second.content (real byte comparison, not just status code) | COMPLIANT |
+| Response envelopes | Success envelope | test_duplicate_found_returns_the_full_verdict_payload (folded -- set(response.json()) == {"data"}) | COMPLIANT |
+| Error codes and status mapping | Database unreachable outside health (validate side) | test_database_unreachable_outside_health_is_500_internal_error | COMPLIANT |
+| Error codes and status mapping | Provider failure/timeout on the endpoint | test_provider_failure_and_timeout_map_to_their_registered_codes[*] | COMPLIANT |
+
+**Compliance summary**: 15/15 scenarios compliant (matches apply-progress.md's own count of "all 15 scenarios in the Covers line")
+
+Every "folded" mapping above was independently confirmed by reading the actual test body, not by trusting apply-progress.md's own claim -- in each case the named scenario has a genuine, distinct assertion inside the shared test function, not an incidental side-effect.
+
+### Correctness (Static Evidence)
+| Requirement | Status | Notes |
+|------------|--------|-------|
+| Production honesty of the "not wired yet" deviation | Implemented, honestly flagged | main.py's own module docstring (lines 1-9) and inline comments (198-199) state plainly that app.state.phrases is left unset and app.state.health defaults to a static "not ready" HealthState. Confirmed by direct code reading (not test-masked): a real POST /phrases/validate against create_app(settings) with no further wiring raises AttributeError on request.app.state.phrases, caught by CatchAllMiddleware -> 500 INTERNAL_ERROR; GET /health always returns 503 NOT_READY, details: {database:"unavailable", model:"unavailable"} since check_database=lambda: False and model_ready=False. Nothing in the test suite hides this -- every contract test builds its own app and re-wires app.state.phrases/app.state.health before calling it. This is a legitimate, transparently documented interim state, not a silently broken feature. |
+| from __future__ import annotations omission in router.py | Implemented, verified not cargo-culted | Confirmed the import is genuinely absent (only the module docstring at the top explains why). Independently re-added the import as an experiment, re-ran the suite: 14/17 tests failed (assert 422 == 200 on the happy-path test), restored the file, re-ran green again (17/17). The bug is real, reproducible, and the reasoning in the code comment is sound, not a cargo-culted convention override. |
+| Three Unit 6 fix-pass claims re-verified end-to-end | Implemented, independently reconfirmed | Built a fresh create_app() + FakeEmbedder/in-memory repo outside the test suite and POSTed directly: 1121-char text -> 422, reason:"too_long", max_length:280; 300-char text (over semantic 280, under raw 1120) -> 422, reason:"too_long", max_length:280 (per apply-progress.md this is reached via the domain PhraseTooLong path, not independently distinguished as a separate code path by this pass beyond status/reason/detail); whitespace-only -> 422, reason:"empty". All three match the claimed values exactly. |
+| GET /health issues zero embedding calls | Implemented | build_health_payload only reads HealthState fields; nothing in platform/health.py can reach an EmbeddingProvider. Test explicitly asserts embedder.call_count == 0 after a health check. |
+| limit strictness matches design.md's PageLimit rule | Implemented | design.md line 937 states the strict-int rule ("10", true, 10.5 -> 422 invalid_type) verbatim; the test's parametrization ("10", True, 10.5) matches exactly, and reuses Unit 6's existing page_limit() implementation unmodified rather than reimplementing it. |
+| _MostSimilarOut/_MatchOut merge into _ScoredPhrase | Implemented | router.py defines only one such model, _ScoredPhrase(id, text, score), reused for both most_similar and matches[]. Pure dedup, no behavior change. |
+| size:exception documentation accuracy | Implemented with a minor discrepancy | See WARNING 2 below -- the documented "466 insertions / 2 deletions" for the 6 code/test files is off by 1 insertion versus git show --numstat ae247d1 (actual: 465/2). Consistent across tasks.md, apply-progress.md and PR #21's body (all three say the same number), so it is self-consistent, just not bit-for-bit accurate against the real diff. |
+| No AI/Claude co-authorship in commits | Confirmed | git show authorship for ae247d1 and a158ce2 both show author "Aaron Rojas", no Co-Authored-By trailer of any kind in either commit message. |
+
+### Coherence (Design)
+| Decision | Followed? | Notes |
+|----------|-----------|-------|
+| D9 -- validate takes no cursor, silently ignored via extra="ignore" | Yes | Matches design.md's D9 row verbatim; test proves it via a cursor key that is accepted-but-ignored, not rejected |
+| D10 -- outermost CachingEmbeddingProvider, capacity=0 kill switch | Yes | similarity/container.py's wrap_with_cache implements exactly this; cold/warm test proves the cache is both invisible to the response and real (call_count == 1 across two identical calls) |
+| D15 -- model/embedding_model/database key mapping shared between 200 and 503 bodies | Yes | build_health_payload uses identical keys in both branches, matching design.md's stated "one key mapping, everywhere" rule |
+| import-linter composition-root-owns-adapters contract (phrases.api never imports an adapter) | Yes | router.py imports only phrases.container.PhrasesContainer and phrases.api.schemas, never an adapter; lint-imports independently re-run clean (5 kept, 0 broken) |
+| Unit 8 scope boundary ("real provider wiring is Unit 8's job") | Yes, and genuinely trimmed to it | The speculative main.py lifespan hook and build_embedding_provider were removed during the trim pass specifically because nothing in this unit's own tests needed them -- confirmed absent from both files as shipped |
+
+### Issues Found
+
+**CRITICAL**: None.
+
+**WARNING**:
+
+1. apply-progress.md's own prose (and PR #21's body, which repeats it) describes the test file as "17 test functions, several parametrized -- 24 total cases." Independently collected the file with pytest tests/contract/test_validate_health.py -q --collect-only: it actually contains 10 test functions / 17 total collected cases (test_limit_bounds_are_enforced_inclusively x4, test_strict_integer_limit_rejects_non_strict_values x3, test_provider_failure_and_timeout_map_to_their_registered_codes x2, test_health_not_ready_reports_which_component_is_down x2, plus 6 non-parametrized functions = 17 cases from 10 functions). The Verify command's reported "17 passed" is correct and matches what I independently measured -- only the descriptive "17 functions / 24 cases" sentence is wrong on both numbers. Low impact (doesn't change scenario coverage or pass/fail truth), but should be corrected in apply-progress.md and the PR body for accuracy.
+
+2. The size:exception line count is off by one line from the actual measured diff. tasks.md, apply-progress.md, and PR #21's body all state "466 insertions / 2 deletions" (468 total changed lines) for the 6 code/test files. Independently measured via git show --numstat ae247d1 (the only commit touching those 6 files): main.py +28/-2, router.py +73/-0, phrases/container.py +36/-0, similarity/container.py +23/-0, health.py +65/-0, test_validate_health.py +240/-0 -> 465 insertions / 2 deletions (467 total), not 466/468. The 1-line discrepancy is immaterial to the exception decision itself (467 is still ~67 lines / ~17% over the 400 cap, same magnitude as the documented ~68/17%), and the number is at least self-consistent across all three artifacts, but it does not match git's own count exactly, which the task explicitly asked to confirm.
+
+3. platform/health.py's own module docstring (lines 1-8) states "the model is warmed once, in main.py's lifespan hook" -- but the trim pass (round 5, documented in apply-progress.md) removed main.py's lifespan hook entirely; main.py as shipped has no lifespan hook at all (app.state.health is a static dataclass literal, not something a hook constructs). This is stale documentation left over from before the trim -- the comment describes a mechanism that does not exist in this unit's shipped code (presumably intended as forward-looking for Unit 8, but reads as describing current behavior). Should be corrected to say the lifespan wiring is Unit 8's future job, not the present unit's.
+
+**SUGGESTION**:
+
+1. Given that /health always reports "not ready" and /phrases/validate always 500s against the real, unmodified create_app(settings) object today, consider a single smoke test that hits the actual app.main.app module-level instance directly (every current test instead builds its own app and re-wires state) to lock in this documented interim behavior as a regression guard -- so that if a future partial-wiring change accidentally sets one of app.state.health/app.state.phrases without the other, or wires a broken provider, this "honestly not ready" state doesn't quietly change to "silently wrong" the way it's currently only protected by prose (main.py's docstring and code comments) rather than a test. Not required for this unit to ship -- Unit 8 owns the real wiring -- but worth doing whenever Unit 8 lands.
+
+### Verdict
+
+PASS WITH WARNINGS
+
+All 2 tasks complete, all 15 named spec scenarios have a passing, independently-reconfirmed covering test, all quality gates (pytest x2, ruff, mypy, lint-imports) reproduce exactly as documented, the from __future__ import annotations omission and the "not wired to production" deviation are both genuine and honestly disclosed (verified by direct experiment and code reading, not by trusting the write-up), and no AI/Claude co-authorship appears in either commit. The three WARNINGs are all documentation-accuracy issues in apply-progress.md/tasks.md/PR #21 (a wrong test-count sentence, a 1-line-off size:exception measurement, and a stale docstring referencing a since-removed lifespan hook) -- none of them affect the actual shipped behavior, test coverage, or the substantive size:exception decision, which remains valid either way (467 or 468 total, both ~17% over the 400-line cap).
