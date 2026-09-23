@@ -81,6 +81,7 @@ const SINGLE_PAGE_DETAILS: DuplicateDetails = {
 };
 
 interface RenderOverrides {
+  text?: string;
   details?: DuplicateDetails;
   disabled?: boolean;
   client?: PhraseApiClient;
@@ -91,10 +92,10 @@ function renderAlert(overrides: RenderOverrides = {}) {
   const onCancel = vi.fn();
   const onInvalidCursor = vi.fn();
   const client = overrides.client ?? createFakeClient();
-  render(
+  const utils = render(
     <DuplicateAlert
       client={client}
-      text="Comprar leche"
+      text={overrides.text ?? "Comprar leche"}
       details={overrides.details ?? BASE_DETAILS}
       disabled={overrides.disabled ?? false}
       onConfirm={onConfirm}
@@ -102,7 +103,7 @@ function renderAlert(overrides: RenderOverrides = {}) {
       onInvalidCursor={onInvalidCursor}
     />,
   );
-  return { onConfirm, onCancel, onInvalidCursor, client };
+  return { onConfirm, onCancel, onInvalidCursor, client, ...utils };
 }
 
 function fakePage(overrides: Partial<MatchesData>): MatchesData {
@@ -296,5 +297,103 @@ describe("DuplicateAlert", () => {
     });
 
     expect(screen.getAllByRole("listitem")).toHaveLength(2);
+  });
+
+  it("Stale response after unmount: a late-arriving INVALID_CURSOR does not call onInvalidCursor once the alert has unmounted", async () => {
+    const deferred = createDeferred<MatchesData>();
+    const client = createFakeClient({ listMatches: vi.fn(() => deferred.promise) });
+    const { onInvalidCursor, unmount } = renderAlert({ client });
+
+    act(() => {
+      latestObserver().trigger();
+    });
+    expect(client.listMatches).toHaveBeenCalledTimes(1);
+
+    unmount();
+
+    await act(async () => {
+      deferred.reject(
+        new ApiError({ code: "INVALID_CURSOR", status: 400, message: "cursor invalid" }),
+      );
+    });
+
+    expect(onInvalidCursor).not.toHaveBeenCalled();
+  });
+
+  it("Stale response after text changes: a late-arriving INVALID_CURSOR for the old text does not clear the new session's matches or call onInvalidCursor", async () => {
+    const deferred = createDeferred<MatchesData>();
+    const client = createFakeClient({ listMatches: vi.fn(() => deferred.promise) });
+    const { onInvalidCursor, rerender } = renderAlert({ client, text: "Comprar leche" });
+
+    act(() => {
+      latestObserver().trigger();
+    });
+
+    const newDetails: DuplicateDetails = {
+      ...BASE_DETAILS,
+      mostSimilar: { id: "20", text: "Regar plantas", score: 0.9 },
+      matches: [{ id: "20", text: "Regar plantas", score: 0.9 }],
+    };
+    rerender(
+      <DuplicateAlert
+        client={client}
+        text="Regar plantas"
+        details={newDetails}
+        disabled={false}
+        onConfirm={vi.fn()}
+        onCancel={vi.fn()}
+        onInvalidCursor={onInvalidCursor}
+      />,
+    );
+
+    await act(async () => {
+      deferred.reject(
+        new ApiError({ code: "INVALID_CURSOR", status: 400, message: "cursor invalid" }),
+      );
+    });
+
+    expect(onInvalidCursor).not.toHaveBeenCalled();
+    expect(screen.getAllByRole("listitem")).toHaveLength(1);
+    expect(screen.getByRole("alertdialog")).toHaveTextContent("Regar plantas");
+  });
+
+  it("Invalid cursor mid-flight during saving does not silently empty the match list", async () => {
+    const deferred = createDeferred<MatchesData>();
+    const client = createFakeClient({ listMatches: vi.fn(() => deferred.promise) });
+    const { onInvalidCursor, rerender } = renderAlert({ client, disabled: false });
+    const dialog = screen.getByRole("alertdialog");
+
+    act(() => {
+      latestObserver().trigger();
+    });
+    expect(client.listMatches).toHaveBeenCalledTimes(1);
+
+    // Confirmar is pressed while the page request is still in flight — the
+    // machine moves to `saving` (`disabled` flips true) but does not touch
+    // the hook's own matches.
+    rerender(
+      <DuplicateAlert
+        client={client}
+        text="Comprar leche"
+        details={BASE_DETAILS}
+        disabled
+        onConfirm={vi.fn()}
+        onCancel={vi.fn()}
+        onInvalidCursor={onInvalidCursor}
+      />,
+    );
+
+    await act(async () => {
+      deferred.reject(
+        new ApiError({ code: "INVALID_CURSOR", status: 400, message: "cursor invalid" }),
+      );
+    });
+
+    // `machine.test.ts` documents `duplicate.saving.INVALID_CURSOR` as
+    // IGNORED — the hook must not restart validation or silently empty the
+    // list while `saving` is in flight.
+    expect(onInvalidCursor).not.toHaveBeenCalled();
+    expect(screen.getAllByRole("listitem")).toHaveLength(1);
+    expect(dialog).toHaveTextContent(copy.duplicate.loadMoreError);
   });
 });

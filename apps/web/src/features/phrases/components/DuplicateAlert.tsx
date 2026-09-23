@@ -47,6 +47,7 @@ export function DuplicateAlert({
       initialMatches: details.matches,
       initialCursor: details.nextCursor,
       initialHasMore: details.hasMore,
+      disabled,
       onInvalidCursor,
     });
 

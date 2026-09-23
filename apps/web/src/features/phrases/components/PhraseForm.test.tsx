@@ -292,6 +292,13 @@ describe("PhraseForm", () => {
       expect(
         screen.getByRole("button", { name: copy.button.confirm }),
       ).not.toBeDisabled();
+
+      // The paginated match list itself (not just the "most similar" summary
+      // line) must resync to the fresh 409 details — a stale pre-confirm
+      // list here means `useMatchesInfiniteScroll` did not reset.
+      const listItems = screen.getAllByRole("listitem");
+      expect(listItems).toHaveLength(1);
+      expect(listItems[0]).toHaveTextContent("Comprar leche fresca");
     });
   });
 
