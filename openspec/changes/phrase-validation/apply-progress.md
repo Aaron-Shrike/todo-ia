@@ -5542,7 +5542,9 @@ record.
 **SHA**: `2f05c8d` (10 files changed, 660 insertions / 24 deletions)
 **Branch**: `feat/pv-12-web-duplicate-alert`, cut from `develop` at `bc59585` (PR #28 / Unit 11
 merged; no other Unit 12 dependency per tasks.md's `11 -> 12 -> 13 sequential`)
-**Delivery**: pushed, PR opened against `develop` per the resolution above.
+**Delivery**: pushed, PR #29 opened against `develop` per the resolution above
+(`feat/pv-12-web-duplicate-alert` -> `develop`). Final delivered SHA after the 4-lens fix pass and
+its own StrictMode second-order fix is `36e647e` (see the "Unit 12 fix pass" section below).
 
 Both sub-tasks are fully implemented, RED->GREEN confirmed per task (see TDD Cycle Evidence below),
 and green against every quality gate:

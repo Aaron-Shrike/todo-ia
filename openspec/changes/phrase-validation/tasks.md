@@ -368,8 +368,12 @@ component+tests ~245, 12d `PhraseForm` wiring+copy ~104) alongside a single-PR `
 split, the same pattern already used for Units 6, 6b, 7 and 11 this session. No further code changes
 were needed -- the implementation committed during the STOP (`2f05c8d`
 `feat(web): duplicate alert with infinite-scroll matches`) was already complete; only delivery
-(push + PR) was withheld pending this decision, now resolved. See apply-progress.md's Unit 12
-section for the full review-budget table, the split proposal, and the TDD Cycle Evidence.
+(push + PR) was withheld pending this decision, now resolved. Before delivery, a fresh-context
+4-lens review (risk/resilience/readability/reliability) found and fixed one CRITICAL and one
+BLOCKER (`9f6d9f6`), plus a StrictMode-only second-order regression the first fix itself introduced
+(`36e647e`) -- see apply-progress.md's "Unit 12 fix pass" section. Pushed and opened as PR #29
+(`feat/pv-12-web-duplicate-alert` -> `develop`), final SHA `36e647e`. See apply-progress.md's
+Unit 12 section for the full review-budget table, the split proposal, and the TDD Cycle Evidence.
 
 Commit: `feat(web): duplicate alert with infinite-scroll matches`. Rollback: revert (web track only).
 Covers: Duplicate alert x7 (Alert content, Percentage never overstates, Confirm, Cancel, 409 during save, 409 while confirming (defensive)); Infinite scroll x7 (Load next page on scroll, Invalid cursor restarts validation, Reach the end, No concurrent page requests, Page load failure, Deduplicate on overlap, Single page); Reset on text edit: Edit during duplicate; Cancel saves nothing.
