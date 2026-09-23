@@ -24,6 +24,31 @@ from sqlalchemy import Engine, create_engine, text
 # importing `app.main`, so it needs `DATABASE_URL` set before that import
 # even without `tests/contract` collected first. Same real default every
 # fixture below falls back to -- nothing fake to leak or clean up.
+#
+# Cross-reference (fix-pass, review finding #5): `tests/contract/conftest.py`
+# ALSO sets `DATABASE_URL` at module scope (a fake `contract:contract`
+# placeholder, cleaned up in its `pytest_collection_finish` hook), and the two
+# mechanisms are unaware of each other -- their combined effect depends on
+# pytest's collection order. Currently harmless: whichever file's import runs
+# first via `os.environ.setdefault`/membership-check wins, both fallback
+# values are legitimate for their own module, and `tests/contract/*` never
+# reads `Settings.database_url` for real I/O (it always overrides `Settings`
+# with its own `test:test@localhost` DSN in `_client()`, see
+# `test_phrases_endpoints.py`). Fragile if that ever changes -- see
+# `tests/contract/conftest.py`'s own cross-reference comment.
+#
+# The literal below is intentionally NOT hoisted into a shared module-level
+# constant (fix-pass, review finding #4): a plain `NAME = "..."` assignment
+# here would itself be a non-import statement ahead of every `app.*` import
+# below, which ruff's E402 (module-level-import-not-at-top-of-file) check
+# does NOT exempt the way it exempts this bare `os.environ.setdefault(...)`
+# call (verified: `Expr` statements like this one are pycodestyle's
+# documented `sys.path`-manipulation exception; plain assignments are not) --
+# every import in this file would then need its own E402 suppression
+# comment. Instead, `_database_url()` below reads `DATABASE_URL`
+# unconditionally: this line has already guaranteed it is set by the time any
+# fixture calls `_database_url()`, so a second copy of the fallback literal
+# there was unreachable dead code, not a genuine second source of truth.
 os.environ.setdefault("DATABASE_URL", "postgresql+psycopg://todo_ia:todo_ia@localhost:5432/todo_ia")
 
 from app.main import create_app  # noqa: E402 -- must follow the env var default above
@@ -41,9 +66,10 @@ _QUERY_TEXT = "query text"
 
 
 def _database_url() -> str:
-    base = os.environ.get(
-        "DATABASE_URL", "postgresql+psycopg://todo_ia:todo_ia@localhost:5432/todo_ia"
-    )
+    # `os.environ.setdefault(...)` above already guarantees `DATABASE_URL` is
+    # set by the time any fixture calls this -- no second fallback literal
+    # needed here (fix-pass, review finding #4; see the comment above).
+    base = os.environ["DATABASE_URL"]
     return base.rpartition("/")[0] + "/phrases_test"
 
 

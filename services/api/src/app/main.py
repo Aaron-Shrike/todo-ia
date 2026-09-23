@@ -1,16 +1,34 @@
-"""Composition root (Unit 6 + 6b): app factory, middleware ordering,
-framework/domain error handlers, and (6b) the first business router plus
-`/health`.
+"""Composition root (Unit 6 + 6b + 8): app factory, middleware ordering,
+framework/domain error handlers, the business routers plus `/health`, and
+(Unit 8) the production `lifespan` hook that wires a REAL embedding
+provider and repository.
 
-Real embedding-provider wiring is Unit 8's job, so the production app
-mounts `/health` pre-set to "not ready" and never sets `app.state.phrases`
-at all -- `/phrases/validate` 500s until Unit 8 wires a real container.
-Every test builds its OWN app and sets both directly, bypassing this.
+`create_app`'s `lifespan` parameter defaults to `None`, so every EXISTING
+test (which calls `create_app(settings)` with no lifespan and sets
+`app.state.phrases`/`app.state.health` directly -- see `test_
+validate_health.py`'s `_client()`, unchanged since Unit 6b) keeps behaving
+identically: `TestClient` only ever runs a `lifespan` when used as a
+context manager, which no test in this codebase does. Only the module-level
+`app` object at the bottom of this file gets the real `_lifespan`.
+
+`_lifespan` is **not exercised end to end in this environment**: no live
+Postgres and no real `sentence-transformers` model are available here (see
+apply-progress.md's Unit 8 section) -- it is written and covered by the
+passthrough-wiring test in `tests/unit/test_main.py`, not run against real
+infrastructure in this batch. Its pure SEQUENCING (Unit 8 fix-pass,
+reliability CRITICAL finding #2) -- the order of operations, and that a
+dimension mismatch short-circuits warmup/wiring/the health flip -- is
+extracted to `platform/boot_sequence.py::run_boot_sequence` and IS
+unit-tested there with fakes, independent of sqlalchemy/postgres/torch
+being installed; `_lifespan` itself is now a thin wrapper supplying the
+real I/O callables to that pure core.
 """
 
 from __future__ import annotations
 
-from collections.abc import Awaitable, Callable
+from collections.abc import AsyncIterator, Awaitable, Callable
+from contextlib import AbstractAsyncContextManager, asynccontextmanager
+from dataclasses import asdict
 
 from fastapi import FastAPI
 from fastapi.exceptions import RequestValidationError
@@ -21,10 +39,24 @@ from starlette.responses import JSONResponse
 from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
 from app.modules.phrases.api.router import build_phrases_router, build_validate_router
+from app.modules.phrases.container import PhrasesContainer, build_phrases_container
+from app.modules.similarity.adapters.bounded import BoundedEmbeddingProvider
+from app.modules.similarity.adapters.caching import CachingEmbeddingProvider
+from app.modules.similarity.adapters.sentence_transformers import load_sentence_transformer
+from app.modules.similarity.container import wrap_with_cache
+from app.modules.similarity.contracts import EmbeddingProvider, SimilarityPolicy
+from app.platform.boot_sequence import run_boot_sequence
+from app.platform.embedding_boot import (
+    check_database_reachable,
+    check_dimension_coherence,
+    read_vector_column_dimensions,
+)
 from app.platform.errors import ERROR_REGISTRY, build_error_response, error_envelope
 from app.platform.health import HealthState
 from app.platform.health import router as health_router
 from app.platform.settings import Settings
+
+_HEALTH_SENTINEL_TEXT = "todo-ia health warmup sentinel"
 
 _FRAMEWORK_CODES = {404: "NOT_FOUND", 405: "METHOD_NOT_ALLOWED"}
 _MISSING_TYPES = {"missing"}
@@ -179,8 +211,12 @@ async def _validation_error_handler(
     )
 
 
-def create_app(settings: Settings) -> FastAPI:
-    app = FastAPI()
+def create_app(
+    settings: Settings,
+    *,
+    lifespan: Callable[[FastAPI], AbstractAsyncContextManager[None]] | None = None,
+) -> FastAPI:
+    app = FastAPI(lifespan=lifespan)
 
     app.add_exception_handler(StarletteHTTPException, _http_exception_handler)  # type: ignore[arg-type]
     app.add_exception_handler(RequestValidationError, _validation_error_handler)  # type: ignore[arg-type]
@@ -201,8 +237,11 @@ def create_app(settings: Settings) -> FastAPI:
         )
     )
     app.include_router(health_router)
-    # Not ready until Unit 8 wires the real provider; `app.state.phrases`
-    # is deliberately left unset (a hit on `/phrases/validate` 500s).
+    # Not ready until `lifespan` (Unit 8, real deployments only) runs;
+    # `app.state.phrases` is deliberately left unset (a hit on
+    # `/phrases/validate` 500s until then). Every test sets both directly,
+    # bypassing this -- `lifespan` never runs unless `TestClient` is used
+    # as a context manager, which no test in this codebase does.
     app.state.health = HealthState(
         check_database=lambda: False,
         model_ready=False,
@@ -225,7 +264,126 @@ def create_app(settings: Settings) -> FastAPI:
     return app
 
 
+@asynccontextmanager
+async def _lifespan(app: FastAPI, settings: Settings) -> AsyncIterator[None]:
+    """Unit 8 production startup, restructured in the Unit 8 fix-pass
+    (reliability CRITICAL finding #2). The pure SEQUENCING decision --
+    load the model, check the `phrases.embedding` column's typmod against
+    the loaded provider and `EMBEDDING_DIMENSIONS` (a mismatch ABORTS boot,
+    short-circuiting everything after it -- `EmbeddingDimensionMismatch`
+    propagates out of `run_boot_sequence`, which FastAPI/uvicorn surfaces
+    as a failed startup, a non-zero exit), warm the model with one
+    fixed-sentinel embed, then wire the real `PgVectorUnitOfWorkFactory`
+    (closing the gap `main.py`'s Unit 6b docstring named: "until Unit 8
+    wires a real container") and flip `app.state.health` to ready -- now
+    lives in `platform/boot_sequence.py::run_boot_sequence`, unit-tested
+    THERE with fakes and no sqlalchemy/postgres/torch installed. This
+    function is the THIN wrapper that supplies the REAL I/O callables
+    (`create_engine`, `load_sentence_transformer`, `PgVectorUnitOfWork
+    Factory`) that pure core needs.
+
+    `create_engine`/`PgVectorUnitOfWorkFactory` are imported HERE, lazily,
+    not at module level (same pattern as `adapters/sentence_transformers.
+    py::load_sentence_transformer`): `pgvector_repository.py` imports
+    `sqlalchemy` at module level, and this dev venv does not have
+    `sqlalchemy` installed (see apply-progress.md's Unit 8 section) -- a
+    top-level import here would break every test that imports `app.main`,
+    which is nearly all of them. No test in this codebase triggers this
+    function (`TestClient` only runs `lifespan` as a context manager, which
+    none of them do), so the lazy import is never attempted during a test
+    run in this environment.
+
+    **Not exercised end to end in this batch**: no live Postgres and no
+    real model are available here -- this function's OWN wiring is
+    written and covered by `tests/unit/test_main.py`'s passthrough-wiring
+    test only; the SEQUENCING it delegates to is covered by `tests/unit/
+    platform/test_boot_sequence.py`.
+    """
+    from sqlalchemy import create_engine
+
+    from app.modules.phrases.adapters.pgvector_repository import PgVectorUnitOfWorkFactory
+
+    engine = create_engine(settings.database_url)
+    # Captured by `_load_model` below so the `finally` block can shut its
+    # `ThreadPoolExecutor` down on exit (Unit 8 fix-pass, reliability
+    # suggestion #11) -- held separately from the (possibly cache-wrapped)
+    # provider `run_boot_sequence` passes around, since only THIS concrete
+    # layer owns a resource needing explicit shutdown.
+    bounded_provider: BoundedEmbeddingProvider | None = None
+
+    def _load_model() -> EmbeddingProvider:
+        nonlocal bounded_provider
+        base = load_sentence_transformer(settings)
+        bounded_provider = BoundedEmbeddingProvider(
+            base,
+            timeout_seconds=settings.embedding_timeout_seconds,
+            max_concurrency=settings.embedding_max_concurrency,
+        )
+        return wrap_with_cache(bounded_provider, capacity=settings.embedding_cache_size)
+
+    def _check_dimensions(provider: EmbeddingProvider) -> None:
+        with engine.connect() as connection:
+            typmod = read_vector_column_dimensions(connection, table="phrases", column="embedding")
+        check_dimension_coherence(
+            typmod=typmod,
+            provider_dimensions=provider.dimensions,
+            configured_dimensions=settings.embedding_dimensions,
+        )
+
+    def _warmup(provider: EmbeddingProvider) -> None:
+        provider.embed(_HEALTH_SENTINEL_TEXT)  # one forward pass
+
+    def _build_container(provider: EmbeddingProvider) -> PhrasesContainer:
+        uow_factory = PgVectorUnitOfWorkFactory(
+            engine, ef_search=settings.hnsw_ef_search, lock_timeout_ms=settings.lock_timeout_ms
+        )
+        container = build_phrases_container(
+            embedder=provider,
+            # `PgVectorUnitOfWork.repo: PgVectorPhraseRepository` vs. the
+            # `UnitOfWork` Protocol's `repo: PhraseRepository` -- mypy
+            # treats a Protocol's mutable attribute as INVARIANT (it could
+            # be read OR written through the Protocol type), so a concrete
+            # subtype-typed attribute never structurally satisfies it, even
+            # though `PgVectorPhraseRepository` fully implements
+            # `PhraseRepository` at runtime. Pre-existing since Unit 5b;
+            # this is the first `src/` (not test) call site to assign
+            # `PgVectorUnitOfWorkFactory` to a `UnitOfWorkFactory`-typed
+            # parameter, so it is the first to surface it.
+            uow_factory=uow_factory,  # type: ignore[arg-type]
+            policy=SimilarityPolicy(threshold=settings.similarity_threshold),
+            phrase_max_length=settings.phrase_max_length,
+            matches_page_size=settings.matches_page_size,
+        )
+
+        def _cache_snapshot() -> dict[str, int] | None:
+            return (
+                asdict(provider.stats) if isinstance(provider, CachingEmbeddingProvider) else None
+            )
+
+        app.state.health = HealthState(
+            check_database=lambda: check_database_reachable(engine),
+            model_ready=True,
+            dimensions=provider.dimensions,
+            embedding_model=settings.embedding_model,
+            embedding_cache=_cache_snapshot,
+        )
+        return container
+
+    try:
+        app.state.phrases = run_boot_sequence(
+            load_model=_load_model,
+            check_dimensions=_check_dimensions,
+            warmup=_warmup,
+            build_container=_build_container,
+        )
+        yield
+    finally:
+        if bounded_provider is not None:
+            bounded_provider.close()  # Unit 8 fix-pass, reliability suggestion #11
+        engine.dispose()
+
+
 # design.md: Settings instantiated before the app is created (fail-fast). mypy can't
 # see pydantic-settings fills required fields (e.g. database_url) from the environment.
 settings = Settings()  # type: ignore[call-arg]
-app = create_app(settings)
+app = create_app(settings, lifespan=lambda app: _lifespan(app, settings))

@@ -14,6 +14,18 @@ every integration test would try to connect as the fake `contract` role.
 fixture executes, so removing the placeholder there closes the window
 without affecting `tests/contract/*` itself (its `app.main` imports already
 ran during collection, placeholder value and all).
+
+Cross-reference (fix-pass, review finding #5): `tests/integration/
+test_endpoints_pgvector.py` ALSO sets `DATABASE_URL` at module scope (via
+`os.environ.setdefault`, a real dev-DB default, not a placeholder -- it never
+cleans up after itself since there's nothing fake to leak). This module and
+that one are unaware of each other; their combined behaviour depends on
+pytest's collection order (whichever runs first wins, via `setdefault`/the
+membership check above). Currently harmless: both fallback values are
+legitimate for their own module, and `tests/contract/*` never reads
+`Settings.database_url` for real I/O (every contract test overrides
+`Settings` with its own DSN before use). Fragile if that assumption ever
+changes -- see `test_endpoints_pgvector.py`'s own cross-reference comment.
 """
 
 import os

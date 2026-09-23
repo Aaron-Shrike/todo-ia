@@ -20,7 +20,7 @@ from pydantic import BaseModel, ConfigDict, Field, StrictBool
 from starlette.responses import JSONResponse
 
 from app.modules.phrases.api.schemas import PhraseId, page_limit, raw_phrase_text
-from app.modules.phrases.application._shared import VerdictView
+from app.modules.phrases.application._shared import MatchView, MostSimilarView, VerdictView
 from app.modules.phrases.container import PhrasesContainer
 from app.modules.phrases.contracts import Phrase
 
@@ -37,6 +37,15 @@ class _ScoredPhrase(BaseModel):
     id: PhraseId
     text: str
     score: float
+
+
+def _scored_phrase(view: MatchView | MostSimilarView) -> _ScoredPhrase:
+    """Explicit field-by-field mapping from the application layer's
+    `MatchView`/`MostSimilarView` to the wire `_ScoredPhrase` (fix-pass,
+    review finding #2: replaces `_ScoredPhrase(**vars(view))`, used at 5
+    call sites, so a field rename/add on either side fails at mypy
+    type-check time instead of silently at runtime)."""
+    return _ScoredPhrase(id=view.id, text=view.text, score=view.score)
 
 
 class _ValidationOut(BaseModel):
@@ -73,11 +82,11 @@ def _verdict_details(verdict: VerdictView) -> dict[str, object]:
     """The validate-shaped 409 `details` payload (design.md: "The 409 body
     carries a complete validate response")."""
     most_similar = (
-        _ScoredPhrase(**vars(verdict.most_similar)).model_dump(mode="json")
+        _scored_phrase(verdict.most_similar).model_dump(mode="json")
         if verdict.most_similar is not None
         else None
     )
-    matches = [_ScoredPhrase(**vars(m)).model_dump(mode="json") for m in verdict.matches]
+    matches = [_scored_phrase(m).model_dump(mode="json") for m in verdict.matches]
     return {
         "threshold": verdict.threshold,
         "score": verdict.score,
@@ -118,10 +127,8 @@ def build_validate_router(*, phrase_max_length: int, matches_page_size: int) -> 
         limit = body.limit if body.limit is not None else matches_page_size
         verdict = container.validate_phrase(body.text, limit=limit)
 
-        most_similar = (
-            _ScoredPhrase(**vars(verdict.most_similar)) if verdict.most_similar else None
-        )
-        matches = [_ScoredPhrase(**vars(m)) for m in verdict.matches]
+        most_similar = _scored_phrase(verdict.most_similar) if verdict.most_similar else None
+        matches = [_scored_phrase(m) for m in verdict.matches]
         return _ValidateResponse(
             data=_ValidateData(
                 is_duplicate=verdict.is_duplicate,
@@ -183,7 +190,16 @@ def build_phrases_router(*, phrase_max_length: int, matches_page_size: int) -> A
                     }
                 },
             )
-        assert result.phrase is not None
+        if result.phrase is None:
+            # Invariant: `SaveResult` sets exactly one of `phrase`/`conflict`
+            # (see `SavePhrase.SaveResult`'s docstring); `conflict is None`
+            # here already ruled out the conflict branch above, so `phrase`
+            # MUST be set. A plain `assert` is stripped under `python -O`,
+            # which would then hit `_phrase_out(None)` and fail with a less
+            # clear `AttributeError` (fix-pass, review finding #3) -- raise
+            # explicitly instead, so this stays checked in every build and
+            # fails with a self-explanatory message if it's ever wrong.
+            raise RuntimeError("SaveResult.phrase must be set when result.conflict is None")
         return _PhraseResponse(data=_phrase_out(result.phrase))
 
     @router.post("/phrases/matches", response_model=_MatchesResponse)
@@ -193,7 +209,7 @@ def build_phrases_router(*, phrase_max_length: int, matches_page_size: int) -> A
         page = container.list_matches(body.text, cursor=body.cursor, limit=limit)
         return _MatchesResponse(
             data=_MatchesData(
-                matches=[_ScoredPhrase(**vars(m)) for m in page.matches],
+                matches=[_scored_phrase(m) for m in page.matches],
                 next_cursor=page.next_cursor,
                 has_more=page.has_more,
             )

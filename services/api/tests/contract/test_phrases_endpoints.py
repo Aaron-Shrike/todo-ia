@@ -32,6 +32,7 @@ from app.modules.similarity.contracts import (
     EmbeddingUnavailable,
     SimilarityPolicy,
 )
+from app.platform.errors import error_envelope
 from app.platform.settings import Settings
 from tests.contract_suite.vectors import PROBE, vector_at_distance
 from tests.unit.phrases._uow_spies import ConflictRepo, ProxyUnitOfWorkFactory
@@ -159,6 +160,43 @@ def test_matches_schema_violations_are_422(
     assert response.json()["error"]["details"]["fields"][0] == {"field": field, "reason": reason}
 
 
+@pytest.mark.parametrize(
+    ("error", "status_code", "code"),
+    [
+        (EmbeddingUnavailable(), 503, "EMBEDDING_UNAVAILABLE"),
+        (EmbeddingTimeout(), 504, "EMBEDDING_TIMEOUT"),
+    ],
+)
+def test_matches_provider_failure_returns_503_or_504(
+    error: Exception, status_code: int, code: str
+) -> None:
+    # Mirror of `test_save_provider_failure_never_persists` (fix-pass, review
+    # finding #1): `ListMatches.__call__` embeds the query text (after
+    # decoding/binding the cursor) before ever touching the repository, same
+    # ordering as `SavePhrase`, so a provider failure here must surface as
+    # the same registered 503/504 -- never a 200 or an unregistered 500.
+    failing = FailingEmbedder(FakeEmbedder({_QUERY_TEXT: PROBE}), fail_times=None, error=error)
+    client, _, _ = _client(embedder=failing)
+    response = client.post("/phrases/matches", json={"text": _QUERY_TEXT, "cursor": _VALID_CURSOR})
+    assert response.status_code == status_code
+    assert response.json()["error"]["code"] == code
+
+
+def test_matches_database_unreachable_is_500() -> None:
+    # Mirror of `test_save_database_unreachable_is_500_and_persists_nothing`
+    # (fix-pass, review finding #1): embedding succeeds, then
+    # `self._uow_factory()` raises -- same unregistered-exception path as
+    # `SavePhrase`'s, so it must surface as the same generic 500
+    # `INTERNAL_ERROR`, never an unhandled crash.
+    def _broken(*, isolation: object = None, read_only: bool = False) -> None:
+        raise RuntimeError("connection refused")
+
+    client, _, _ = _client(uow_factory=_broken)  # type: ignore[arg-type]
+    response = client.post("/phrases/matches", json={"text": _QUERY_TEXT, "cursor": _VALID_CURSOR})
+    assert response.status_code == 500
+    assert response.json()["error"]["code"] == "INTERNAL_ERROR"
+
+
 # --- POST /phrases -------------------------------------------------------
 
 
@@ -207,6 +245,26 @@ def test_save_conflict_shape_and_payload_completeness() -> None:
     assert details["next_cursor"] is None
     with factory(read_only=True) as uow:  # type: ignore[operator]
         assert len(uow.repo.list_recent(10)) == 3  # nothing new persisted
+
+
+def test_save_409_envelope_matches_error_envelope_shape() -> None:
+    # Drift guard (fix-pass, review finding #6): `save_phrase`'s 409 body is
+    # a hand-built `{"error": {...}}` dict, built inline to dodge an
+    # import-linter violation instead of importing
+    # `app.platform.errors.error_envelope` (see router.py's module note).
+    # Assert the two stay structurally in sync -- same key set, same nesting
+    # -- so a future field rename/add to `error_envelope` gets caught here
+    # instead of silently diverging.
+    client, _, factory = _client()
+    _seed(factory, ("existing", 0.05))
+    response = client.post("/phrases", json={"text": _QUERY_TEXT})
+    assert response.status_code == 409
+    body = response.json()
+    expected = error_envelope(
+        body["error"]["code"], body["error"]["message"], body["error"]["details"]
+    )
+    assert set(body) == set(expected)
+    assert set(body["error"]) == set(expected["error"])
 
 
 def test_save_large_match_set_on_409_next_cursor_usable_with_matches() -> None:
