@@ -54,7 +54,11 @@ export type MachineEvent =
   | { type: "FAIL"; error: ErrorInfo }
   | { type: "CONFIRM" }
   | { type: "CANCEL" }
-  | { type: "RETRY" };
+  | { type: "RETRY" }
+  // A 400 INVALID_CURSOR on a `POST /phrases/matches` page request (phrase-ui
+  // spec, "Invalid cursor restarts validation") — dispatched by
+  // `useMatchesInfiniteScroll`'s `onInvalidCursor` callback via `DuplicateAlert`.
+  | { type: "INVALID_CURSOR" };
 
 export const initialState: MachineState = { status: "idle" };
 
@@ -128,6 +132,12 @@ export function phraseMachineReducer(
       }
       if (event.type === "CANCEL") {
         return { status: "idle" };
+      }
+      if (event.type === "INVALID_CURSOR") {
+        // Discards the loaded matches (they belonged to a now-invalid
+        // cursor) and restarts the flow exactly like pressing Validar
+        // again, rather than retrying the same cursor.
+        return startValidating("validate");
       }
       return state;
 

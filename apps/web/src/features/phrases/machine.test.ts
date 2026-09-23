@@ -65,6 +65,7 @@ const EVENTS: Record<string, MachineEvent> = {
   CONFIRM: { type: "CONFIRM" },
   CANCEL: { type: "CANCEL" },
   RETRY: { type: "RETRY" },
+  INVALID_CURSOR: { type: "INVALID_CURSOR" },
 };
 
 const IGNORED = "IGNORED" as const;
@@ -84,6 +85,7 @@ const EXPECTED: Record<string, Record<string, MachineState | typeof IGNORED>> = 
     CONFIRM: IGNORED,
     CANCEL: IGNORED,
     RETRY: IGNORED,
+    INVALID_CURSOR: IGNORED,
   },
   validating: {
     EDIT_TEXT: { status: "idle" },
@@ -99,6 +101,7 @@ const EXPECTED: Record<string, Record<string, MachineState | typeof IGNORED>> = 
     CONFIRM: IGNORED,
     CANCEL: IGNORED,
     RETRY: IGNORED,
+    INVALID_CURSOR: IGNORED,
   },
   ok: {
     EDIT_TEXT: { status: "idle" },
@@ -112,6 +115,7 @@ const EXPECTED: Record<string, Record<string, MachineState | typeof IGNORED>> = 
     CONFIRM: IGNORED,
     CANCEL: IGNORED,
     RETRY: IGNORED,
+    INVALID_CURSOR: IGNORED,
   },
   duplicate: {
     EDIT_TEXT: { status: "idle" },
@@ -125,6 +129,11 @@ const EXPECTED: Record<string, Record<string, MachineState | typeof IGNORED>> = 
     CONFIRM: { status: "saving", details: SAMPLE_DETAILS },
     CANCEL: { status: "idle" },
     RETRY: IGNORED,
+    // phrase-ui spec, "Invalid cursor restarts validation": a 400
+    // INVALID_CURSOR on a match page discards the loaded matches and
+    // re-runs validation for the current text — the exact same transition
+    // as pressing Validar again.
+    INVALID_CURSOR: { status: "validating", intent: "validate" },
   },
   revalidating: {
     EDIT_TEXT: { status: "idle" },
@@ -138,6 +147,7 @@ const EXPECTED: Record<string, Record<string, MachineState | typeof IGNORED>> = 
     CONFIRM: IGNORED,
     CANCEL: IGNORED,
     RETRY: IGNORED,
+    INVALID_CURSOR: IGNORED,
   },
   saving: {
     EDIT_TEXT: { status: "idle" },
@@ -151,6 +161,7 @@ const EXPECTED: Record<string, Record<string, MachineState | typeof IGNORED>> = 
     CONFIRM: IGNORED,
     CANCEL: IGNORED,
     RETRY: IGNORED,
+    INVALID_CURSOR: IGNORED,
   },
   error: {
     EDIT_TEXT: { status: "idle" },
@@ -168,6 +179,7 @@ const EXPECTED: Record<string, Record<string, MachineState | typeof IGNORED>> = 
     // "Reintentar" — phrase-ui spec's "Retry" scenario: returns to idle,
     // text preserved (text lives outside the machine; see PhraseForm).
     RETRY: { status: "idle" },
+    INVALID_CURSOR: IGNORED,
   },
 };
 

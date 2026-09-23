@@ -5528,3 +5528,322 @@ Unit 11 fix pass):
 **Test summary**: 4 new committed tests (#1, #2, #3, #8), 1 rewritten test (#7, same behavior asserted
 via an accessible query instead of `data-testid`), 1 refactor with an existing 81-test approval suite
 (#5), 2 comment-only changes (#4, #6). `apps/web` vitest total: 108/108 passing (was 104).
+
+## Unit 12: Duplicate alert with infinite-scroll matches -- SHIPPED (`size:exception`, user-approved)
+
+**Resolution**: the user explicitly accepted the 684-line overrun (660 insertions / 24 deletions, 10
+files) as a single-PR `size:exception` rather than the 4-slice split proposed below (12a `percent.ts`
++ machine event ~58 lines, 12b hook+hook-tests ~290, 12c `DuplicateAlert` component+tests ~245, 12d
+`PhraseForm` wiring+copy ~104) — same pattern as Units 6, 6b, 7 and 11 this session. The
+"Budget measurement" / "Proposed split" sub-sections below are left as written at the stop, for the
+record.
+
+**Commit**: `feat(web): duplicate alert with infinite-scroll matches`
+**SHA**: `2f05c8d` (10 files changed, 660 insertions / 24 deletions)
+**Branch**: `feat/pv-12-web-duplicate-alert`, cut from `develop` at `bc59585` (PR #28 / Unit 11
+merged; no other Unit 12 dependency per tasks.md's `11 -> 12 -> 13 sequential`)
+**Delivery**: pushed, PR #29 opened against `develop` per the resolution above
+(`feat/pv-12-web-duplicate-alert` -> `develop`). Final delivered SHA after the 4-lens fix pass and
+its own StrictMode second-order fix is `36e647e` (see the "Unit 12 fix pass" section below).
+
+Both sub-tasks are fully implemented, RED->GREEN confirmed per task (see TDD Cycle Evidence below),
+and green against every quality gate:
+
+```
+$ cd apps/web && npx vitest run
+Test Files  6 passed (6)
+     Tests  136 passed (136)
+
+$ cd apps/web && npx tsc --noEmit
+(no output — clean)
+
+$ cd apps/web && npm run build
+✓ Compiled successfully in 3.6s
+✓ Generating static pages using 4 workers (3/3)
+
+$ cd services/api && .venv/Scripts/python.exe -m pytest tests/unit tests/contract_suite tests/contract -m "not integration and not slow" -q
+286 passed, 1 deselected   # identical to every prior unit's baseline — this unit touches no backend code
+```
+
+- [x] 12.1 `apps/web/src/features/phrases/percent.ts` (`floorPercent`): converts a 0..1 score to
+  integer basis points via `Math.round(score * 10000)` (correcting the float drift
+  `0.995 * 100 === 99.49999999999999` would otherwise introduce) before flooring — 0.9312→93,
+  0.9950→99, 0.9999→99, 0.29→29, 1.0→100. RED confirmed by temporarily stubbing the function to
+  `throw`, re-running the 5-case parametrized test (all 5 failed on the thrown error), then
+  restoring the real implementation (all 5 passed immediately, first attempt).
+- [x] 12.2 `apps/web/src/features/phrases/components/DuplicateAlert.tsx` (`role="alertdialog"`,
+  most-similar phrase + floored score, `<ul>` match list, Confirmar/Cancelar disabled while
+  `saving`) and `apps/web/src/features/phrases/hooks/useMatchesInfiniteScroll.ts`
+  (`IntersectionObserver` sentinel via a callback ref + `useEffect`, a `useRef` in-flight guard so
+  two synchronous intersections in the same tick still send exactly one request, `appendDeduped` by
+  `id`, stops rendering the sentinel once `has_more` is false, a 400 `INVALID_CURSOR` page failure
+  clears `matches`/`cursor`/`hasMore` and calls `onInvalidCursor` instead of retrying the same
+  cursor). 15 component tests in `DuplicateAlert.test.tsx` against a fake `IntersectionObserver`
+  (constructor captured, `.trigger()` fires its callback manually) and the same deferred-promise
+  fake `PhraseApiClient` style as `PhraseForm.test.tsx`, covering all listed scenarios: Alert
+  content, Percentage never overstates (parametrized: 0.995/0.9999/0.29/1.0), Confirm, Cancel,
+  Confirmar/Cancelar disabled while saving, Single page, Load next page on scroll (asserts the
+  loading copy while in flight, then the appended item), Reach the end, No concurrent page
+  requests, Invalid cursor restarts validation, Page load failure + retry, Deduplicate on overlap.
+  RED confirmed by running the test file before either new file existed (Vite import-resolution
+  failure on `./DuplicateAlert`); both files were then implemented together and the full suite
+  passed on the first run (15/15).
+  - **`machine.ts` gained one new event**: `INVALID_CURSOR`, handled only in `case "duplicate"` ->
+    `startValidating("validate")` (reuses the exact same helper `idle`/`error` already use), a
+    true no-op everywhere else. RED confirmed via the existing table-driven `machine.test.ts`: the
+    new `duplicate.INVALID_CURSOR` row was added to the expectation table BEFORE the reducer case
+    existed, which failed (`toEqual` mismatch — the unhandled event fell through to the existing
+    `return state;` no-op, `duplicate` unchanged, not `validating`); adding the reducer branch
+    turned it green (88/88).
+  - **`PhraseForm.tsx`**: the Unit 11 inline duplicate placeholder (`<h2>` + two raw buttons,
+    explicitly documented in Unit 11's apply-progress as "Unit 12 is expected to replace this
+    inline block") is now `<DuplicateAlert client={client} text={submittedText.current}
+    details={duplicateDetails} disabled={state.status === "saving"} onConfirm={handleConfirm}
+    onCancel={handleCancel} onInvalidCursor={handleInvalidCursor} />`. `handleInvalidCursor` is one
+    line: `dispatch({ type: "INVALID_CURSOR" })`. All 17 pre-existing `PhraseForm.test.tsx` tests
+    (Unit 11 + its fix pass) pass unchanged against the new DOM structure — the button `name`s and
+    the `role="status"` live region are unaffected, only the duplicate section's own markup moved
+    into the new component.
+  - **New PhraseForm-level integration test**: "409 while confirming (defensive)" (the one
+    `duplicate-confirmation`/phrase-ui scenario this unit's Covers line names that specifically
+    needs the full `PhraseForm` + machine + effect wiring, not just `DuplicateAlert` in isolation)
+    — reaches `duplicate`, clicks Confirmar (`saving`), rejects the deferred `savePhrase` promise
+    with a 409 carrying fresh `details` (`most_similar: "Comprar leche fresca"`), and asserts the
+    alertdialog re-renders with the fresh phrase and Confirmar is re-enabled. This is a
+    characterization test in the Unit-11-fix-pass sense: the `saving`+`CONFLICT`→`duplicate`
+    transition and the shared `revalidating`/`saving` effect branch already existed and already
+    handle this correctly (also already proven by `machine.test.ts`'s table-driven `saving.CONFLICT`
+    row); this test adds integration-level (real DOM, real fake client) coverage for a scenario this
+    unit's own Covers line names, not a bug fix.
+  - **`copy.es.ts`**: added the `duplicate.mostSimilar`, `duplicate.score` (`"Similitud: {percent}%"`
+    template), `duplicate.matchesTitle`, `duplicate.loadingMore` and `duplicate.loadMoreError` keys
+    `DuplicateAlert` needs. The remaining phrase-ui copy table keys (`badge.*`, `list.*`, most
+    `error.*`) stay Unit 13's task, per Unit 11's own header comment in this file, now updated to
+    reflect Unit 12's additions.
+- Deferred to Unit 13 (unchanged from Unit 11's own deferral list, not new): the exhaustive
+  `errorCopy` map, `PhraseList`/`app/page.tsx` wiring, saved-list refresh behavior.
+- "Reset on text edit: Edit during duplicate" and "Cancel saves nothing" (both named in this unit's
+  Covers line) needed no new test: they were already covered end-to-end by Unit 11's existing
+  `PhraseForm.test.tsx` tests ("closes the duplicate section when the text is edited during
+  duplicate", "duplicate alert: Cancelar"), which still pass unchanged against the new
+  `DuplicateAlert`-based DOM (same button `name`s, same `copy.duplicate.title` text) — re-verified
+  green in this batch's full run (136/136), not a gap.
+
+### An environment issue found and fixed (not a code bug)
+
+`node_modules/jsdom` was absent from `apps/web/node_modules` at the start of this batch even though
+`jsdom` (and every other dependency vitest's `environment: "jsdom"` needs) is correctly declared in
+`package.json`'s `devDependencies` and `package-lock.json` — `npx vitest run` failed immediately with
+`Cannot find package 'jsdom'` before any test file could even load. `npm install` (no `package.json`/
+`package-lock.json` changes; it only synced the existing lockfile into `node_modules`, adding 81
+packages) resolved it. Root cause not investigated further (most likely an incomplete prior
+`node_modules` checkout/prune in this environment, unrelated to any Unit 11 or Unit 12 change) — noted
+here so a future batch that hits the same failure does not mistake it for a real regression.
+
+### Budget measurement
+
+First (and only) complete draft, all green: **684 changed lines** (660 insertions / 24 deletions),
+10 files — `DuplicateAlert.test.tsx` 300, `useMatchesInfiniteScroll.ts` 128, `DuplicateAlert.tsx` 94,
+`PhraseForm.test.tsx` +51, `PhraseForm.tsx` +31/-24, `copy.es.ts` +22, `percent.test.ts` 17,
+`percent.ts` 17, `machine.test.ts` +12, `machine.ts` +12. No trim pass was run before this
+measurement (unlike Units 1/2/6/6b, where a genuine trim closed some of the gap) — see the next
+paragraph for why one would not have closed a **~2.2x** overage: cutting comments/docstrings on files
+this size (median ~90 lines of actual logic per production file) could realistically recover
+30-60 lines, not the 284 needed to reach 400, and every test maps to one specific named scenario
+from this unit's own Covers line with no duplicated coverage to consolidate (verified: 15 in
+`DuplicateAlert.test.tsx`, 1 new in `PhraseForm.test.tsx`, 1 new row in `machine.test.ts`'s existing
+table — none redundant with another). Per this unit's own explicit instruction, stopping here to
+report rather than performing a trim pass whose insufficiency could be reasoned about in advance, or
+self-authorizing an exception.
+
+**The orchestrator-provided seam does not close the gap by itself.** The instruction named "12.1
+`percent.ts` vs 12.2 `DuplicateAlert.tsx`/`useMatchesInfiniteScroll.ts`" as the natural split. Measured:
+12.1 (`percent.ts` + `percent.test.ts`) is 34 lines — trivially under budget, but 12.2 alone (everything
+else: `DuplicateAlert.tsx`, `useMatchesInfiniteScroll.ts`, `PhraseForm.tsx` wiring, the new
+`PhraseForm.test.tsx` test, `machine.ts`'s `INVALID_CURSOR` event, and the `copy.es.ts` keys — all
+load-bearing for `DuplicateAlert` to exist and be wired in) is **~650 lines on its own, still ~62%
+over the 400 cap**. This was not visible until the full implementation was measured; flagging it
+explicitly rather than silently picking a different split.
+
+### Proposed split (unmeasured — would require re-authoring the test files; presented as an option, not built)
+
+A finer, dependency-ordered 4-slice split that WOULD fit every slice under 400, estimated from the
+already-written code's own line counts (the hook/component test files would need to be split by
+scenario, not just cut-and-pasted, since `DuplicateAlert.test.tsx` currently exercises the hook only
+through the rendered component):
+
+| Slice | Contents | Est. lines | Depends on |
+|-------|----------|-----------|------------|
+| 12a | `percent.ts` + test (34) + `machine.ts`'s `INVALID_CURSOR` event + table row (24) | ~58 | Unit 11 (merged) |
+| 12b | `useMatchesInfiniteScroll.ts` (128) + hook-level tests via `renderHook` (est. ~160, not yet written) | ~290 | 12a |
+| 12c | `DuplicateAlert.tsx` (94) + component tests for the 6 non-scroll "Duplicate alert" scenarios only (est. ~150, trimmed from the current 300-line file by removing the 7 scroll-specific tests that move to 12b) | ~245 | 12b |
+| 12d | `PhraseForm.tsx` wiring (31) + the "409 while confirming" test (51) + `copy.es.ts` (22) | ~104 | 12c |
+
+Trade-off: 4 branches/commits/PRs for a unit whose own estimate was ~310 lines, vs. the single-PR
+`size:exception` pattern already approved 4 times this session, each measured against the same
+400-line cap this unit uses (Unit 6: 826/400 ≈ 2.1x; Unit 6b: 468/400 ≈ 1.2x; Unit 7: 566/400 ≈
+1.4x; Unit 11: 1141/400 ≈ 2.85x, per that unit's own apply-progress wording) — this unit's
+684/400 ≈ 1.7x the cap (684/310 ≈ 2.2x its own estimate) sits comfortably inside that already-
+approved range, and everything is already implemented, tested, and green (zero rework if approved
+as-is), whereas the 4-way split requires writing new hook-level and re-scoped component test files
+not yet authored. Both options are brought to the user per this unit's own instruction not to
+self-authorize.
+
+### TDD Cycle Evidence (Unit 12)
+
+| Task | Test File | Layer | Safety Net | RED | GREEN | Notes |
+|------|-----------|-------|------------|-----|-------|-------|
+| 12.1 `floorPercent` | `percent.test.ts` | Unit | N/A (new) | ✅ Confirmed by execution — implementation temporarily stubbed to `throw`, all 5 parametrized cases failed on the thrown error, then restored | ✅ 5/5 passed after restore, first attempt | Integer-basis-point rounding verified against all 5 named boundary values from the spec's own "Percentage never overstates" scenario |
+| 12.2 `machine.ts` `INVALID_CURSOR` | `machine.test.ts` | Unit | ✅ 87 pre-existing rows in the same table | ✅ Confirmed by execution — the new `duplicate.INVALID_CURSOR` expectation was added to the table before the reducer case existed; failed with the unhandled event's no-op (`duplicate` unchanged) vs. the expected `validating` state | ✅ 88/88 after adding the one reducer branch | Reuses `startValidating("validate")`, the same helper `idle`/`error` already share |
+| 12.2 `DuplicateAlert.tsx` + `useMatchesInfiniteScroll.ts` | `DuplicateAlert.test.tsx` | Component | N/A (new) | ✅ Confirmed by execution — test file run before either production file existed; Vite import-resolution failure (`Failed to resolve import "./DuplicateAlert"`), 0 tests ran | ✅ 15/15 passed on the first full implementation attempt | Covers all 6 "Duplicate alert" + all 7 "Infinite scroll" scenarios from the Covers line, minus the 2 (409 during save / 409 while confirming) that need the full `PhraseForm` integration — see next row |
+| 12.2 `PhraseForm.tsx` wiring — "409 while confirming (defensive)" | `PhraseForm.test.tsx` | Component | ✅ 16 pre-existing tests in the same file, re-run green (17/17 total after this addition) | ➖ N/A — the `saving`+`CONFLICT`→`duplicate` transition and the shared save-effect branch already existed (proven by `machine.test.ts`'s pre-existing table row); this integration test characterizes already-correct wiring, not a bug fix | ✅ Passed (after fixing one test-authoring mistake: `getByText` on text split across sibling JSX expressions doesn't match — switched to `toHaveTextContent` on the `alertdialog`, the same pattern already used throughout `DuplicateAlert.test.tsx`) | Named explicitly in this unit's own Covers line; the one scenario that needed `PhraseForm`-level (not `DuplicateAlert`-level) coverage |
+
+### Test Summary (Unit 12)
+
+- **Total tests written**: 28 — 5 in `percent.test.ts` (new file); 7 new rows in `machine.test.ts`'s
+  existing table-driven suite (the new `INVALID_CURSOR` event crossed with all 7 existing states,
+  81→88 for that file alone); 15 in `DuplicateAlert.test.tsx` (new file, includes a 4-case
+  `it.each` for "Percentage never overstates"); 1 new integration test in `PhraseForm.test.tsx`
+  ("409 while confirming (defensive)")
+- **Total tests passing**: `apps/web` vitest total 136/136 (was 108 after Unit 11's fix pass;
+  108 + 28 = 136, confirmed by the raw suite run above)
+- **Layers used**: Unit (`percent.test.ts`, `machine.test.ts`'s new row), Component
+  (`DuplicateAlert.test.tsx`, the new `PhraseForm.test.tsx` test)
+- **Pure functions created**: `floorPercent`, `appendDeduped` (internal to the hook), `scoreLabel`
+  (internal to `DuplicateAlert`, fills the `{percent}` copy template)
+- **Genuine bugs the strict-TDD cycle surfaced**: one test-authoring mistake caught and fixed during
+  this batch (the `getByText` vs `toHaveTextContent` issue above) — not a production bug; and one
+  environment issue (missing `node_modules/jsdom`, see above) — also not a production bug.
+
+### Status
+
+**2/2 tasks (12.1, 12.2) implemented, verified (136/136 vitest, clean `tsc`, clean `next build`,
+unaffected backend suite), and committed locally** (`2f05c8d` on `feat/pv-12-web-duplicate-alert`,
+base `develop` at `bc59585`). **Delivery (push + PR) withheld**: measured diff is 684 changed lines,
+~2.2x the 400-line budget, and the orchestrator-provided split seam does not by itself bring either
+half under budget (see "Budget measurement" above). Stopped per this unit's own instruction to report
+rather than self-authorize a `size:exception`. Two options are in front of the user: (a) accept
+`size:exception` for a single PR as already implemented (zero further work, consistent with 4 prior
+approvals this session), or (b) request the 4-slice split proposed above (not yet built — would
+require re-authoring the test files). Ready for `sdd-apply` to resume once the decision is made; not
+ready for `sdd-verify` until delivery (or an explicit decision to skip it) is resolved.
+
+## Unit 12 fix pass (4-lens review: risk + resilience + readability + reliability)
+
+A follow-up apply batch on `feat/pv-12-web-duplicate-alert` (PR open against `develop`, base commit
+`2f05c8d`/`cbb665c`, not merged) fixed 2 confirmed bugs plus 1 lower-severity gap from an adversarial
+4-lens review of Unit 12's shipped scope, all in `useMatchesInfiniteScroll.ts`/`DuplicateAlert.tsx`.
+Landed as ONE new commit (not an amend of `2f05c8d`/`cbb665c`), strict TDD followed: every new/
+strengthened test was run against the unmodified (pre-fix-pass) code first to confirm a genuine RED
+before touching production code.
+
+1. **[Resilience CRITICAL] Stale-response race with no unmount guard.** `loadNextPage`'s
+   `.then`/`.catch` handlers called `setMatches`/`onInvalidCursor`/`setLoadError` unconditionally, with
+   no cancellation guard — a stale `INVALID_CURSOR` response from an old, already-unmounted (or
+   text-changed) alert/hook instance could still fire `onInvalidCursor()`, dispatching into whatever
+   the machine's CURRENT state now is (e.g. a fresh `duplicate` for a different, later-validated text),
+   wiping valid details and forcing an unwanted restart. **Genuine RED confirmed**: two new
+   `DuplicateAlert.test.tsx` tests ("Stale response after unmount", "Stale response after text
+   changes") both failed against the unmodified hook — `onInvalidCursor` was called once in both cases
+   when it should not have been. Fixed with a session-token `useRef` (`sessionId`, bumped every time the
+   reset effect re-runs for a new `text`/`initialMatches`) captured at request time and compared at
+   resolution time, plus a separate `unmounted` ref set once by a mount-only effect's cleanup. A single
+   boolean `cancelled` flag (the first attempt, mirroring `PhraseForm.tsx`'s pattern literally) was
+   insufficient here and caught by the "text changes" test: the reset effect's cleanup and its own new
+   setup run atomically in the same commit on a live rerender, so a boolean flip back to `false`
+   immediately, defeating the guard for the same-instance-different-session case (as opposed to
+   `PhraseForm.tsx`'s effect, which only ever needs to guard against a true unmount). The two-ref
+   session-token approach handles both boundaries correctly.
+2. **[Reliability BLOCKER] Stale match list survives a fresh same-text duplicate result
+   (409-while-confirming).** The hook's reset effect was keyed on `[text]` only, with a comment
+   claiming "a fresh duplicate result for the SAME text is not expected mid-alert" — wrong: a defensive
+   409 while confirming (`saving` → `CONFLICT` in `machine.ts`) delivers a brand-new `details` payload
+   for the SAME text, but the rendered match `<ul>` kept showing the OLD pre-confirm matches/cursor/
+   hasMore (only the "most similar" summary line, which reads `details` directly, updated). **Genuine
+   RED confirmed**: the existing "409 while confirming (defensive)" test in `PhraseForm.test.tsx` was
+   first strengthened to assert on `screen.getAllByRole("listitem")` content (it previously only
+   asserted `alertdialog` text content, which the unrelated summary line already satisfied — tautological,
+   could not catch this bug) and failed against unmodified code (list item still showed `"Comprar
+   leche"`, not the fresh `"Comprar leche fresca"`). Fixed by adding `initialMatches`' identity to the
+   reset effect's dependency array alongside `text`: a genuinely new API response always produces a
+   fresh `matches` array (confirmed by reading `toDuplicateDetails`/`detailsFromApiError` in
+   `PhraseForm.tsx`), while the `duplicate` → `saving` transition (`CONFIRM`) reuses the exact same
+   `details` object reference, so this does not fire mid-confirm. `initialCursor`/`initialHasMore` were
+   deliberately left out of the dependency list — their VALUE can coincidentally repeat (e.g. both
+   `null`) across two different results and would miss a reset that `initialMatches`' identity always
+   catches.
+3. **[Reliability WARNING] `INVALID_CURSOR` mid-flight during `saving` silently empties the visible
+   match list.** `machine.test.ts` documents `duplicate.saving.INVALID_CURSOR` as IGNORED, but the hook
+   itself unconditionally cleared `matches` to `[]` on any `INVALID_CURSOR`, regardless of `saving`
+   state — a page fetch resolving `INVALID_CURSOR` while the user was mid-confirm left them looking at
+   an empty list under a dialog still showing "saving" in the background, no error, no restart.
+   **Genuine RED confirmed**: the new `DuplicateAlert.test.tsx` test "Invalid cursor mid-flight during
+   saving does not silently empty the match list" failed against unmodified code (list was empty, 0
+   items, instead of the expected 1). Fixed by threading a new `disabled` param through to the hook
+   (mirrors `DuplicateAlert`'s own `disabled` prop, sourced from `state.status === "saving"`), tracked
+   in a `disabledRef` kept current every render (needed because a request can be sent while `disabled`
+   is `false` and resolve after it flips `true` — the closure captured at call time is stale by
+   resolution time). When `INVALID_CURSOR` arrives while `disabledRef.current` is `true`, the hook now
+   falls back to the existing `setLoadError(true)` page-load-failure/retry UI instead of clearing the
+   list or calling `onInvalidCursor`.
+
+**Verification** (all green): `cd apps/web && npx vitest run` (139/139, up from 136 — 3 new tests: the
+two "Stale response..." tests and the "Invalid cursor mid-flight during saving" test; the 4th finding's
+test, "409 while confirming (defensive)", was an existing test strengthened in place, not a new one);
+`cd apps/web && npx tsc --noEmit` (clean); backend regression check `cd services/api && .venv/Scripts/
+python.exe -m pytest tests/unit tests/contract_suite tests/contract -m "not integration and not slow"
+-q` (286 passed, 1 deselected — identical to Unit 12's own baseline, unaffected, no backend files
+touched).
+
+**Commit**: `fix(web): guard stale infinite-scroll responses and resync matches on 409-while-confirming`
+**SHA**: `9f6d9f6` (4 files changed, 178 insertions / 6 deletions) — a new commit on
+`feat/pv-12-web-duplicate-alert`, on top of `2f05c8d`/`cbb665c`, not an amend of either.
+
+### Fix-pass TDD Cycle Evidence (Unit 12)
+
+| Finding | Test File | Layer | Safety Net | RED | GREEN | Notes |
+|---|---|---|---|---|---|---|
+| #1 Stale-response race, no unmount guard | `DuplicateAlert.test.tsx` (2 new tests: unmount, text-change) | Component | ✅ 18/18 (16 pre-existing + 2 new) | ✅ Confirmed failing — `onInvalidCursor` called once in both cases against unmodified code | ✅ Passed after the session-token + unmounted-ref fix (a first boolean-flag attempt was caught failing the "text changes" test and revised) | Real bug fix |
+| #2 Stale match list on 409-while-confirming | `PhraseForm.test.tsx` (existing test strengthened) | Component | ✅ 18/18 (17 pre-existing unchanged + this one strengthened) | ✅ Confirmed failing — list item showed `"Comprar leche"`, not `"Comprar leche fresca"` | ✅ Passed after adding `initialMatches` to the reset effect's deps | Real bug fix; test was tautological before (asserted only on the unrelated summary line) |
+| #3 INVALID_CURSOR silently empties list while saving | `DuplicateAlert.test.tsx` (1 new test) | Component | ✅ 19/19 (18 + this one) | ✅ Confirmed failing — 0 list items instead of 1 | ✅ Passed after threading `disabled`/`disabledRef` through and falling back to the load-error UI | Real bug fix |
+
+**Test summary**: 3 new committed tests (2 for #1, 1 for #3), 1 existing test strengthened in place
+(#2, same scenario, stronger assertion). `apps/web` vitest total: 139/139 passing (was 136).
+
+### Second-order finding: fix #1's own `unmounted` ref defeated by StrictMode's dev double-invoke
+
+A fresh-context verification review of commit `9f6d9f6` (finding #1 above) found one CRITICAL
+regression the fix itself introduced. `apps/web/next.config.mjs` sets `reactStrictMode: true`; React
+18's StrictMode double-invokes every effect once per mount in dev (setup → cleanup → setup again) to
+catch non-idempotent effects. The `unmounted` ref's mount-only effect (`useEffect(() => { return () =>
+{ unmounted.current = true; }; }, [])`) never reset the ref back to `false` on the second setup, so
+after the very first StrictMode cycle the ref stayed permanently `true` for the rest of the component's
+real (still-mounted) lifetime — every subsequent `loadNextPage` resolution, including a legitimate
+`INVALID_CURSOR`, then hit the `unmounted.current` guard and was silently dropped. Dev-only (StrictMode's
+double-invoke doesn't run in production), but a real, currently-shipped defect in `next dev`, and
+uncaught because nothing in the suite rendered under `<StrictMode>` before this pass.
+
+**Genuine RED confirmed**: a new `DuplicateAlert.test.tsx` test ("StrictMode dev double-invoke: a
+scroll-triggered fetch after the synthetic remount still resolves and updates the list") renders
+`DuplicateAlert` inside React's `<StrictMode>`, triggers the sentinel after the synthetic mount/unmount/
+remount cycle has already run, and asserts the resulting page fetch still resolves and appends to the
+list. Against the unmodified (`9f6d9f6`) code it failed — the dialog stayed stuck on "Cargando más
+coincidencias..." because the response was silently dropped by the defeated `unmounted.current` guard.
+
+Fixed with the standard StrictMode-safe "isMounted ref" pattern: reset `unmounted.current = false` at
+the top of the effect body (not just declared once), so the effect's own second setup — StrictMode's
+synthetic remount — undoes the synthetic cleanup's `unmounted.current = true`, leaving the ref correctly
+`false` for the component's real, still-mounted lifetime. Traced through all three cases: real single
+mount (setup → `false`, real unmount → `true`), StrictMode dev double-invoke (setup → `false`, synthetic
+cleanup → `true`, synthetic remount setup → `false` again, matching the still-genuinely-mounted
+component), and real unmount after a StrictMode cycle (cleanup → `true`, correctly final).
+
+**Verification** (all green): `cd apps/web && npx vitest run` (140/140, up from 139 — the one new
+StrictMode test); `cd apps/web && npx tsc --noEmit` (clean).
+
+**Commit**: `fix(web): reset unmounted ref on StrictMode remount in infinite scroll`
+**SHA**: `9461690` (3 files changed, 83 insertions) — a new commit on `feat/pv-12-web-duplicate-alert`,
+on top of `9f6d9f6`/`d48973d`, not an amend of either. Files:
+`apps/web/src/features/phrases/hooks/useMatchesInfiniteScroll.ts` (1-line fix + comment),
+`apps/web/src/features/phrases/components/DuplicateAlert.test.tsx` (1 new test),
+`openspec/changes/phrase-validation/apply-progress.md` (this note).
