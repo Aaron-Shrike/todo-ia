@@ -2,6 +2,7 @@
 // (same pattern as `PhraseForm.test.tsx`, design.md's "MSW rejected") plus a
 // fake `IntersectionObserver` (jsdom has none) whose captured callback is
 // triggered manually to simulate the sentinel scrolling into view.
+import { StrictMode } from "react";
 import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -395,5 +396,41 @@ describe("DuplicateAlert", () => {
     expect(onInvalidCursor).not.toHaveBeenCalled();
     expect(screen.getAllByRole("listitem")).toHaveLength(1);
     expect(dialog).toHaveTextContent(copy.duplicate.loadMoreError);
+  });
+
+  it("StrictMode dev double-invoke: a scroll-triggered fetch after the synthetic remount still resolves and updates the list", async () => {
+    const client = createFakeClient({
+      listMatches: vi.fn(() =>
+        Promise.resolve(
+          fakePage({ matches: [{ id: "9", text: "Ir a comprar leche", score: 0.85 }] }),
+        ),
+      ),
+    });
+    render(
+      <StrictMode>
+        <DuplicateAlert
+          client={client}
+          text="Comprar leche"
+          details={BASE_DETAILS}
+          disabled={false}
+          onConfirm={vi.fn()}
+          onCancel={vi.fn()}
+          onInvalidCursor={vi.fn()}
+        />
+      </StrictMode>,
+    );
+    const dialog = screen.getByRole("alertdialog");
+
+    // StrictMode's synthetic mount -> unmount -> remount cycle already ran
+    // during the render above. If `unmounted.current` was left `true` by
+    // that cycle (StrictMode-defeated isMounted ref), this trigger's
+    // response is silently dropped by the `unmounted.current` guard in
+    // `loadNextPage`'s `.then` handler.
+    await act(async () => {
+      latestObserver().trigger();
+    });
+
+    expect(dialog).toHaveTextContent("Ir a comprar leche");
+    expect(screen.getAllByRole("listitem")).toHaveLength(2);
   });
 });

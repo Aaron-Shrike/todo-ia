@@ -5807,3 +5807,41 @@ touched).
 
 **Test summary**: 3 new committed tests (2 for #1, 1 for #3), 1 existing test strengthened in place
 (#2, same scenario, stronger assertion). `apps/web` vitest total: 139/139 passing (was 136).
+
+### Second-order finding: fix #1's own `unmounted` ref defeated by StrictMode's dev double-invoke
+
+A fresh-context verification review of commit `9f6d9f6` (finding #1 above) found one CRITICAL
+regression the fix itself introduced. `apps/web/next.config.mjs` sets `reactStrictMode: true`; React
+18's StrictMode double-invokes every effect once per mount in dev (setup → cleanup → setup again) to
+catch non-idempotent effects. The `unmounted` ref's mount-only effect (`useEffect(() => { return () =>
+{ unmounted.current = true; }; }, [])`) never reset the ref back to `false` on the second setup, so
+after the very first StrictMode cycle the ref stayed permanently `true` for the rest of the component's
+real (still-mounted) lifetime — every subsequent `loadNextPage` resolution, including a legitimate
+`INVALID_CURSOR`, then hit the `unmounted.current` guard and was silently dropped. Dev-only (StrictMode's
+double-invoke doesn't run in production), but a real, currently-shipped defect in `next dev`, and
+uncaught because nothing in the suite rendered under `<StrictMode>` before this pass.
+
+**Genuine RED confirmed**: a new `DuplicateAlert.test.tsx` test ("StrictMode dev double-invoke: a
+scroll-triggered fetch after the synthetic remount still resolves and updates the list") renders
+`DuplicateAlert` inside React's `<StrictMode>`, triggers the sentinel after the synthetic mount/unmount/
+remount cycle has already run, and asserts the resulting page fetch still resolves and appends to the
+list. Against the unmodified (`9f6d9f6`) code it failed — the dialog stayed stuck on "Cargando más
+coincidencias..." because the response was silently dropped by the defeated `unmounted.current` guard.
+
+Fixed with the standard StrictMode-safe "isMounted ref" pattern: reset `unmounted.current = false` at
+the top of the effect body (not just declared once), so the effect's own second setup — StrictMode's
+synthetic remount — undoes the synthetic cleanup's `unmounted.current = true`, leaving the ref correctly
+`false` for the component's real, still-mounted lifetime. Traced through all three cases: real single
+mount (setup → `false`, real unmount → `true`), StrictMode dev double-invoke (setup → `false`, synthetic
+cleanup → `true`, synthetic remount setup → `false` again, matching the still-genuinely-mounted
+component), and real unmount after a StrictMode cycle (cleanup → `true`, correctly final).
+
+**Verification** (all green): `cd apps/web && npx vitest run` (140/140, up from 139 — the one new
+StrictMode test); `cd apps/web && npx tsc --noEmit` (clean).
+
+**Commit**: `fix(web): reset unmounted ref on StrictMode remount in infinite scroll`
+**SHA**: `9461690` (3 files changed, 83 insertions) — a new commit on `feat/pv-12-web-duplicate-alert`,
+on top of `9f6d9f6`/`d48973d`, not an amend of either. Files:
+`apps/web/src/features/phrases/hooks/useMatchesInfiniteScroll.ts` (1-line fix + comment),
+`apps/web/src/features/phrases/components/DuplicateAlert.test.tsx` (1 new test),
+`openspec/changes/phrase-validation/apply-progress.md` (this note).

@@ -90,6 +90,14 @@ export function useMatchesInfiniteScroll({
   const unmounted = useRef(false);
 
   useEffect(() => {
+    // Reset on every setup, not just declare-and-forget: StrictMode's dev
+    // double-invoke runs setup -> cleanup -> setup again on every mount, so
+    // the second setup here is what undoes the synthetic cleanup's
+    // `unmounted.current = true` and leaves the ref correctly `false` for
+    // the component's real (StrictMode-remounted) lifetime. Without this
+    // line the ref is permanently stuck `true` after the very first
+    // StrictMode cycle, even though the component is genuinely mounted.
+    unmounted.current = false;
     return () => {
       unmounted.current = true;
     };
