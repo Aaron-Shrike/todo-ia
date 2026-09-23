@@ -3343,9 +3343,14 @@ persisted" assertions reaching into repository internals (tracked for Unit 7b).
 | `services/api/tests/integration/test_endpoints_pgvector.py` | 29 / 3 |
 
 **Commit**: `fix(api): resolve Unit 7 4-lens review findings`
+**SHA**: `3a0c947`
 **Branch**: `fix/pv-07-review-fixes`
 **Base**: `develop` at `05406fc` (Unit 7/PR #22 already merged)
-**PR**: opened against `develop` (see "PR status" below once recorded).
+**PR**: **Opened.** `gh pr create --repo Aaron-Shrike/todo-ia --base develop --head
+fix/pv-07-review-fixes --title "fix(api): resolve Unit 7 4-lens review findings" --body-file ...`
+-> **PR #23**, <https://github.com/Aaron-Shrike/todo-ia/pull/23>. Confirmed via `gh pr view 23
+--json baseRefName,headRefName,state`: `baseRefName: "develop"`, `headRefName:
+"fix/pv-07-review-fixes"`, `state: "OPEN"`.
 
 ## Remaining Tasks (as of the end of this batch)
 
