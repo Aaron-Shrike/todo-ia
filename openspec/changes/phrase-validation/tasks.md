@@ -55,7 +55,7 @@ Rule from Unit 4 onward: branch N is cut from `develop` after PR N-1 has merged 
 | 8 | `feat/pv-08-embeddings-image` | `develop` | ST adapter, bounded, wiring, image | ~380 |
 | 9 | `feat/pv-09-calibration` (orchestrator-directed branch name, supersedes this table's original `test/pv-09-calibration` for the actual PR) | `develop` | ES/EN fixture scaffold only, BLOCKED (no torch wheel for macOS x86_64) | ~150 est., ~395 actual (scaffold only, no evidence) |
 | 10 | `feat/pv-10-web-scaffold` | `develop` | web scaffold + client | ~300 |
-| 11 | `feat/pv-11-web-machine-form` | `develop` | state machine + form | ~360 |
+| 11 | `feat/pv-11-web-machine-form` | `develop` | state machine + form -- `size:exception` user-approved (1141 hand-written lines, single PR) | ~360 est., 1141 actual |
 | 12 | `feat/pv-12-web-duplicate-alert` | `develop` | alert + infinite scroll | ~310 |
 | 13 | `feat/pv-13-web-list-copy` | `develop` | list, badges, copy | ~290 |
 | 14 | `feat/pv-14-compose-wiring` | `develop` | full compose | ~200 |
@@ -323,13 +323,38 @@ Covers: Spanish copy table: English code, Spanish UI (identifier/comment languag
 
 **Fix pass** (4-lens review, 8 findings, all fixed, folded into the existing commit(s) -- see apply-progress.md's Unit 10 section for the full report): Dockerfile's non-existent `.npmrc` COPY (docker build was broken outright), `client.ts` success-path defensive envelope validation (malformed/shape-drifted 2xx body no longer throws a raw `TypeError` or silently returns `undefined`), CI guard against `.only(` focused tests, CI now runs `typecheck`/`build`/`make types` drift check for the frontend job, Dockerfile runner stage now runs as a non-root user, `ErrorEnvelopeBody` now derived from the generated schema instead of hand-rolled, added `listMatches`/`savePhrase` happy-path tests and a `FALLBACK_ERROR_CODE`-trigger test, documented the `ErrorCode` cast's unenforced invariant.
 
-## Unit 11: Validation state machine and phrase form (~360)
+## Unit 11: Validation state machine and phrase form (~360) -- SHIPPED (`size:exception`, user-approved)
+
+**Resolution**: this unit stopped mid-batch to report a review-budget risk (both 11.1 and 11.2 complete
+and verified, measured at 1141 hand-written changed lines excluding `apps/web/package-lock.json`,
+~2.85x the 400-line cap — the largest overage of any unit this session) and proposed a split at the
+existing 11.1/11.2 task boundary (Option A: 11a 394 lines / 11b 747 lines, 11a clean but 11b still ~87%
+over) alongside a single-PR `size:exception` (Option B: 1141 lines). **The user explicitly chose
+Option B**: ship everything as ONE PR rather than the 11a/11b split, the same pattern already used for
+Units 6, 6b, 7, 8 and 10 this session. No further code changes were needed -- the implementation
+committed during the STOP (`e8eb2c6` `feat(web): validation state machine and phrase form`, plus the
+STOP report in `7d44ee6`) was already complete; only delivery (push + PR) was withheld pending this
+decision, now resolved. See apply-progress.md's Unit 11 section for the full review-budget table, the
+split proposal, and the TDD Cycle Evidence.
 
 Commit: `feat(web): validation state machine and phrase form`. Rollback: revert (web track only).
 Covers: Explicit staged state machine x3 (Validate unique, Validate duplicate, Invalid transition ignored); Staged progress narration x4 (Save directly unique, Save after validating, Save directly duplicate, Live region); Reset on text edit x3; Controls disabled in flight x2; Client-side input checks: Empty text, Over length, Counter counts code points; Error handling: Retry.
-- [ ] 11.1 RED then GREEN `apps/web/src/features/phrases/machine.ts` (reducer, table-driven test over every state x event including `EDIT_TEXT` from every state; invalid transitions ignored; states `idle, validating, ok, duplicate, revalidating, saving, error`; no state after the 201).
-- [ ] 11.2 RED then GREEN `PhraseForm.tsx` + `copy.es.ts` seeded with the form and progress keys ("Validando...", "Revalidando...", "Guardando...", "Frase guardada."), live region `role="status" aria-live="polite"`, code-point counter reading `NEXT_PUBLIC_PHRASE_MAX_LENGTH`; `PhraseForm.test.tsx` with a deferred-promise fake client asserting label order per scenario (blind save: Validando then Revalidando then NO label after 201; from `ok`: only Revalidando; confirm: only Guardando; 409 during `revalidating` never renders Guardando).
-- Verify: `cd apps/web && npx vitest run`.
+- [x] 11.1 RED then GREEN `apps/web/src/features/phrases/machine.ts` (reducer, table-driven test over every state x event including `EDIT_TEXT` from every state; invalid transitions ignored; states `idle, validating, ok, duplicate, revalidating, saving, error`; no state after the 201).
+- [x] 11.2 RED then GREEN `PhraseForm.tsx` + `copy.es.ts` seeded with the form and progress keys ("Validando...", "Revalidando...", "Guardando...", "Frase guardada."), live region `role="status" aria-live="polite"`, code-point counter reading `NEXT_PUBLIC_PHRASE_MAX_LENGTH`; `PhraseForm.test.tsx` with a deferred-promise fake client asserting label order per scenario (blind save: Validando then Revalidando then NO label after 201; from `ok`: only Revalidando; confirm: only Guardando; 409 during `revalidating` never renders Guardando).
+- Verify: `cd apps/web && npx vitest run`. All green -- see apply-progress.md.
+
+**Fix pass** (4-lens review, 8 findings, all fixed or explicitly deferred, folded into the existing code
+commit -- see apply-progress.md's "Unit 11 fix pass" section for the full report): committed regression
+tests for the previously-uncovered Cancelar button, the "Edit while validating" stale-response race, and
+unmount-mid-request (all three characterized already-correct behavior, no production bug found); committed
+a test asserting Confirmar/Cancelar are disabled while `saving` (already implemented, now asserted); the
+`error` state's `VALIDATE`/`SAVE` -> `validating` resolution is now commented in `machine.ts` itself
+(previously only in apply-progress.md); the duplicated `idle`/`error` transition logic is now a shared
+`startValidating` helper; the reducer's docstring no longer overclaims "table-driven"; the code-point
+counter is now wired via `aria-describedby` and queried through `getByLabelText(...).
+toHaveAccessibleDescription(...)` instead of `data-testid` (genuine RED->GREEN, the one finding with an
+actual behavior gap). `role="alertdialog"` on the duplicate section remains explicitly Unit 12 scope --
+not skipped, deliberately deferred.
 
 ## Unit 12: Duplicate alert with infinite-scroll matches (~310)
 

@@ -5120,3 +5120,411 @@ operate only on already-embedded vectors and the existing domain `cosine`/`polic
 **Status**: **BLOCKED, not done.** 0/2 tasks (9.1, 9.2) fully complete; 9.1 partially complete
 (scaffold only). Ready for `sdd-apply` to resume on a torch-capable (Apple Silicon/Linux/docker)
 environment -- no further scaffolding work is needed first, only execution.
+
+## Unit 11: Validation state machine and phrase form -- SHIPPED (`size:exception`, user-approved)
+
+**Resolution**: the user explicitly accepted the 1141-hand-written-line overrun (1916 total changed
+lines; 775 from `apps/web/package-lock.json` excluded per this file's own Notes convention) as
+`size:exception` for a **single PR**, not the proposed Option A (11a `machine.ts`+test, 394 lines,
+clean / 11b form+copy+infra, 747 lines, still ~87% over) -- the same pattern already used for Units 6,
+6b, 7, 8 and 10 this session. No further code changes were needed: both tasks were already complete and
+verified at STOP time (commits `e8eb2c6` + `7d44ee6`); only delivery (push + PR) was withheld pending
+this decision. The original STOP report is preserved below unedited, followed by the delivery steps
+taken after approval.
+
+**Both tasks (11.1, 11.2) are fully implemented and verified.** This is the FIRST stateful UI component
+in the codebase (previous units were either backend or the static/DI-only `client.ts`), and it measures
+well over budget even after excluding the generated lockfile — the largest overage of any unit this
+session (previous exceptions: Unit 6 826, Unit 6b 468, Unit 7 566, Unit 8 916, Unit 10 518; this unit's
+hand-written total is **1141**).
+
+**Branch/commit**: `feat/pv-11-web-machine-form`, cut from `develop` at `9a647dd` (confirmed
+up to date with `origin/develop` via `git fetch` + `git status --short --branch` before branching —
+no authoring-ahead needed, per this run's explicit instruction that `develop` was freshly confirmed
+caught up). Commits `e8eb2c6` (`feat(web): validation state machine and phrase form`) and `7d44ee6`
+(`docs(sdd): record Unit 11 review-budget stop`) — committed locally, then pushed and opened as a PR
+once `size:exception` was approved (see "Delivery" below).
+
+### Review budget — measured, far over budget
+
+`git diff --cached --numstat` at commit time:
+
+| File | + | − | Generated? |
+| --- | --- | --- | --- |
+| `apps/web/package-lock.json` | 775 | 0 | **yes — `npm install` output** (added `@testing-library/react`, `@testing-library/dom`, `@testing-library/jest-dom`, `jsdom`) |
+| `apps/web/package.json` | 4 | 0 | no |
+| `apps/web/src/features/phrases/components/PhraseForm.test.tsx` | 381 | 0 | no |
+| `apps/web/src/features/phrases/components/PhraseForm.tsx` | 281 | 0 | no |
+| `apps/web/src/features/phrases/machine.test.ts` | 227 | 0 | no |
+| `apps/web/src/features/phrases/machine.ts` | 167 | 0 | no |
+| `apps/web/src/i18n/copy.es.ts` | 45 | 0 | no |
+| `apps/web/src/test-setup.ts` | 16 | 0 | no |
+| `apps/web/vitest.config.ts` | 19 | 1 | no |
+| **Total** | **1915** | **1** | **1916 changed lines** |
+
+Excluding `package-lock.json` (775 lines, `npm install` output) per this file's own Notes convention:
+**1916 − 775 = 1141 hand-written changed lines — ~2.85x the 400-line cap.**
+
+### Why this unit is genuinely large
+
+- `machine.ts` (167) + its table-driven test (`machine.test.ts`, 227 — 81 generated test cases over
+  7 states x 11 events, plus intent-branching triangulation and an explicit "no state after the 201"
+  assertion) are already 394 lines on their own for a *pure function*, because the phrase-ui spec
+  explicitly demands exhaustive (state x event) coverage, not a happy-path subset.
+- `PhraseForm.tsx` (281) is the first component with real side effects in this codebase: a reducer, a
+  ref-tracked in-flight generation guard (via effect-cleanup `cancelled`), two branches of API calls
+  (`validatePhrase`/`savePhrase`), duplicate-detail normalization from two different response shapes
+  (`_ValidateData` and the 409's `ApiError.details`), and a fully accessible form (live region, counter,
+  disabled-in-flight controls). None of this shrinks without dropping a spec requirement.
+- `PhraseForm.test.tsx` (381) exercises all four required progress-label-order scenarios (blind save,
+  from `ok`, confirm, 409-during-revalidating) with a deferred-promise fake client (each one needs
+  explicit `waitFor` assertions at multiple in-flight checkpoints to prove the label is genuinely tied
+  to a real pending request, not a timer), plus the other scenarios this unit's own "Covers:" line
+  names: reset-on-edit (2), controls-disabled-in-flight (2), and the three client-side input checks
+  (empty/over-length/code-point counting).
+- The jsdom + `@testing-library/react` + `@testing-library/jest-dom` test infrastructure (`vitest.config.ts`,
+  `test-setup.ts`, `package.json`/`package-lock.json`) is a one-time cost this unit pays because it is
+  the first component test in the repo — Units 12 and 13 reuse it for free.
+
+### Split proposal — two options, no exception self-authorized
+
+**Option A — split at the existing 11.1/11.2 task boundary (two PRs):**
+
+| Slice | Files | Hand-written lines | Budget |
+| --- | --- | --- | --- |
+| **11a** (state machine) | `machine.ts`, `machine.test.ts` | **394** | ✅ under 400 |
+| **11b** (form + test infra) | `package.json`, `vitest.config.ts`, `test-setup.ts`, `copy.es.ts`, `PhraseForm.tsx`, `PhraseForm.test.tsx` (+ `package-lock.json`, excluded) | **747** | ❌ still ~87% over |
+
+11a ships clean with no exception needed. 11b still requires `size:exception` (747 lines) — smaller
+than the full unit (1141) but still substantial, because `PhraseForm.tsx` + even a minimal required
+test file already exceed 400 together (see "Why this unit is genuinely large" above) before adding the
+extra Covers-line scenarios or the test infrastructure.
+
+**Option B — `size:exception` for the whole unit as a single PR (1141 hand-written lines):**
+matches this unit's own framing in tasks.md/design.md (`Commit: feat(web): validation state machine
+and phrase form` — one deliverable, one conventional commit), and this session's own precedent of
+treating a cohesive first-of-its-kind deliverable as one exception rather than an artificial split
+(Unit 8's sentence-transformers adapter + wiring + image bake, 916 lines, went the same way). This is
+simpler to review as one coherent story (the reducer AND the component that drives it, verified
+together) but is the largest single exception this session by a wide margin.
+
+**Not proposed**: further splitting `PhraseForm.tsx` itself (e.g., ship blind-save/ok/error first,
+add duplicate/confirm/409 handling in a follow-up PR touching the same file again) — this would get
+every slice under 400, but restructures the unit beyond what tasks.md's own 11.1/11.2 boundary
+describes, and splits one component's behavior and its tests across two commits that both touch the
+same lines. Available if the maintainer prefers it, but not recommended by this batch without being
+asked — mentioned here only for completeness, per the instruction not to self-authorize scope changes
+either.
+
+**Action needed before delivery**: confirm Option A (this batch will then `git reset --soft` the local
+commit and re-commit as two, cutting `feat/pv-11b-*` from `feat/pv-11a-*`) or confirm `size:exception`
+for the current single commit (Option B), then push and open the PR(s).
+
+### Task 11.1 — `machine.ts`, the pure state-machine reducer
+
+`apps/web/src/features/phrases/machine.ts` — `phraseMachineReducer(state, event)`, no React, no
+`fetch`, 100% pure (design.md's Frontend layout). States `idle | validating | ok | duplicate |
+revalidating | saving | error`; `validating` carries a hidden `intent: "validate" | "save"` context so
+`VALIDATE_OK_UNIQUE` can decide between landing on `ok` (Validar was pressed) or proceeding straight to
+`revalidating` (a blind Guardar's validate leg just finished) — the only place intent matters, per
+design.md's state table. Every other (state, event) pair not explicitly handled returns the **exact
+same state reference** (referential equality, not just structural equality), which is what proves at
+the reducer level that an invalid transition can never trigger a request.
+
+**Design decision not fully explicit in design.md, resolved from the phrase-ui spec directly**:
+design.md's state table lists `error | VALIDATE/SAVE/EDIT_TEXT | idle/retry` ambiguously (target
+written as "idle/retry"). Two readings are possible: (a) all three events just reset to `idle` from
+`error` (requiring a second press to actually retry), or (b) `VALIDATE`/`SAVE` from `error` behave
+like they do from `idle` (start a new request directly) while only the dedicated "Reintentar" button
+resets to `idle` without retrying. This batch implemented (b): `error + RETRY -> idle` (matches the
+phrase-ui spec's own canonical table row verbatim: `error | Reintentar / edit | idle (text kept)`, and
+its "Retry" scenario, which says the state "returns to idle", not that it re-validates) and
+`error + VALIDATE/SAVE -> validating` directly (sensible product behavior: pressing Validar/Guardar
+again after an error should not require an extra do-nothing click, and "Controls disabled in flight"
+already says Validar/Guardar are genuinely enabled, not just visible, while in `error`). No given
+scenario in either spec contradicts this reading; noted here rather than picked silently.
+
+`machine.test.ts`: table-driven over the full 7-state x 11-event matrix (77 generated cases via nested
+`describe`/`it` over `STATES`/`EVENTS` maps and an `EXPECTED` lookup table), plus 2 triangulation tests
+for the intent branch, 1 explicit "no state after the 201" test (`SAVE_OK` from both `revalidating` and
+`saving` lands on `idle`), and 1 `initialState` shape test — 81 tests total, all real assertions (every
+"IGNORED" case asserts `toBe` referential equality against the exact input state, not a tautology).
+
+### Task 11.2 — `PhraseForm.tsx`, `copy.es.ts`, and the jsdom test infrastructure
+
+- `apps/web/src/i18n/copy.es.ts` — seeded with only the keys `PhraseForm` actually renders this unit
+  (`input.*`, `button.*`, `progress.*`, `validation.ok`, `duplicate.title`, `saved.success`,
+  `error.tooLong`, `error.generic`) using the exact Spanish values from the phrase-ui spec's copy
+  table. Deliberately partial: Unit 13 (`copy.es.ts` task 13.1) completes the remaining keys
+  (`duplicate.mostSimilar`/`score`/`matchesTitle`/`loadingMore`/`loadMoreError`, `badge.*`, `list.*`,
+  the other `error.*` codes) and adds the snapshot test comparing every value against the spec table
+  verbatim. This file's shape (nested objects mirroring the table's dotted keys) is chosen so Unit 13
+  only ADDS keys, never restructures.
+- `apps/web/src/features/phrases/components/PhraseForm.tsx` — binds `phraseMachineReducer` to the
+  injected `PhraseApiClient` (same DI seam as `client.ts`'s own tests: a `client` prop, not the
+  `apiClient` singleton, so tests never touch real `fetch`). A single `useEffect` keyed on
+  `state.status` (not on the event that produced it) issues exactly one request per in-flight status —
+  `validating` calls `validatePhrase`, `revalidating`/`saving` call `savePhrase` with
+  `confirm_duplicate: state.status === "saving"` — and relies on the effect's own cleanup-closure
+  `cancelled` flag (the standard React data-fetching pattern) to discard a stale response after
+  `EDIT_TEXT`/`CANCEL`/`RETRY` moved the state away, with no extra generation-counter ref needed. The
+  three staged progress labels (`progress.validating/.revalidating/.saving`) are derived **purely from
+  `state.status`** on every render (`progressMessage`), never set imperatively — this is what makes
+  "no label after the 201" and "only Guardando during confirm" structurally guaranteed rather than
+  timing-dependent: a label can never outlive the state it belongs to. A separate `announcement` piece
+  of state holds only the transient post-201 "Frase guardada." text (`progressMessage ?? announcement`
+  in the live region). The duplicate section (title + Confirmar/Cancelar) renders from a small
+  `duplicateDetailsOf(state)` helper covering both `duplicate` and `saving` (so it stays visible,
+  dimmed via disabled buttons, through the confirming call — design.md: "Confirmar and Cancelar
+  disabled while `saving`"). The 409 payload (`ApiError.details: Record<string, unknown> | null`) is
+  cast to the validate-shaped structure the duplicate-confirmation spec's "409 payload" requirement
+  guarantees, not runtime-validated — the same documented, unenforced-by-the-type-system invariant
+  `client.ts` already accepted for its `ErrorCode` cast (Unit 10 fix pass).
+  Error rendering is intentionally minimal this unit (`copy.error.generic` for every `FAIL`) — the
+  exhaustive per-code `errorCopy` map is explicitly Unit 13's task (13.1); Unit 11 only needs *an*
+  error state to exist so the "Retry" scenario (this unit's own Covers line) is real.
+- `apps/web/src/features/phrases/components/PhraseForm.test.tsx` — 12 tests on a hand-rolled
+  deferred-promise fake `PhraseApiClient` (`createDeferred<T>()` + `vi.fn(() => deferred.promise)`,
+  same "MSW rejected" convention as `client.test.ts`): the four required progress-label-order scenarios
+  (blind save: Validando -> Revalidando -> no label after 201, with `saved.success` asserted instead;
+  from `ok`: only Revalidando, `validatePhrase` asserted called exactly once; confirm: only Guardando,
+  `savePhrase` asserted called with `confirm_duplicate: true`; 409 during `revalidating`: Guardando
+  never rendered, alert re-populated from the error's `details`), plus the live region's
+  `role="status"`/`aria-live="polite"` attributes, 2 reset-on-edit tests (`ok` and `duplicate` both
+  close on edit), 2 controls-disabled-in-flight tests (double-click sends one request; error
+  re-enables controls with text preserved), and 3 client-side input-check tests (empty/whitespace
+  disables submission, over-length shows the exact spec message and disables submission, and a 3-emoji
+  string against `maxLength={3}` proves code-point counting — not UTF-16 units — via
+  `[...text.trim()].length`).
+- `apps/web/vitest.config.ts` — switched `environment` from `"node"` to `"jsdom"` (a safe global
+  switch: jsdom is a superset of what the two existing node-environment test files need, confirmed by
+  re-running the full suite afterward — all previously-passing tests still pass), added
+  `setupFiles: ["./src/test-setup.ts"]`, and a `resolve.alias` for `@/*` -> `./src/*` (mirrors
+  `tsconfig.json`'s path alias; Vite/vitest do not read tsconfig `paths` without a plugin, and adding
+  `vite-tsconfig-paths` was rejected as an extra dependency for one alias, per this project's own
+  "MSW rejected: extra dep for no gain at this size" precedent).
+- `apps/web/src/test-setup.ts` — new: imports `@testing-library/jest-dom/vitest` (registers
+  `toBeInTheDocument`/`toHaveTextContent`/etc. as `expect` matchers) and explicitly calls
+  `@testing-library/react`'s `cleanup()` in an `afterEach` — required because `test.globals` is not
+  enabled in this project (matches `client.test.ts`'s explicit `vi` import convention instead of
+  ambient jest-style globals), so `@testing-library/react`'s own auto-cleanup-on-Jest-global-afterEach
+  never self-registers. **Genuine bug caught by this batch's own tests**: without this, the second and
+  later component tests in the same file failed with "multiple elements found" — the previous test's
+  DOM was still mounted. Confirmed by re-running `PhraseForm.test.tsx` before and after adding the
+  `afterEach(cleanup)` call.
+- `apps/web/package.json` / `apps/web/package-lock.json` — added `@testing-library/react@16.3.3`,
+  `@testing-library/dom@10.4.2`, `@testing-library/jest-dom@7.0.1`, `jsdom@26.1.0` as devDependencies.
+  **Genuine environment finding**: `jsdom@30.1.1` (npm's `latest` at install time) declares
+  `engines.node: "^22.22.2 || ^24.15.0 || >=26.0.0"`, incompatible with this environment's Node
+  `v22.17.1` (`npm warn EBADENGINE` on five transitive packages). Pinned `jsdom@26.1.0` instead
+  (`engines.node: ">=18"`) — zero warnings, same API surface used here, and still current (jsdom 26 was
+  released well within pgvector/Next.js's own currency window this project already targets elsewhere).
+
+### TDD Cycle Evidence
+
+| Task | Test File | Layer | Safety Net | RED | GREEN | TRIANGULATE | REFACTOR |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| 11.1 | `machine.test.ts` | Unit (pure reducer, no DOM) | N/A (new file) | ✅ Written first — imported `phraseMachineReducer` from a `machine.ts` that did not exist yet; confirmed failure was `Failed to resolve import "./machine"`, not a typo | ✅ 81/81 passed after writing `machine.ts` | ✅ 81 generated cases (7 states x 11 events) + 2 explicit intent-branch cases + the SAVE_OK/no-state-after-201 case | ➖ None needed — the switch-per-status structure was already minimal on first GREEN, no duplication to extract |
+| 11.2 | `PhraseForm.test.tsx` | Component (jsdom + @testing-library/react) | N/A (new file); jsdom/testing-library infra added in the same batch, confirmed working via the pre-existing 11/11 (`client.test.ts` + `smoke.test.ts`) still passing under the new `jsdom` environment before writing any new test | ✅ Written first — imported `PhraseForm` from a component that did not exist yet; confirmed failure was `Failed to resolve import "./PhraseForm"` | ✅ 12/12 passed after writing `PhraseForm.tsx` — but the FIRST full run surfaced 3 failures (see below), fixed as part of reaching real GREEN, not a separate task | ✅ 4 progress-label scenarios (blind/ok/confirm/409) + 2 reset-on-edit + 2 controls-disabled + 3 input-check cases — 11 distinct behaviors beyond the minimal happy path | ✅ Replaced an imperative `setLiveMessage(...)` call at each async checkpoint (bug-prone: it had left `Validando...` lingering into the `ok` state, see below) with a single derived `progressMessage` computed straight from `state.status`, plus a small `duplicateDetailsOf()` extraction replacing a redundant `showDuplicate && duplicateDetails` double-check |
+
+**Genuine bug caught mid-GREEN, not just at the end**: the first implementation set the live-region
+text imperatively at each `useEffect` branch entry (`setLiveMessage(copy.progress.validating)` etc.).
+3 of 12 tests failed with `Validando...` still present after the state had already moved to `ok` /
+`duplicate` / past a 409 — because nothing ever explicitly cleared it on those transitions. Root cause:
+imperative "set on the way in" has no matching "clear on the way out" for every possible exit. Fixed by
+making the progress label a **pure function of `state.status`** instead (`progressMessage` inline
+ternary) so it is automatically absent the instant the status is no longer in-flight, with a separate
+`announcement` piece of state reserved only for the post-201 success text. Re-ran the full suite after
+the fix: 12/12 passed, then the full project suite (104/104) to confirm nothing else regressed.
+
+**Total tests written**: 93 (81 + 12)
+**Total tests passing**: 93/93
+**Layers used**: Unit (81, `machine.test.ts`), Component (12, `PhraseForm.test.tsx`)
+**Pure functions created**: 5 (`phraseMachineReducer`, `codePointLength`, `toDuplicateDetails`,
+`detailsFromApiError`, `toErrorInfo`) plus `duplicateDetailsOf` (a small render-time selector)
+
+### Verification — all commands green
+
+```
+$ cd apps/web && npx vitest run
+Test Files  4 passed (4)
+     Tests  104 passed (104)
+
+$ cd apps/web && npx tsc --noEmit
+(no output — clean)
+
+$ cd apps/web && npm run build
+✓ Compiled successfully
+✓ Generating static pages using 4 workers (3/3)
+
+$ cd services/api && .venv/bin/python -m pytest tests/unit tests/contract_suite tests/contract -m "not integration and not slow" -q
+286 passed, 1 deselected   # identical to every prior unit's baseline — this unit touches no backend code
+```
+
+### Deviations from design / tasks.md
+
+- **`error` state's `VALIDATE`/`SAVE` transitions**: resolved an ambiguity in design.md's state table
+  in favor of the phrase-ui spec's own canonical table (see "Task 11.1" section above) — documented,
+  not silent.
+- **Scope**: `app/page.tsx` is NOT wired to render `PhraseForm` in this unit — tasks.md's own
+  dependency table lists the `force-dynamic` first paint (which is where the page would compose
+  `PhraseForm` with `PhraseList`) as Unit 13's scope, matching Unit 10's placeholder `page.tsx`
+  precedent ("the real first paint... is wired in Unit 13"). `PhraseForm` is fully implemented and
+  tested but currently unused by any page — expected for this unit, not an oversight.
+- **`copy.es.ts` is intentionally partial** (documented in the file's own header comment and above) —
+  Unit 13 completes it. This is the task's own wording ("seeded with the form and progress keys"), not
+  a deviation.
+- **No separate `hooks/usePhraseValidation.ts`**: design.md's Frontend directory sketch names this file,
+  but tasks.md 11.2 only lists `PhraseForm.tsx` + `copy.es.ts` as deliverables. The reducer-to-client
+  binding (the `useEffect` keyed on `state.status`) was kept inline in `PhraseForm.tsx` rather than
+  extracted to a separate hook file not enumerated in the task, to avoid overstepping this unit's own
+  scope boundary (and adding more lines to an already over-budget unit). Extracting it later, if Unit
+  12/13 need to reuse the same binding logic, is a pure refactor with no behavior change.
+- **No separate `DuplicateAlert.tsx`**: Unit 12's own task (12.2) explicitly creates
+  `DuplicateAlert.tsx` and `useMatchesInfiniteScroll.ts`. `PhraseForm.tsx` renders a minimal inline
+  duplicate section (title + Confirmar/Cancelar) sufficient for this unit's required scenarios
+  (confirm/cancel/409 label ordering) without the match list, infinite scroll, percentage display, or
+  `role="alertdialog"` semantics — all explicitly Unit 12 scope per tasks.md's own Covers line for that
+  unit ("Duplicate alert x7"). Unit 12 is expected to replace this inline block with the real
+  `DuplicateAlert` component.
+- **`error` state rendering is generic-only** (`copy.error.generic` for every failure) — the exhaustive
+  `errorCopy: Record<ErrorCode, CopyKey>` map is explicitly Unit 13's task (13.1), not a gap introduced
+  here.
+
+### Delivery (after `size:exception` approval)
+
+No further code changes were made after approval — the STOP report above is preserved unedited. Only
+the withheld delivery step ran:
+
+```
+$ git push -u origin feat/pv-11-web-machine-form
+ * [new branch]      feat/pv-11-web-machine-form -> feat/pv-11-web-machine-form
+
+$ gh pr create --base develop --head feat/pv-11-web-machine-form \
+    --title "feat(web): validation state machine and phrase form" --body-file ...
+https://github.com/Aaron-Shrike/todo-ia/pull/28
+```
+
+PR #28 (`feat/pv-11-web-machine-form` -> `develop`), body states the `size:exception` approval
+explicitly (1141 hand-written lines, largest exception this session), the two-option split proposal
+that was offered, the dependency diagram, the three genuine findings from this batch (live-region
+bug, RTL auto-cleanup gap, jsdom/Node engine mismatch), and the design-decision note on `error`'s
+`VALIDATE`/`SAVE` transitions.
+
+### Status
+
+**2/2 tasks (11.1, 11.2) implemented, verified, and delivered.** `size:exception` approved by the user
+for a single PR (1141 hand-written lines). Commits `e8eb2c6` + `7d44ee6` pushed to
+`feat/pv-11-web-machine-form`; PR #28 opened against `develop`. Ready for `sdd-verify`.
+
+## Unit 11 fix pass (4-lens review: risk + resilience + readability + reliability)
+
+A follow-up apply batch on PR #28 (still open, not yet merged) fixed 8 confirmed findings from an
+adversarial 4-lens review of Unit 11's shipped scope. Folded into the original code commit (`git reset
+--soft` to `9a647dd`, the commit immediately before Unit 11's own three commits, then re-split into one
+code commit and one docs commit) — not a separate fixup commit — per instruction. Strict TDD followed:
+for every new test, the test was run against the unmodified (pre-fix-pass) code first to check for a
+genuine RED before touching production code.
+
+1. **[Reliability CRITICAL] Cancelar had zero test coverage.** Added
+   `PhraseForm.test.tsx`'s "duplicate alert: Cancelar" test: reaches `duplicate`, clicks Cancelar,
+   asserts `savePhrase` was never called, the duplicate section is gone, the text is preserved, and
+   Validar/Guardar are enabled again. **Ran against unmodified code first and it PASSED immediately** —
+   `handleCancel` -> `dispatch({type:"CANCEL"})` -> the `duplicate`/`CANCEL` -> `idle` transition was
+   already correct; this is a characterization/regression test for already-correct shipped behavior, not
+   a bug fix. No production code changed for this finding.
+2. **[Reliability CRITICAL] "Edit while validating" (the stale-response race) was untested at the
+   component level.** Added a deferred-promise test in `PhraseForm.test.tsx`'s "reset on text edit" block
+   (between "Edit after validating" and "Edit during duplicate", matching the spec's own ordering):
+   starts validating, fires an edit before the validate promise resolves, then resolves it with a
+   `DUPLICATE_RESULT` (deliberately the "worse" outcome, to make a leak maximally visible), and asserts
+   no stale duplicate/ok rendering, no stale progress label, and the edited text is preserved. **Ran
+   against unmodified code first and it PASSED immediately** — the `cancelled` closure flag in the
+   `useEffect` (machine.ts's caller, `PhraseForm.tsx`) already discarded the stale response correctly.
+   Characterization test; no production code changed for this finding.
+3. **[Reliability WARNING] The `saving`-disabled state for Confirmar/Cancelar was implemented but never
+   asserted.** Added a test in "controls disabled in flight" that reaches `duplicate`, clicks Confirmar,
+   and asserts both Confirmar and Cancelar are disabled while `saving`. **Ran against unmodified code
+   first and it PASSED immediately** — `disabled={state.status === "saving"}` was already correctly
+   wired on both buttons. Characterization test; no production code changed for this finding.
+4. **[Readability WARNING] The `error` state's `VALIDATE`/`SAVE` -> `validating` (skipping `idle`)
+   resolution was undocumented in source.** Added a 5-line comment directly above that branch in
+   `machine.ts`'s `case "error":`, explaining design.md's table is ambiguous there and stating the chosen
+   resolution explicitly (Validar/Guardar re-validate/re-save directly from `error`; EDIT_TEXT/RETRY reset
+   to `idle`) — matching the phrase-ui spec's "Retry" scenario. Comment-only; `machine.test.ts`'s full
+   81-test suite still passes unchanged, confirming no behavior change.
+5. **[Readability SUGGESTION] Duplicated `{status: "validating", intent: ...}` transition logic between
+   `idle` and `error`.** Extracted `startValidating(intent: ValidateIntent): MachineState` and used it in
+   both `case "idle"` and `case "error"` (three call sites total, including the reused `validate`/`save`
+   pair in `error`). `machine.test.ts`'s 81 tests re-run unchanged and green, proving the extraction is
+   behavior-preserving (approval-style refactor).
+6. **[Readability SUGGESTION] The reducer's docstring overclaimed "table-driven".** Reworded to "one
+   branch per (state, event) pair, mirroring design.md's state table" — no code change, comment only.
+7. **[Reliability WARNING, cheap] The code-point counter used `getByTestId` instead of a semantic query.**
+   This one WAS cheap and clearly correct, so it was fixed (not deferred): added `aria-describedby="phrase-
+   counter"` on the textarea, gave the counter `<span>` `id="phrase-counter"` (dropping `data-testid`), and
+   switched the "counts Unicode code points" test to
+   `expect(screen.getByLabelText(copy.input.label)).toHaveAccessibleDescription("3/3")`. **Genuine RED
+   confirmed**: run against the unmodified code, the test failed with `toHaveAccessibleDescription()`
+   expecting `"3/3"` and receiving `""` (no `aria-describedby` existed yet); wiring the attribute turned it
+   GREEN. Real accessibility improvement, not just a test-query change.
+8. **[Resilience WARNING] Unmount-mid-request had zero COMMITTED test coverage.** Added a committed test,
+   "unmount mid-request": unmounts the component while a `validatePhrase` deferred promise is still
+   pending, resolves it afterward, and asserts `console.error` was never called (spied and mocked for the
+   duration). **Ran against unmodified code first and it PASSED immediately** — the `cancelled` closure
+   flag already guarded every branch of the effect (validating/revalidating/saving) against a post-unmount
+   `dispatch`. Characterization test; no production code changed for this finding.
+
+**On the "genuine RED" requirement for findings #1, #2, #3 and #8**: all four are pre-existing,
+already-correct, already-shipped behavior with a pure test-coverage gap (confirmed by the review itself —
+none of the four findings claimed a bug, only "no test exists"). Each new test was run against the
+unmodified code FIRST, per the strict-TDD instruction, specifically to check whether it would fail; none
+did. Manufacturing an artificial RED (e.g. temporarily breaking working production code) would have
+contradicted the actual, verified state of the code and added no information. These four are
+characterization/approval tests in the sense strict-tdd.md already describes for refactor-safety nets:
+they PASS immediately because they capture correct existing behavior, and now guard it going forward.
+Finding #7 is the one item in this batch with a genuine RED->GREEN cycle (see above).
+
+**Verification** (all green): `cd apps/web && npx vitest run` (108/108, up from 104 — 4 new tests: #1,
+#2, #3, #8; test count for #7 unchanged, an existing test was rewritten, not added); `cd apps/web && npx
+tsc --noEmit` (clean); `cd apps/web && npm run build` (Next.js 16.3.6 Turbopack, compiled and
+prerendered successfully); backend regression check `cd services/api && .venv/bin/python -m pytest
+tests/unit tests/contract_suite tests/contract -m "not integration and not slow" -q` (286 passed, 1
+deselected — unaffected, no backend files touched).
+
+**Explicitly deferred / not fixed in this batch** (per the fix-pass instructions, out of scope for a
+Unit 11 fix pass):
+- `PhraseForm.tsx` concentrating concerns design.md's directory sketch splits into
+  `hooks/usePhraseValidation.ts` — deliberate scope call already documented above; extraction stays
+  Unit 12/13's job.
+- No production error observability (Sentry/logging) anywhere in the frontend — pre-existing,
+  cross-cutting, out of scope.
+- Every error code collapsing to `copy.error.generic` — already tracked in-code as deferred to Unit 13
+  (see the comment above `toErrorInfo` in `PhraseForm.tsx`).
+- In-flight requests never aborted via `AbortController` — low severity, latent, noted only.
+- The `eslint-disable-next-line react-hooks/exhaustive-deps` for future page integration — not
+  actionable until a later unit wires `PhraseForm` into a page; noted only.
+- No `role="alertdialog"`/`role="alert"` on the inline duplicate section — **explicitly Unit 12's
+  `DuplicateAlert.tsx` scope** (full alert component with role, percentage, match list). Unit 12 MUST
+  NOT skip this just because a duplicate section already renders today — the current inline block is a
+  deliberately minimal placeholder, not the real alert.
+- "Save directly, duplicate" component-level test gap — low risk, already covered by the equivalent
+  Validar-duplicate path; noted only, not worth the added test weight now.
+- Any Unit 12+ scope in general — untouched (`DuplicateAlert.tsx`, infinite scroll, `errorCopy` map).
+
+### Fix-pass TDD Cycle Evidence
+
+| Finding | Test File | Layer | Safety Net | RED | GREEN | Notes |
+|---|---|---|---|---|---|---|
+| #1 Cancelar coverage | `PhraseForm.test.tsx` | Component | ✅ 16/16 (12 pre-existing + this) | ➖ N/A — ran first, passed immediately (characterization) | ✅ Passed | No prod change |
+| #2 Edit while validating | `PhraseForm.test.tsx` | Component | ✅ | ➖ N/A — ran first, passed immediately (characterization) | ✅ Passed | No prod change |
+| #3 saving-disabled assertions | `PhraseForm.test.tsx` | Component | ✅ | ➖ N/A — ran first, passed immediately (characterization) | ✅ Passed | No prod change |
+| #4 error-branch comment | — (comment only) | — | ✅ 81/81 `machine.test.ts` unchanged | N/A | N/A | Doc-only, behavior-preserving |
+| #5 `startValidating` extraction | `machine.test.ts` (existing suite, approval) | Unit | ✅ 81/81 | N/A (refactor) | ✅ 81/81 still passing | Approval-style, behavior-preserving |
+| #6 docstring reword | — (comment only) | — | N/A | N/A | N/A | Doc-only |
+| #7 accessible counter | `PhraseForm.test.tsx` | Component | ✅ | ✅ Confirmed failing (`toHaveAccessibleDescription` expected `"3/3"`, got `""`) | ✅ Passed after `aria-describedby` wiring | Real RED->GREEN |
+| #8 unmount mid-request | `PhraseForm.test.tsx` | Component | ✅ | ➖ N/A — ran first, passed immediately (characterization) | ✅ Passed | No prod change |
+
+**Test summary**: 4 new committed tests (#1, #2, #3, #8), 1 rewritten test (#7, same behavior asserted
+via an accessible query instead of `data-testid`), 1 refactor with an existing 81-test approval suite
+(#5), 2 comment-only changes (#4, #6). `apps/web` vitest total: 108/108 passing (was 104).
