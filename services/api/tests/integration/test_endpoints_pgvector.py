@@ -66,10 +66,21 @@ _QUERY_TEXT = "query text"
 
 
 def _database_url() -> str:
-    # `os.environ.setdefault(...)` above already guarantees `DATABASE_URL` is
-    # set by the time any fixture calls this -- no second fallback literal
-    # needed here (fix-pass, review finding #4; see the comment above).
-    base = os.environ["DATABASE_URL"]
+    # Fix-pass, review finding #4 previously dropped this fallback, reasoning
+    # that the module-level `setdefault(...)` above always wins. That's true
+    # in isolation, but not against `tests/contract/conftest.py`: when
+    # `tests/contract` collects first (alphabetically before `integration`),
+    # ITS placeholder wins the `setdefault` race here, and its own
+    # `pytest_collection_finish` hook then deletes `DATABASE_URL` entirely
+    # once collection finishes -- by the time this function actually runs
+    # (fixture-setup time, after collection), the var is gone and a bare
+    # `os.environ["DATABASE_URL"]` raises `KeyError`. `tests/contract/
+    # conftest.py`'s own docstring already assumes this function reads the
+    # var lazily via `.get(...)` with a real fallback -- restored here to
+    # match that assumption instead of contradicting it.
+    base = os.environ.get(
+        "DATABASE_URL", "postgresql+psycopg://todo_ia:todo_ia@localhost:5432/todo_ia"
+    )
     return base.rpartition("/")[0] + "/phrases_test"
 
 

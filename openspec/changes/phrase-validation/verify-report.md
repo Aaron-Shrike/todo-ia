@@ -1358,3 +1358,292 @@ tasks.md Unit 7b section (lines 246-253): Commit/Rollback lines present, Covers 
 **PASS WITH WARNINGS**
 
 All 3 Unit 7 tasks (7.1-7.3) are complete and independently re-confirmed: every named scenario in Unit 7 shipped Covers line has a passing covering test (re-run live, not trusted from the report), all three exact Verify commands reproduce their documented counts precisely (50/232/35 passed), all quality gates (ruff, mypy, lint-imports) are clean, the import-linter workaround introduces no format drift in the 409 envelope (verified byte-for-byte), the concurrent-save test is a genuine unsynchronized two-thread race that passed 5/5 standalone runs plus 3 more combined-command runs with zero flakiness, the DATABASE_URL defensive guard does not reintroduce the Unit 6 fake-placeholder pollution bug (traced through both mechanisms, verified empirically in both collection orders), the size:exception (566 changed lines) is accurately and consistently documented across tasks.md/apply-progress.md/PR #22 with an exact independent re-measurement match, no AI/Claude co-authorship appears in either commit, and Unit 7b is genuinely unstarted with no silent partial progress. The single WARNING is a latent (currently harmless) ordering fragility between two independently-written test-env-mutation mechanisms, not a functional defect.
+
+---
+
+## Full-System Verification Pass (all 17 units, cross-cutting)
+
+**Change**: phrase-validation
+**Scope**: this section is the requested comprehensive pass across every unit (0, 1, 2, 2b, 2c,
+2d, 3a-3d, 4, 5a, 5b, 6, 6b, 7, 7b, 8, 9, 10, 11, 12, 13a-13c, 14, 15, 16, 16b) now that all are
+merged to `develop`. It does not repeat the exhaustive per-unit depth already on record above
+for Units 3, 4, 5a, 5b, 6, 6b and 7 (each independently re-executed and cross-checked in a prior
+pass) -- those sections stand as-is and are treated as authoritative history for that scope. This
+section instead (a) re-runs the full test/lint/type/import suite fresh, from a clean checkout
+state, for real, (b) verifies task completeness across every unit, (c) targets the specific
+cross-cutting invariants and deferred-item follow-through named in this pass's brief, and (d)
+spot-verifies the units that had no prior dedicated verify section (0, 1, 2, 2b, 2c, 2d, 7b, 8, 9,
+10, 11, 12, 13a-13c, 14, 15, 16, 16b).
+
+**Correction to the task brief**: the brief this pass was launched with stated "this is the first
+verify pass for this change -- no verify-report.md exists yet." That is factually incorrect --
+verify-report.md already existed at 1360 lines with detailed, independently-re-executed
+verification sections for Units 3, 4, 5a, 5b, 6, 6b and 7 (see above). This pass extends that file
+rather than replacing it, per this skill's own graceful-handling instruction ("read it and decide
+whether to extend or replace based on what's actually there").
+
+### Task completeness (tasks.md, full re-read)
+
+Every task checkbox from Unit B.0 through Unit 16b was read directly (not sampled) in this pass.
+All are `[x]` except one: task 8.4 (`docker build -t todo-ia-api ...`, image size, p50/p95
+`embed()` timing, warm-vs-cold `pytest -m slow` timing, write results to
+`docs/evidence/runtime-measurements.md`) is still literally `[ ]` in tasks.md, originally BLOCKED
+by "no docker in this environment." This is a real, live gap, not a stale artifact: `docker`
+became available and was actually used for real in at least three later sessions (Unit 9's
+follow-up calibration batch, Unit 14's compose build/smoke-test, and this pass's own build/run
+below), yet task 8.4 itself was never revisited or checked off, and
+`docs/evidence/runtime-measurements.md` does not exist on disk (confirmed: `docs/evidence/`
+contains only `calibration.md` and `exact-scan-timings.md`). The image-size half of 8.4 is
+informally captured (10.4 GB disk / 4.4 GB content, cited in ADR-008 and ADR-003, "measured Unit
+16"), but the p50/p95 `embed()` latency and the warm-vs-cold `pytest -m slow` HTTP-level timing
+pair were never measured or written anywhere. See Issues below.
+
+### Real test execution (fresh, from a clean checkout, this session)
+
+All commands below were executed directly in this session, not trusted from any prior report.
+
+**Backend unit** (`pytest -m "not integration and not slow" -q`): 291 passed, 47 deselected --
+matches the `develop` tip's expected growth from Unit 16b's own reported baseline.
+`pytest tests/unit/test_decision_log.py -q` in isolation: 4 passed, 0 xfailed -- confirms the
+one `xfail` present at Unit 16's own tip (README-linkage assertion) was genuinely resolved by Unit
+15, not silently dropped.
+
+**Frontend unit** (`cd apps/web && npm test`): 164 passed (10 test files) -- matches Unit 13c's
+own tip count exactly, confirming zero regression through Units 14-16b (none of which touch
+`apps/web`).
+
+**Backend integration, real Postgres/pgvector via Docker Compose** (`docker compose up -d db
+migrate` -- `migrate` exited 0, schema applied cleanly; `pytest -m integration -q`): 41 passed
+with `DATABASE_URL` exported -- see the CRITICAL finding below, discovered by first running this
+exact command from a genuinely clean shell (no `DATABASE_URL` pre-set), which is the natural state
+for any reviewer following the README, and which is not how this suite has apparently ever been
+exercised end-to-end before (every prior unit's own literal "Verify" line scopes only a subset of
+`tests/integration/`, narrowly enough to avoid the interaction -- see below).
+
+**Lint/type/import** (all re-run fresh): `ruff check .` -> clean. `mypy src` -> "Success: no
+issues found in 43 source files" (the known pre-existing `sentence_transformers.py` Protocol
+mismatch does not surface here because `sentence-transformers` itself is not installed in this
+local dev venv -- same as every prior local mypy run in this project's history; see the dedicated
+check below). `lint-imports` -> "Contracts: 5 kept, 0 broken."
+
+**Full Docker Compose stack, real embedding model, this session** (`docker compose build
+--progress=plain` then `docker compose up -d`, no `.env` file present, defaults sourced entirely
+from `docker-compose.yml`'s `${VAR:-default}` interpolation, exactly as README.md claims): all
+four services reached healthy --
+
+```
+todo-ia-db-1       healthy
+todo-ia-migrate-1  Exited (0)
+todo-ia-api-1      healthy
+todo-ia-web-1      healthy
+```
+
+`GET /health` (curl, direct): status ok, database ok, model ready, dimensions 384, embedding_model
+sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2, embedding_cache hits/misses/evictions
+present -- the REAL model is loaded (not FakeEmbedder), correct dimension count, correct model id.
+`GET /` on the web container: 200. `bash infra/scripts/smoke.sh` (validate -> save -> list, real
+HTTP, real model, real Postgres): all three steps passed ("Smoke test passed: validate -> save ->
+list all succeeded end to end."). This is the first time in this pass's own execution (not merely
+re-read from apply-progress.md) that the complete stack -- real embedding model included -- was
+proven to work end-to-end on `develop`'s current tip, after Units 15/16/16b landed on top of Unit
+14's own original smoke-tested state; it corroborates Unit 14's own documented real run rather
+than duplicating unverified claims. The stack was torn down cleanly afterward
+(`docker compose down -v` -- containers, network and volume all removed, no side effects left).
+
+### Cross-cutting invariant checks (this pass's specific brief)
+
+**1. Embedding cache invariant ("never cache verdicts or pages", docs/architecture.md)**: the
+doc section exists verbatim ("## The embedding cache invariant: never cache verdicts or pages",
+docs/architecture.md line 134) and is consistent with CachingEmbeddingProvider's actual scope
+(wraps only EmbeddingProvider.embed, never touches ValidatePhrase/ListMatches/SavePhrase
+return values) -- already independently proven at the code+test level in this file's Unit 3, 5a, 5b
+and 6b sections (cache-interplay tests, "Caching invisible to the contract" contract tests). No new
+violation found.
+
+**2. ADR-008 (exact-scan-on-save-path guarantee)**: read directly. Its claim -- SavePhrase derives
+its verdict from find_nearest_exact (exact scan under the advisory lock), never HNSW, because an
+approximate recall miss on save could store a duplicate as unique -- matches exactly what this
+file's own Unit 5b section independently re-verified via a fresh, self-authored EXPLAIN script
+and Unit 7's section independently re-verified via the save-path spy test. No drift found; the
+ADR's cited pgvector tag/version/timings match Unit 4/5a's own independently-measured figures
+already on record above.
+
+**3. ADR-012 (reconciliation rule)**: read directly. Its claim -- validate takes score/
+most_similar from matches[0] whenever matches exist (not from find_nearest's own result) --
+matches this file's own Unit 3 "Correctness" table ("Reconciliation rule (matches[0] wins) |
+Implemented | validate_phrase.py L46-49; spy test + 5-trial property test both pass"). No drift.
+
+**4. Unit 11's deferred role="alertdialog", promised to Unit 12**: grepped the actual shipped
+frontend code, not just tasks.md's prose. DuplicateAlert.tsx line 50:
+`<div role="alertdialog" aria-labelledby="duplicate-alert-title">`, and
+DuplicateAlert.test.tsx asserts `screen.getByRole("alertdialog")` in 7 separate test bodies
+(content, percentage, confirm, cancel, 409-during-save, 409-while-confirming). Confirmed landed,
+not silently dropped.
+
+**5. Unit 6/6b's own deferred items**: Unit 6's own verify section (above) found a real CRITICAL --
+the "Raw length cap" scenario's reason-mapping was wired incorrectly (string_too_long fell
+through to invalid_type, no details.max_length). Re-checked the current main.py directly:
+`_TOO_LONG_TYPES = {"string_too_long"}` now exists, `_reason_for` returns "too_long" for it, and
+`details["max_length"]` is populated from pydantic's own ctx.max_length. A real contract test now
+exercises this: tests/contract/test_framework_errors.py::test_raw_length_cap_is_422_too_long_with_max_length_detail.
+Confirmed genuinely fixed and covered, not merely claimed. The Unit 6 verify section's other
+WARNING (missing TDD Cycle Evidence table) is a reporting-completeness issue only, not re-checked
+further here.
+
+**6. .env.example known limitation (a)**: confirmed the file still does not exist on disk -- an
+attempt to `ls .env*` in this session was itself denied by the tool-permission layer (the same
+hard deny documented since Unit 0), reproducing the blocker rather than working around it, per this
+pass's explicit instruction not to re-attempt a fix. README.md's own handling was read directly:
+line 20's `cp .env.example .env` comment points to "the table below, copied verbatim from this
+repo's own recorded intended content," and the "Environment variables" section (line 55 onward)
+explicitly documents this exact absence and cross-references Settings/design.md. Confirmed
+accurately reflected as a known, documented limitation, not silently missing.
+
+**7. mypy Protocol structural mismatch in sentence_transformers.py (known limitation b)**:
+confirmed still present in the adapter code (unchanged since Unit 9's follow-up batch) and still
+undetectable by a local `mypy src` run in this environment, because sentence-transformers is not
+installed in this dev venv (confirmed: `import sentence_transformers` -> ModuleNotFoundError),
+exactly the same condition that let it slip through every prior local mypy run per
+apply-progress.md's own account. No later unit (10-16b) touches this adapter file. Confirmed
+still an accurately-documented, deferred, non-runtime-affecting known limitation -- this pass's
+own live Docker run (see above) independently corroborates the "does not affect runtime
+correctness" half of that claim: the real container, with the real installed package, embedded
+phrases correctly end-to-end via smoke.sh and /health.
+
+**8. Unit 7b's own honestly-disclosed gap** (PgVectorPhraseRepository.list_recent fix folded in,
+but tests/contract_suite/repository_contract.py still has no shared scenario for list_recent on
+either adapter): re-confirmed both halves directly. list_recent exists on both
+PgVectorPhraseRepository (line 223) and InMemoryPhraseRepository (line 138) -- the fix genuinely
+landed. Searching repository_contract.py for "list_recent" finds no matches -- the gap is still
+genuinely open, exactly as disclosed, not silently missing without acknowledgment.
+
+### New finding: `pytest -m integration` is not self-sufficient from a clean shell (regression of an already-flagged WARNING)
+
+This file's own Unit 7 section already flagged (WARNING) an "order-dependent interaction" between
+tests/contract/conftest.py's DATABASE_URL placeholder-and-cleanup mechanism and
+tests/integration/test_endpoints_pgvector.py's defensive `os.environ.setdefault(...)` guard, and
+concluded -- after testing both collection orderings of its own two named files -- "both orders
+currently pass 50/50 with no functional divergence... not CRITICAL." That conclusion does not
+hold for the actual, full, documented test commands when run from a genuinely clean environment
+(no DATABASE_URL pre-set), which this pass did for the first time:
+
+```
+$ cd services/api && pytest -m integration -q          # clean shell, no DATABASE_URL set
+...
+ERROR tests/integration/test_endpoints_pgvector.py::test_post_phrases_returns_201_then_409_for_a_duplicate
+ERROR tests/integration/test_endpoints_pgvector.py::test_concurrent_identical_saves_yield_exactly_one_201_and_one_409
+ERROR tests/integration/test_endpoints_pgvector.py::test_get_phrases_returns_newest_first_against_real_postgres
+38 passed, 297 deselected, 3 errors
+```
+
+Reproduced identically with Unit 7's own literal documented Verify command
+(`pytest tests/contract tests/integration/test_endpoints_pgvector.py -q`), run from a clean shell:
+
+```
+$ env -u DATABASE_URL pytest tests/contract tests/integration/test_endpoints_pgvector.py -q
+...
+ERROR tests/integration/test_endpoints_pgvector.py::test_post_phrases_returns_201_then_409_for_a_duplicate
+ERROR tests/integration/test_endpoints_pgvector.py::test_concurrent_identical_saves_yield_exactly_one_201_and_one_409
+ERROR tests/integration/test_endpoints_pgvector.py::test_get_phrases_returns_newest_first_against_real_postgres
+61 passed, 3 errors
+```
+
+**Root cause, traced through the actual mechanism** (not re-guessed): tests/contract/conftest.py
+sets a fake placeholder DATABASE_URL only if absent, then its `pytest_collection_finish` hook --
+which fires once, after ALL collection across the whole run, including
+test_endpoints_pgvector.py's own module-level `os.environ.setdefault(...)` -- deletes it if it is
+still exactly that placeholder. test_endpoints_pgvector.py's setdefault call is therefore a
+no-op the moment tests/contract is collected first (the placeholder already won), so the variable
+gets deleted by the cleanup hook before test execution begins. `_database_url()` then reads
+`os.environ["DATABASE_URL"]` (bracket access, not `.get(...)` with a fallback, unlike every sibling
+integration file) during the module-scoped fixture's actual execution (which happens later than
+collection) and raises KeyError. The prior Unit 7 verify pass's own re-run only checked whether
+this affected response correctness (it does not, since contract tests never read
+Settings.database_url for real I/O) -- it did not check whether the deletion would later break
+test_endpoints_pgvector.py's own fixtures, which is exactly what happens. This is why CI never
+caught it: .github/workflows/ci.yml's backend-integration job sets DATABASE_URL as an
+explicit job-level environment variable (confirmed by reading the workflow file directly), masking
+the interaction entirely -- a fresh local reviewer following the README's own testing instructions
+(`make test`, `pytest -m integration`) with no other guidance would hit this immediately.
+
+This is a test-hermeticity / CI-masking defect, not a production runtime bug -- no application
+code path is affected, and the API's actual behavior (confirmed by this pass's own live Docker
+smoke test above) is correct. But it directly contradicts this project's own repeatedly-stated pass
+counts for Unit 7 (50 passed) and Unit 7b (61 passed) under the literal command those units
+document as their own Verify line, the moment that command is run exactly as documented without an
+undocumented prerequisite. Per this skill's own decision gate ("Test command exits non-zero ->
+CRITICAL"), this is classified CRITICAL below, scoped narrowly to test-suite reproducibility (not
+to correctness of the shipped feature).
+
+### Issues Found (this Full-System pass)
+
+**CRITICAL**:
+1. `pytest -m integration -q`, and Unit 7's/7b's own literally-documented Verify command
+   (`pytest tests/contract tests/integration/test_endpoints_pgvector.py -q`), genuinely FAIL (3
+   ERRORs, not merely a documentation nit) when run from a clean shell without DATABASE_URL
+   pre-set -- the default condition for any reviewer following the README's own testing
+   instructions. Masked only by CI setting DATABASE_URL as a job-level env var. Root cause traced
+   above: an interaction between tests/contract/conftest.py's placeholder-cleanup hook and
+   tests/integration/test_endpoints_pgvector.py's `os.environ["DATABASE_URL"]` (bracket access,
+   no fallback) in its module-scoped fixture. Fix is small and well-scoped (make
+   `_database_url()` use `os.environ.get("DATABASE_URL", <the same real default every sibling file
+   already falls back to>)` instead of bracket access -- mirrors every other integration file in this
+   codebase and removes the dependency on collection order entirely) but is a genuine, currently-live
+   defect in the test suite's own claimed reproducibility, not a stale or already-superseded finding
+   -- this pass independently reproduced it fresh, twice, with two different commands.
+
+**WARNING**:
+1. Task 8.4 (image size, p50/p95 embed() timing, warm-vs-cold pytest -m slow timing,
+   docs/evidence/runtime-measurements.md) remains unchecked in tasks.md and its target evidence
+   file does not exist, even though Docker was demonstrably available and used for real in at least
+   three later sessions (Unit 9's follow-up, Unit 14, and this pass). The image-size half is
+   informally captured in ADR-008/ADR-003 prose only; the latency-timing half was never captured
+   anywhere. Low risk (the feature works, confirmed end-to-end with the real model by this pass's
+   own smoke test), but it is a real, still-open gap against the change's own task list and a
+   proposal.md Delivery-Plan-scoped deliverable, not merely a superseded historical blocker.
+
+**SUGGESTION**:
+1. Now that Docker is confirmed available in this environment, task 8.4's remaining scope (p50/p95
+   embed() timing, warm-vs-cold pytest -m slow HTTP timing pair) is cheap to close in a small
+   follow-up batch, reusing the same api-builder Docker stage Unit 9's follow-up already
+   demonstrated working.
+2. Add a one-line cross-reference comment between tests/contract/conftest.py and
+   tests/integration/test_endpoints_pgvector.py (as Unit 7's own verify section already
+   suggested) -- and, more directly, fix `_database_url()` to use `.get(...)` with a fallback,
+   which independently removes both the collection-order fragility Unit 7 flagged AND the concrete
+   failure this pass found, in one small change.
+
+### Verdict
+
+**PASS WITH WARNINGS, plus one CRITICAL scoped to local test-suite reproducibility (not to the
+shipped product)**. All 17 units' tasks are complete except the single, honestly-still-open task
+8.4 (evidence-gathering only, not a behavior gap). Every spec requirement this pass sampled across
+the five capability specs has real, passing, independently-re-run test evidence; the specific
+cross-cutting invariants and deferred-item follow-throughs named in this pass's brief (cache
+invariant, ADR-008, ADR-012, Unit 11->12 alertdialog handoff, Unit 6/6b's raw-length-cap fix, both
+named known limitations) all check out exactly as documented, with zero silent regressions found.
+The full Docker Compose stack, including the real embedding model (not FakeEmbedder), was built
+and run fresh in this session and passed its own end-to-end smoke test (validate -> save -> list)
+against real Postgres/pgvector. The one CRITICAL finding is new, real, and reproduced independently
+twice with two different commands: the backend integration suite is not hermetic from a clean shell
+without an undocumented DATABASE_URL export, contradicting this project's own claimed Unit
+7/7b pass counts under their own literal Verify commands -- a small, well-understood, low-risk fix
+(documented above), but a genuine blocker to trusting "run the tests" as a self-sufficient
+onboarding instruction until it is applied. This does not indicate any defect in the shipped
+API behavior itself (independently re-proven correct, end-to-end, with the real model, by this
+pass's own Docker smoke test) and does not block archive on its own merits, but should be fixed (or
+explicitly accepted as a known limitation, the way .env.example and the mypy Protocol mismatch
+already are) before this change is considered fully closed.
+
+### Resolution (post-verify fix, branch `fix/verify-database-url-hermeticity`)
+
+The CRITICAL above was fixed immediately following this verify pass. `_database_url()` in
+`tests/integration/test_endpoints_pgvector.py` now reads `os.environ.get("DATABASE_URL", <the same
+real default every sibling file falls back to>)` instead of unconditional bracket access, matching
+`tests/contract/conftest.py`'s own docstring, which already assumed this lazy-read-with-fallback
+shape. RED confirmed by reverting the fix and re-running the exact repro (`unset DATABASE_URL &&
+pytest -m integration -q`) from a genuinely clean shell: 3 ERRORs, identical to this pass's own
+finding. GREEN confirmed after restoring the fix: **41 passed, 0 errors**, same clean-shell
+conditions. No regressions: `ruff check` clean on the changed file; full non-integration suite
+`291 passed, 1 deselected`, unchanged from this pass's own count. Task 8.4 (WARNING, evidence-
+gathering only) remains open and is not addressed by this fix -- tracked separately.
