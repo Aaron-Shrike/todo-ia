@@ -4046,3 +4046,391 @@ numbered writeup above.
 - [ ] Unit 10 (web scaffold + generated types) needs Unit 7b's `docs/openapi.json` (not this unit).
 - [ ] Unit 14 (full compose wiring) needs Unit 8 (this PR) + Unit 13; will add the `api`/`web` compose
   services that actually exercise the Dockerfile stages this batch wrote but could not build-verify.
+
+## Unit 7b: `GET /phrases` and OpenAPI documentation -- DONE
+
+Branch `feat/pv-07b-list-openapi`, cut from `develop` at `5641442` (PR #23's `fix/pv-07-review-fixes`
+merge -- Units 0-8 fully merged; Unit 9's fixture/scaffold sits on a separate, not-yet-merged PR #25
+and this unit does not depend on it, so `develop` was branched directly with no authoring-ahead
+needed). Both assigned tasks (7b.1, 7b.2) are complete, RED->GREEN confirmed for every new behaviour,
+and green against every quality gate below. Pure API/application code, no docker/torch touched.
+
+### What was implemented (7b.1-7b.2, both green)
+
+- [x] 7b.1 `phrases/application/list_phrases.py` (new): `ListPhrases`, a thin pass-through over
+  `PhraseRepository.list_recent` inside one read-only `UnitOfWork` -- no embedding, no
+  `SimilarityPolicy`, unlike every other use case in this module (design.md's "Request shapes": `GET
+  /phrases` takes no parameters and is not paginated). The limit is bound at CONSTRUCTION time (`limit:
+  int` keyword-only), not per-call, matching the route having no query parameters to carry one.
+  RED: wrote `tests/unit/phrases/test_list_phrases.py` FIRST, referencing the not-yet-existing module
+  (confirmed failing with a clean `ModuleNotFoundError` via `pytest tests/unit/phrases/test_list_phrases.py
+  -q`) before writing any production code -- see the TDD Cycle Evidence table below.
+  `phrases/container.py`: `PhrasesContainer` gained a `list_phrases: ListPhrases` field;
+  `build_phrases_container` gained a `phrases_list_limit: int = 200` parameter (default mirrors
+  `Settings.phrases_list_limit`'s own default of 200, a deliberate choice -- see "Deviations" below).
+  `phrases/api/router.py::build_phrases_router` gained `GET /phrases` (`response_model=
+  _PhraseListResponse`, new `_PhraseListData`/`_PhraseListResponse` models reusing the existing
+  `_PhraseOut`/`_phrase_out` from Unit 7 verbatim -- same wire shape as the 201 body, per the spec's
+  "same shape as the 201 payload" line). `main.py`'s `_lifespan`'s `_build_container` now also passes
+  `phrases_list_limit=settings.phrases_list_limit` to `build_phrases_container` (the one PRODUCTION
+  call site; every test `_client()` helper either passes it explicitly or relies on the new default).
+- [x] 7b.2 Contract tests. `GET /phrases` scenarios folded into `tests/contract/test_phrases_endpoints.py`
+  (per the task's own instruction), reusing that file's existing `_client()`/`_seed()` helpers --
+  `_client()` gained a `phrases_list_limit: int = 200` keyword, threaded through `Settings(...)` and
+  `build_phrases_container(...)`. Three new tests: `test_list_phrases_empty_store` (List shape's empty
+  case -- `{"data": {"items": []}}`), `test_list_phrases_newest_first_with_metadata` (Newest first +
+  Metadata exposed -- asserts the exact key set `{id, text, created_at, validation}` and
+  `validation`'s `{status, score, most_similar_phrase_id, validated_at}`, both `unique`-status seeded
+  phrases), `test_list_phrases_hard_cap` (Hard cap -- 5 seeded, `phrases_list_limit=2`, asserts exactly
+  2 items, newest first). RED confirmed first: ran these three against the router BEFORE adding the
+  route, got `405 Method Not Allowed` (the existing `POST /phrases` route matched the path but not the
+  method) -- a clean, unambiguous RED, not a collection error, because `_client()`/`_seed()` already
+  existed from Unit 7. GREEN confirmed after adding the route: `pytest tests/contract/
+  test_phrases_endpoints.py -q` -- 27 passed (24 pre-existing + 3 new).
+
+  New `tests/contract/test_openapi.py` (6 tests, api-contract spec's "OpenAPI documentation"
+  requirement's four scenarios plus the design's "ids typed string" and snapshot-diff checks from the
+  Testing Strategy table's Contract row): `test_endpoints_documented` (paths exist: `/phrases/validate`
+  POST, `/phrases/matches` POST, `/phrases` GET+POST, `/health` GET), `test_error_responses_documented_on_save`
+  (POST `/phrases` declares 201/409/422/503/504), `test_pagination_documented` (validate declares
+  `limit`, responds `next_cursor`/`has_more`; matches declares `text`/`cursor`/`limit`, responds
+  `next_cursor`/`has_more`, declares 400, and `cursor`'s schema `description` contains "opaque"),
+  `test_every_registered_code_documented` (every code in `platform.errors.ERROR_REGISTRY` -- i.e.
+  `INVALID_CURSOR`, `VALIDATION_ERROR`, `EMBEDDING_UNAVAILABLE`, `EMBEDDING_TIMEOUT` -- appears
+  literally in `json.dumps(app.openapi())`), `test_ids_typed_string_and_documented_opaque` (`_PhraseOut.id`'s
+  schema `type == "string"`), `test_snapshot_matches_docs_openapi_json` (`docs/openapi.json` on disk
+  equals a freshly generated `app.openapi()`). RED confirmed for 4/6 (the two that already passed --
+  `test_endpoints_documented` and `test_ids_typed_string_and_documented_opaque` -- exercise behaviour
+  Units 6/6b/7 already shipped, correctly GREEN from the first run, not something this unit needed to
+  build) before any router/schema changes; the remaining 4 turned GREEN only after wiring
+  `error_responses()`.
+
+  New `phrases/api/schemas.py` additions (per apply-progress.md's own Unit 7 note on the deleted 7.2
+  work: "a shared `ErrorEnvelope`/`ErrorDetail` pydantic pair plus an `error_responses(*[(status,
+  code)])` factory ... is the cleanest way to get every registered `code` string to appear literally in
+  the generated document" -- reproduced near-verbatim per that note, not re-derived from scratch):
+  `ErrorDetail` (`code`, `message`, `details: dict | None`), `ErrorEnvelope` (`{"error": ErrorDetail}`),
+  `error_responses(*pairs: tuple[int, str]) -> dict[int | str, dict]` -- one FastAPI `responses=` entry
+  per `(status, code)` pair, embedding `code` literally in the response's `description` string so a
+  single JSON-text-search contract test (`test_every_registered_code_documented`) proves every
+  registered code is documented without a bespoke schema per status code. `router.py` gained three
+  module-level `responses=` dicts (`_VALIDATE_ERRORS`, `_SAVE_ERRORS`, `_MATCHES_ERRORS`) built from
+  `error_responses(...)` and wired onto the three existing POST route decorators (`validate_phrase`:
+  422/503/504; `save_phrase`: 409/422/503/504; `list_matches`: 400/422/503/504) -- `DUPLICATE_
+  CONFIRMATION_REQUIRED` is declared on `POST /phrases` even though it is not in `ERROR_REGISTRY`
+  (hand-built inline in `save_phrase`'s 409 branch, per Unit 7's import-linter finding), because the
+  api-contract spec's "Error responses documented" scenario names it explicitly for that operation.
+
+  `docs/openapi.json` (new, 618 lines, generated -- NOT hand-written): produced by instantiating
+  `Settings(database_url=...)` + `create_app(settings)` + `app.openapi()`, serialized with
+  `json.dump(..., indent=2, sort_keys=True)` for a stable, reviewable diff on every future regeneration.
+  No `make types`-equivalent target exists yet for the BACKEND snapshot itself (only `make types`
+  consumes it, regenerating `apps/web/src/types/api.ts` -- that arrives with Unit 10); this batch ran
+  the equivalent one-off Python snippet directly, matching the task's own instruction ("regenerate via
+  `app.openapi()` directly").
+
+### Discovered gap, deliberately NOT fixed in this batch (scope discipline)
+
+`PgVectorPhraseRepository` (`services/api/src/app/modules/phrases/adapters/pgvector_repository.py`) --
+the pgvector adapter Unit 8's `_lifespan` wires into `app.state.phrases` for every real deployment --
+does **not** implement `list_recent`, even though `PhraseRepository`'s Protocol has declared the method
+since Unit 2/2d and `InMemoryPhraseRepository` has implemented it since Unit 2 (used by `test_save_phrase.py`,
+`test_validate_phrase.py` and `test_phrases_endpoints.py`'s existing `list_recent(10)` "nothing
+persisted" assertions since Unit 7). This is a genuine, verified gap (confirmed by `rg -n "list_recent"
+services/api/src` returning zero hits inside `pgvector_repository.py`): `GET /phrases` is fully
+implemented, tested and green against the in-memory adapter (every test this batch wrote), but would
+raise an unhandled `AttributeError` -> 500 if hit against the real Postgres-backed production wiring
+today.
+
+**Why this was not fixed here, deliberately, not an oversight**: tasks.md's 7b.1/7b.2 (the two tasks
+this batch was explicitly assigned) name only the application layer, the route, and contract tests
+against fakes/in-memory -- no pgvector implementation, no integration test, and no `tests/integration/`
+file is named anywhere in Unit 7b's Covers line or its two tasks. Strict TDD's own first law ("do NOT
+write production code until you have a failing test") argues against fabricating an untested pgvector
+`list_recent` implementation in a batch with no live Postgres available to verify it against (same
+environment constraint documented repeatedly since Unit 4: no docker in this session). Per this
+project's established precedent for exactly this situation (Unit 4's deferred typmod-reader test, Unit
+8.4's blocked image-build step), the gap is disclosed here rather than silently patched or silently
+ignored. **Recommended follow-up**: a small, focused task (either folded into a future docker-capable
+session's Unit 8.4 pass, or a new micro-unit) to add `PgVectorPhraseRepository.list_recent` (a plain
+`SELECT ... FROM phrases ORDER BY created_at DESC, id DESC LIMIT :limit`, following this same file's
+existing raw-SQL style) plus a `tests/integration/test_list_recent_pgvector.py` (or a scenario folded
+into `tests/integration/test_endpoints_pgvector.py`) exercising `GET /phrases` against the real
+database, before this endpoint is considered production-ready.
+
+### Verification run
+
+- `pytest tests/unit/phrases/test_list_phrases.py -q` -- RED (`ModuleNotFoundError`) confirmed before
+  writing `list_phrases.py`; GREEN after -- 3 passed (empty store, newest-first ordering, hard cap --
+  the three cases `phrase-management`'s "List phrases" scenarios name at the use-case layer).
+- `pytest tests/contract/test_phrases_endpoints.py -q` -- RED (405) confirmed for the 3 new `GET
+  /phrases` tests before adding the route; GREEN after -- 27 passed (24 pre-existing + 3 new).
+- `pytest tests/contract/test_openapi.py -q` -- RED (4/6 failing: missing 409/503/504 on save, missing
+  400 on matches, `INVALID_CURSOR` absent from the document, snapshot file missing) confirmed before
+  wiring `error_responses()`/generating the snapshot; GREEN after -- 6 passed.
+- `pytest tests/contract -q` (the task's own Verify line) -- **61 passed**.
+- `pytest tests/unit tests/contract_suite tests/contract -m "not integration and not slow" -q` (the
+  project's standard safety net, same invocation every prior unit used) -- **286 passed, 1 deselected**
+  (was 274 at the branch base after Unit 8's fix pass merged into `develop`; +3 `test_list_phrases.py`
+  +3 `GET /phrases` contract tests +6 `test_openapi.py` = +12; **274 + 12 = 286**, exact match).
+- `ruff check src tests` -- `All checks passed!`
+- `mypy src` -- `Success: no issues found in 43 source files` (unchanged count from Unit 8: this unit
+  added one new `src/` module, `list_phrases.py`, and extended three existing ones -- 43 was already
+  the count after Unit 8's `platform/boot_sequence.py`/`platform/embedding_boot.py` additions, and no
+  new top-level `src/` module besides `list_phrases.py` was added, so the count staying at 43 reflects
+  one addition offsetting nothing removed -- confirmed by `git diff --stat`'s file list above, exactly
+  one new `src/` file).
+- `lint-imports` -- `Contracts: 5 kept, 0 broken.` (`list_phrases.py` imports only `phrases.contracts`,
+  same as every other `phrases.application` module; no new import-boundary surface).
+- **Pre-existing, unrelated observation** (not fixed, not this unit's scope, same category as Unit 9's
+  note): running `mypy` directly against test files (outside the project's own `mypy src`-only
+  convention -- confirmed via `pyproject.toml`'s `[tool.mypy]` `packages = ["app"]`) surfaces the same
+  `UnitOfWorkFactory`/`EmbeddingProvider` Protocol-invariance false positive on `InMemoryUnitOfWorkFactory`/
+  `CachingEmbeddingProvider` arguments that `main.py`'s own `_build_container` already documents and
+  `# type: ignore[arg-type]`s (Unit 5b/8). Verified this is NOT a regression: `mypy tests/unit/phrases/
+  test_list_matches.py` (an untouched, pre-existing Unit 3b file) shows the identical class of error.
+  Not part of this project's actual `mypy src` gate, so not fixed here, consistent with leaving `main.py`'s
+  existing `# type: ignore` comments as the established pattern for this specific mypy limitation.
+
+### Review-budget check
+
+```
+git diff --cached --stat
+ docs/openapi.json                                             | 618 +++++++++
+ services/api/src/app/main.py                                  |   1 +
+ services/api/src/app/modules/phrases/api/router.py             |  64 ++--
+ services/api/src/app/modules/phrases/api/schemas.py            |  41 ++-
+ services/api/src/app/modules/phrases/application/list_phrases.py |  20 +
+ services/api/src/app/modules/phrases/container.py              |  18 +-
+ services/api/tests/contract/test_openapi.py                    | 125 +++
+ services/api/tests/contract/test_phrases_endpoints.py          |  56 +-
+ services/api/tests/unit/phrases/test_list_phrases.py            |  53 ++
+ 9 files changed, 966 insertions(+), 30 deletions(-)
+```
+**996 changed lines total, but `docs/openapi.json` (618 lines) is a fully generated snapshot file** --
+tasks.md's own Notes line under "Review Workload Forecast" explicitly names `docs/openapi.json` as
+excludable from the budget count "if the reviewer agrees." Excluding it: **378 changed lines** (348
+insertions + 30 deletions across the 8 hand-written files) -- comfortably under the 400-line cap, no
+split or exception needed, no STOP-and-report triggered. Flagged here explicitly (not silently assumed)
+so a reviewer who does NOT agree with the exclusion can say so before merge.
+
+### Deviations from design / tasks.md
+
+- **`build_phrases_container`'s `phrases_list_limit` parameter got a default (`200`)**, unlike its
+  sibling `matches_page_size` (no default, always required). Deliberate, to avoid touching three
+  UNRELATED test files' `_client()`/container-building call sites (`test_validate_health.py`,
+  `test_endpoints_pgvector.py`, and the parts of `test_phrases_endpoints.py`/`test_save_phrase.py`-style
+  helpers that predate this batch) purely to satisfy a new keyword-only parameter none of their
+  scenarios exercise -- consistent with keeping this unit's diff minimal and focused (see the
+  review-budget note above). The default value (`200`) is not arbitrary: it mirrors `Settings.
+  phrases_list_limit`'s own field default byte-for-byte, so a caller that omits the keyword gets
+  production's actual default behaviour, not a silently different one.
+- **No new pgvector-adapter code or integration test** -- see "Discovered gap" above; a deliberate scope
+  decision, not an omission overlooked.
+- Everything else matches tasks.md's 7b.1/7b.2 and design.md's "Request shapes" table and Testing
+  Strategy's Contract row exactly; no other deviations.
+
+### TDD Cycle Evidence (Unit 7b)
+
+| Task | Test File | Layer | Safety Net | RED | GREEN | TRIANGULATE | REFACTOR |
+|------|-----------|-------|------------|-----|-------|-------------|----------|
+| 7b.1 | `tests/unit/phrases/test_list_phrases.py` | Unit | N/A (new file) | ✅ Written first; confirmed failing with `ModuleNotFoundError` (`pytest tests/unit/phrases/test_list_phrases.py -q`) before `list_phrases.py` existed | ✅ 3/3 passed after writing `ListPhrases` | ✅ 3 cases (empty store; 3-item ordering; 5-seeded/limit=2 hard cap) -- forces the real `list_recent` call, not a hardcoded return | ➖ None needed -- the use case is a 9-line pass-through, already minimal |
+| 7b.1 | `tests/contract/test_phrases_endpoints.py` (GET /phrases tests) | Contract | ✅ 24/24 pre-existing tests passing (confirmed via the same file's full run before this batch's edits) | ✅ Written first; confirmed failing with `405 Method Not Allowed` (route did not exist) before adding the `GET /phrases` decorator | ✅ 27/27 passed (24 pre-existing + 3 new) after adding the route | ✅ 3 cases (empty; newest-first with full metadata key-set assertion; hard cap via a non-default `phrases_list_limit`) | ➖ None needed |
+| 7b.2 | `tests/contract/test_openapi.py` | Contract | N/A (new file) | ✅ Written first; 4/6 confirmed failing (missing 409/503/504 on save's responses dict, missing 400 on matches, `INVALID_CURSOR` absent from the document text, snapshot file missing) before wiring `error_responses()`/generating `docs/openapi.json`; 2/6 passed immediately (pre-existing Unit 6/6b/7 behaviour, not something this unit built) | ✅ 6/6 passed after wiring `schemas.py`'s `error_responses()`/`ErrorEnvelope` + `router.py`'s three `responses=` dicts + generating the snapshot | ✅ 6 distinct scenarios across the requirement's 4 named ones plus id-typing and snapshot-diff, not a single trivial assertion each | ➖ None needed -- one focused module, no duplication to extract |
+
+**Total tests written**: 12 (3 `test_list_phrases.py` + 3 `GET /phrases` contract tests + 6
+`test_openapi.py`)
+**Total tests passing**: 12/12
+**Layers used**: Unit (3), Contract (9)
+**Pure functions/classes created**: 2 (`ListPhrases`, `error_responses`) -- both framework-adjacent but
+side-effect-free given their inputs (`ListPhrases` reads through an injected port; `error_responses` is
+a pure dict-building function)
+
+**Commit**: `feat(api): list phrases endpoint and openapi documentation` (single squashed RED+GREEN
+commit, Strict TDD convention). **Original SHA (before the fix pass below folded in):
+`def0e8c355d0dd356a6b0549a3dca4822dc3a8fb`** -- superseded; see the fix-pass section immediately below
+for the current SHA after `git reset --soft` + re-commit folded `PgVectorPhraseRepository.list_recent`
+into this same commit.
+**Branch**: `feat/pv-07b-list-openapi`, base `develop` at `5641442`.
+**PR**: #26 (`feat/pv-07b-list-openapi` -> `develop`), opened after push; not yet merged as of this
+batch.
+**Status**: **DONE.** 2/2 tasks (7b.1, 7b.2) complete. Ready for `sdd-verify`.
+
+### Unit 7b fix pass: `PgVectorPhraseRepository.list_recent` -- DONE
+
+Closes the "Discovered gap" flagged directly above: `PgVectorPhraseRepository` (the pgvector adapter
+Unit 8's production `_lifespan` wires into `app.state.phrases`) did not implement `list_recent`, even
+though `PhraseRepository`'s Protocol has declared it since Unit 2/2d and `InMemoryPhraseRepository` has
+implemented it since Unit 2 -- meaning `GET /phrases`, Unit 7b's own endpoint, would 500 with an
+unhandled `AttributeError` against real Postgres despite passing every test in this batch (all of which
+only exercise the in-memory adapter). Folded into Unit 7b's existing commit (`git reset --soft` back to
+before Unit 7b's commits, then re-committed as one unit), not a separate fixup commit, per this
+session's own convention.
+
+#### Task 1: why `mypy src` passed clean despite the missing method
+
+Investigated before writing any fix, as instructed. **Root cause, confirmed empirically, not
+speculated**: `PgVectorPhraseRepository` is never type-checked against the full `PhraseRepository`
+Protocol anywhere `mypy src` actually reaches in `src/`.
+
+The only place in `src/` where this comparison happens at all is `main.py`'s `_build_container`,
+which passes a `PgVectorUnitOfWorkFactory` to a `UnitOfWorkFactory`-typed parameter of
+`build_phrases_container`. That line already carries a **pre-existing, legitimate**
+`# type: ignore[arg-type]` (in place since Unit 5b) for an *unrelated* reason: `UnitOfWork.repo:
+PhraseRepository` is a mutable Protocol **attribute**, which mypy treats as **invariant** (it could be
+read OR written through the Protocol-typed reference), so `PgVectorUnitOfWork.repo:
+PgVectorPhraseRepository` (a concrete, narrower-typed attribute) never structurally satisfies it, even
+though `PgVectorPhraseRepository` fully implements `PhraseRepository` at runtime.
+
+Verified by direct experiment (temporarily removing the ignore comment, `.venv/bin/mypy src`):
+
+```
+src/app/main.py:352: error: Argument "uow_factory" to "build_phrases_container" has incompatible type "PgVectorUnitOfWorkFactory"; expected "UnitOfWorkFactory"  [arg-type]
+src/app/main.py:352: note: Following member(s) of "PgVectorUnitOfWorkFactory" have conflicts:
+...
+src/app/main.py:352: note:         def __call__(self, *, isolation: Isolation = ..., read_only: bool = ...) -> PgVectorUnitOfWork
+```
+
+And, checking `PgVectorUnitOfWork` directly against `UnitOfWork` in isolation (a scratch script, same
+project `mypy` config):
+
+```
+note: Following member(s) of "PgVectorUnitOfWork" have conflicts:
+note:     Expected:
+note:         def __enter__(self) -> UnitOfWork
+note:     Got:
+note:         def __enter__(self) -> PgVectorUnitOfWork
+note:     repo: expected "PhraseRepository", got "PgVectorPhraseRepository"
+```
+
+mypy's reported conflict stops at "`repo` has the wrong attribute type" -- it never drills down into
+whether `PgVectorPhraseRepository` itself is missing methods, because the attribute-type mismatch alone
+is sufficient to reject the assignment. The single `# type: ignore[arg-type]` needed for that
+legitimate, pre-existing invariance issue therefore also silently swallowed this completely different,
+genuine bug (a missing method), because both surface as the same `arg-type` error code on the same
+line.
+
+Confirmed the missing method IS independently mypy-catchable when checked the right way: a scratch
+script assigning a `PgVectorPhraseRepository`-typed value directly to a `PhraseRepository`-typed
+variable (bypassing the `.repo` attribute indirection entirely) produced exactly:
+
+```
+note: "PgVectorPhraseRepository" is missing following "PhraseRepository" protocol member:
+note:     list_recent
+```
+
+**Cheap fix applied** (not over-engineered): a `TYPE_CHECKING`-only structural conformance assertion in
+`pgvector_repository.py`, right after the class definition:
+
+```python
+if TYPE_CHECKING:
+    _phrase_repository_conformance: PhraseRepository = cast(PgVectorPhraseRepository, None)
+```
+
+Zero runtime cost (never executed -- guarded by `TYPE_CHECKING`), checks the concrete repository class
+directly against the Protocol (sidestepping the `.repo`-attribute invariance false positive entirely),
+and introduces no false positive of its own (confirmed: passes clean now that `list_recent` exists;
+confirmed failing with the exact "missing `list_recent`" note when tested against the pre-fix code).
+Only added to `pgvector_repository.py`, where the actual gap was -- **not** added to
+`in_memory_repository.py` (which already fully implements the Protocol, so the check would be inert
+there) or to the `UnitOfWork` Protocol itself (its `.repo` attribute is where the *legitimate*
+invariance false positive lives; adding a conformance check there would just manufacture a new false
+positive needing its own ignore, not catch a real bug) -- scope kept to the one class this fix pass
+actually touches.
+
+#### Task 2: `list_recent` implementation
+
+`PgVectorPhraseRepository.list_recent(limit: int) -> list[Phrase]` (new method, placed directly after
+`add()` -- both return full `Phrase` rows, unlike `find_nearest`/`find_matches`'s `Neighbor`/`Match`):
+a plain parameterized `sqlalchemy.text()` query, `ORDER BY created_at DESC, id DESC LIMIT :limit` --
+same `(created_at, id)` descending ordering as `InMemoryPhraseRepository.list_recent`'s
+`sorted(..., key=lambda row: (row.created_at, row.id), reverse=True)`, confirmed by reading that
+adapter's own source, not guessed. Served by migration 0001's own
+`CREATE INDEX phrases_created_at_id_idx ON phrases (created_at DESC, id DESC)` (Unit 4) -- an index that
+existed since the schema was created but had never been used by any query until now, confirming this is
+the column the schema was always meant to support this exact access pattern with.
+
+New `LIST_RECENT_QUERY` module constant, following this file's existing convention (`_BASE_SELECT`,
+`FIND_NEAREST_QUERY`, `FIND_NEAREST_EXACT_QUERY` are all named/placed the same way). `embedding::text AS
+embedding` in the `SELECT` list (not the bare column): this file's own docstring already explains no
+`pgvector-python` adapter is registered on the connection (`CAST(:q AS vector)` on the write/input side,
+for the same reason); casting the read/output side explicitly to `::text` guarantees the `[c0,c1,...]`
+text form pgvector's `vector` output function always renders, rather than depending on
+driver-specific/undocumented behaviour for an unregistered custom OID.
+
+New `deserialize_vector(raw: str) -> Vector` pure function (module-level, next to `serialize_vector`,
+its exact inverse): `tuple(float(c) for c in raw.strip("[]").split(","))`. `validation_status` mapped
+back via `ValidationStatus(row.validation_status)` (the enum's `.value`s are exactly `"unique"` /
+`"duplicate_confirmed"`, matching what `add()` already writes via `phrase.validation_status.value`) --
+newly imported into this module alongside `PhraseRepository` (for the Task 1 conformance check).
+
+**`tests/contract_suite/repository_contract.py` does NOT cover `list_recent`** -- confirmed by reading
+the full file (`NearestNeighbourContractSuite` covers `find_nearest`/`find_nearest_exact`;
+`MatchesContractSuite` covers `find_matches`; neither mixin, nor `RepositoryContractSuite` which
+composes them, references `list_recent` anywhere) and by `rg -n "list_recent"
+services/api/tests/contract_suite` returning zero hits. This is a genuine, **pre-existing** gap (predates
+this fix pass -- `list_recent` has existed on `InMemoryPhraseRepository` since Unit 2, long before the
+contract suite's current two mixins were split in Unit 5a), not introduced or worsened here. Per the
+task's own explicit instruction, **not fixed in this batch** (a third mixin, e.g.
+`ListRecentContractSuite`, parametrized over both adapters, would be the natural shape of that fix --
+flagged here as a recommended follow-up, same disclosure discipline as the original Unit 7b gap note
+above).
+
+**Tests added** (both, per the task's "AND/OR" -- one unit-level-in-spirit, one true end-to-end
+integration):
+
+1. `tests/integration/test_pgvector_repository.py` (new): two tests for `deserialize_vector` --
+   `test_deserialize_vector_parses_the_bracketed_csv_text_form` (a direct literal case) and
+   `test_deserialize_vector_round_trips_through_serialize_vector` (triangulation: a different vector,
+   driven through the real `serialize_vector` this time, proving the two functions are genuine inverses,
+   not just individually plausible). **Grouped under `tests/integration/`, marked
+   `pytest.mark.integration`, even though `deserialize_vector` itself needs no live database** -- purely
+   because `pgvector_repository.py` imports `sqlalchemy` at module level, and `sqlalchemy` is **not
+   installed at all** in this dev venv (confirmed: `.venv/bin/python -c "import sqlalchemy"` ->
+   `ModuleNotFoundError: No module named 'sqlalchemy'`; the venv's `site-packages` has no `sqlalchemy*`
+   entry either -- this is a stronger, more fundamental constraint than "no docker", and was already
+   flagged once before, in Unit 8's apply-progress section, for the same reason). Any test file
+   importing `pgvector_repository.py`, pure logic or not, fails to even **collect** in this environment
+   -- confirmed directly: an earlier attempt to place this exact test in `tests/unit/phrases/` failed
+   collection with that identical `ModuleNotFoundError`, which would have broken this project's own
+   standard safety-net command (`pytest tests/unit tests/contract_suite tests/contract -m "not
+   integration and not slow"`, which excludes `tests/integration/` from its path list entirely, not just
+   by marker, for exactly this reason). Moving the file under `tests/integration/` was therefore not
+   optional scope creep but the only placement that keeps the mandated verification command green.
+2. `tests/integration/test_endpoints_pgvector.py::test_get_phrases_returns_newest_first_against_real_postgres`
+   (new, appended after the existing concurrent-saves test, reusing that file's own `_client()` helper):
+   saves three phrases via `POST /phrases`, then asserts `GET /phrases` returns them in reverse
+   insertion order. This is the literal, end-to-end regression scenario the bug report described --
+   `GET /phrases` against **real Postgres** -- and is the single test that would have failed (500
+   `AttributeError`) before this fix and now passes (by construction/reading; not executed, see below).
+
+**What was verified by RUNNING vs. only by careful reading** (same discipline as Unit 9's fix pass):
+- RUNNING, this batch: `.venv/bin/mypy src` (both before -- confirming the pre-fix gap was real and the
+  `type: ignore` experiment's exact output -- and after, confirming `Success: no issues found in 43
+  source files`); `.venv/bin/ruff check .`; `.venv/bin/lint-imports` (`Contracts: 5 kept, 0 broken`);
+  `.venv/bin/python -m pytest tests/unit tests/contract_suite tests/contract -m "not integration and not
+  slow" -q` (**286 passed, 1 deselected** -- byte-for-byte the same count as the pre-fix baseline,
+  confirming zero regression and confirming the new tests are correctly isolated to the
+  sqlalchemy-dependent path, not silently skipped); the scratch-script mypy experiments quoted in Task 1
+  above; and an isolated logic replica of `serialize_vector`/`deserialize_vector` (copy-pasted into a
+  throwaway script with no project imports) exercising both new test assertions directly -- both passed.
+- **NOT executed, verified only by careful reading**: `list_recent`'s SQL itself, and both new
+  integration tests as written against the real module (`tests/integration/test_pgvector_repository.py`
+  and the new `GET /phrases` test in `test_endpoints_pgvector.py`) -- no `sqlalchemy` installed and no
+  docker/Postgres available in this environment (confirmed absent, same as every prior unit's pgvector
+  work). Correctness reasoning: the ordering matches `InMemoryPhraseRepository.list_recent` exactly and
+  is served by an existing, purpose-built index; the `embedding::text` cast follows this file's own
+  established CAST-explicitly convention for the missing `pgvector-python` adapter; the row-to-`Phrase`
+  mapping mirrors `add()`'s own return-row construction field-for-field. **Recommended follow-up**: run
+  `pytest tests/integration -m integration -q` in a docker-capable session before this endpoint is
+  considered fully production-verified end to end.
+
+**Deviations from design/tasks.md**: none -- this fix pass was not assigned a tasks.md entry (it closes
+a gap Unit 7b itself flagged as out of its assigned scope), so there is no task checklist item to mark;
+recorded here instead, per the review-fix-pass convention established by Units 7 and 8.
+
+**Status**: **DONE.** Both tasks (mypy investigation, `list_recent` implementation + tests) complete.
+Folded into Unit 7b's commit via `git reset --soft 5641442` + re-commit (same message, per Unit 8's own
+fold-in precedent). **New SHA: `686d7a64592ba9611f9acc93892ebc310d8da316`.** Force-pushed with
+`--force-with-lease` to `feat/pv-07b-list-openapi`; PR #26 updates automatically. Ready for
+`sdd-verify`.
