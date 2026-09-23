@@ -5,6 +5,7 @@ import { useEffect, useReducer, useRef, useState } from "react";
 import { ApiError, type PhraseApiClient } from "@/lib/api/client";
 import type { components } from "@/types/api";
 import { copy } from "@/i18n/copy.es";
+import { copyForErrorCode } from "@/i18n/errorCopy";
 
 import {
   initialState,
@@ -81,9 +82,7 @@ function detailsFromApiError(details: Record<string, unknown> | null | undefined
   return toDuplicateDetails(shaped);
 }
 
-// Full per-code Spanish copy (`errorCopy`, exhaustive over `ErrorCode`) is
-// Unit 13's task (13.1); Unit 11 only needs *an* error state to exist for
-// the "Retry" scenario, so every failure renders the generic message here.
+/** The code is looked up against `errorCopy` (i18n/errorCopy.ts) at render time — this only normalizes the shape. */
 function toErrorInfo(err: unknown): ErrorInfo {
   if (err instanceof ApiError) {
     return { code: err.code, message: err.message };
@@ -256,7 +255,7 @@ export function PhraseForm({ client, maxLength = ENV_MAX_LENGTH, onSaved }: Phra
 
       {state.status === "error" && (
         <div>
-          <p>{copy.error.generic}</p>
+          <p>{copyForErrorCode(state.error.code)}</p>
           <button type="button" onClick={handleRetry}>
             {copy.button.retry}
           </button>

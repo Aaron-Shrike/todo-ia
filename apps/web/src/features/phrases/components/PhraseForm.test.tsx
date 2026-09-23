@@ -494,6 +494,97 @@ describe("PhraseForm", () => {
     });
   });
 
+  // phrase-ui spec, "Error handling": the `error` state MUST render the
+  // code-specific Spanish message via `errorCopy` (i18n/errorCopy.ts), not a
+  // single generic string for every failure.
+  describe("error handling copy (per-code Spanish messages)", () => {
+    it("Model unavailable: 503 EMBEDDING_UNAVAILABLE shows the embedding-unavailable message", async () => {
+      const validateDeferred = createDeferred<ValidateData>();
+      const client = createFakeClient({
+        validatePhrase: vi.fn(() => validateDeferred.promise),
+      });
+      render(<PhraseForm client={client} />);
+
+      typeText("Comprar leche");
+      fireEvent.click(screen.getByRole("button", { name: copy.button.validate }));
+      await act(async () => {
+        validateDeferred.reject(
+          new ApiError({ code: "EMBEDDING_UNAVAILABLE", status: 503, message: "model down" }),
+        );
+      });
+
+      await waitFor(() =>
+        expect(screen.getByText(copy.error.embeddingUnavailable)).toBeInTheDocument(),
+      );
+    });
+
+    it("Timeout: 504 EMBEDDING_TIMEOUT shows the timeout message", async () => {
+      const validateDeferred = createDeferred<ValidateData>();
+      const client = createFakeClient({
+        validatePhrase: vi.fn(() => validateDeferred.promise),
+      });
+      render(<PhraseForm client={client} />);
+
+      typeText("Comprar leche");
+      fireEvent.click(screen.getByRole("button", { name: copy.button.validate }));
+      await act(async () => {
+        validateDeferred.reject(
+          new ApiError({ code: "EMBEDDING_TIMEOUT", status: 504, message: "timed out" }),
+        );
+      });
+
+      await waitFor(() =>
+        expect(screen.getByText(copy.error.timeout)).toBeInTheDocument(),
+      );
+    });
+
+    it("Network failure: a rejected fetch (NETWORK_ERROR) shows the network message", async () => {
+      const validateDeferred = createDeferred<ValidateData>();
+      const client = createFakeClient({
+        validatePhrase: vi.fn(() => validateDeferred.promise),
+      });
+      render(<PhraseForm client={client} />);
+
+      typeText("Comprar leche");
+      fireEvent.click(screen.getByRole("button", { name: copy.button.validate }));
+      await act(async () => {
+        validateDeferred.reject(
+          new ApiError({ code: "NETWORK_ERROR", status: 0, message: "Network request failed" }),
+        );
+      });
+
+      await waitFor(() =>
+        expect(screen.getByText(copy.error.network)).toBeInTheDocument(),
+      );
+    });
+
+    it("Unknown code: an unmapped code falls back to the generic message", async () => {
+      const validateDeferred = createDeferred<ValidateData>();
+      const client = createFakeClient({
+        validatePhrase: vi.fn(() => validateDeferred.promise),
+      });
+      render(<PhraseForm client={client} />);
+
+      typeText("Comprar leche");
+      fireEvent.click(screen.getByRole("button", { name: copy.button.validate }));
+      await act(async () => {
+        validateDeferred.reject(
+          // Simulates future backend drift: a code outside the hand-maintained
+          // `ErrorCode` union (client.ts's own documented, unenforced invariant).
+          new ApiError({
+            code: "SOME_FUTURE_CODE" as unknown as ApiError["code"],
+            status: 500,
+            message: "unmapped",
+          }),
+        );
+      });
+
+      await waitFor(() =>
+        expect(screen.getByText(copy.error.generic)).toBeInTheDocument(),
+      );
+    });
+  });
+
   describe("unmount mid-request", () => {
     it("discards a late-arriving validate response after unmount without a React state-update warning", async () => {
       const consoleError = vi.spyOn(console, "error").mockImplementation(() => {});

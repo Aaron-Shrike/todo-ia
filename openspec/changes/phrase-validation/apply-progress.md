@@ -5847,3 +5847,251 @@ on top of `9f6d9f6`/`d48973d`, not an amend of either. Files:
 `apps/web/src/features/phrases/hooks/useMatchesInfiniteScroll.ts` (1-line fix + comment),
 `apps/web/src/features/phrases/components/DuplicateAlert.test.tsx` (1 new test),
 `openspec/changes/phrase-validation/apply-progress.md` (this note).
+
+## Unit 13: Saved list, status badges, Spanish copy module — SPLIT into 13a-13c, user chose Option C
+
+**Resolution**: this unit stopped before any commit/push/PR to report a review-budget risk (both 13.1
+and 13.2 fully implemented and green, measured at 781 changed lines / 13 files against the ~290
+estimate and the 400-line cap) and proposed three options (A: single `size:exception` for 781 lines;
+B: split at the 13.1/13.2 boundary, 301 + 480 — 13.2 alone still over budget; C: split further along
+13.2's own list-vs-wiring seam, 301 + 256 + 224, all three independently under the cap — see the
+"Split proposal" table below, left as written at the stop, for the record). **The user explicitly
+chose Option C.** No implementation logic changed — the working tree already held the complete,
+green implementation described below; the only work remaining was slicing the existing diff into
+three ordered, dependency-respecting commits/branches. See "Unit 13 resolution: the 13a/13b/13c
+delivery" at the end of this section for the three branches, commit SHAs, file lists and the
+isolated per-branch verification.
+
+### What was built (both tasks complete)
+
+**13.1** — `i18n/copy.es.ts` completed with every remaining phrase-ui spec key (`title`, `badge.*`,
+`list.*`, the remaining `error.*` codes), `copy.es.test.ts` comparing the whole exported object
+against the spec's copy table verbatim (`toEqual`, not `toMatchSnapshot()`, so a typo fails against
+the spec itself, not a locally-accepted baseline); `i18n/errorCopy.ts` — a
+`Record<ErrorCode, CopyKey>` exhaustive over the full 11-member `ErrorCode` union (`CopyKey` is a
+template-literal type `` `error.${keyof typeof copy.error}` ``, so a value outside `copy.error.*`
+is a compile error, not just a wrong one) plus `copyForErrorCode(code: string)`, which falls back to
+`error.generic` for a code outside the union (phrase-ui spec, "Unknown code") — `errorCopy.test.ts`
+walks a hand-kept `ALL_ERROR_CODES` array (same "hand-maintained... not derived" convention as
+`errors.ts` itself) asserting exhaustiveness and the design table's per-code mapping. `PhraseForm.tsx`'s
+error block was rewired from the hardcoded `copy.error.generic` (Unit 11's placeholder, explicitly
+deferred to this unit in that unit's own code comment) to `copyForErrorCode(state.error.code)`, with 4
+new tests in `PhraseForm.test.tsx` asserting the exact rendered message for the unit's own Covers-line
+scenarios (Model unavailable/503, Timeout/504, Network failure, Unknown code).
+
+**Deviation, documented**: `errorCopy`'s `VALIDATION_ERROR` row maps to `error.generic` rather than the
+design table's reason-conditioned `error.tooLong`/`error.empty` split (`details.fields[0].reason`) —
+Unit 13's own Covers line lists only "Model unavailable, Timeout, Network failure, Unknown code" for
+Error handling, not the 422 reason-based scenario (which lives under "Client-side input checks" in the
+phrase-ui spec and is already satisfied client-side by the existing length check). `VALIDATION_ERROR`
+still resolves through the same exhaustive `Record`, just to the design table's own documented "else"
+fallback, until a later unit needs the conditional split.
+
+**13.2** — `app/page.tsx` rewritten from Unit 10's placeholder into the real Server Component first
+paint: `export const dynamic = "force-dynamic"` plus `createApiClient({ baseUrl: API_INTERNAL_URL,
+fetchImpl: (input, init) => fetch(input, { ...init, cache: "no-store" }) })` — reusing `client.ts`'s
+already-tested envelope/error parsing (its own `ApiClientConfig.baseUrl` doc comment already
+anticipated this: "pass `API_INTERNAL_URL` explicitly for Server Component calls") rather than
+duplicating a raw `fetch` + JSON-envelope parse in `page.tsx`, with `no-store` injected through the
+existing `fetchImpl` test seam so the Server Component call gets the required semantics without any
+`client.ts` changes. A first-paint fetch failure is caught and passed down as `initialItems: null`,
+which renders through the exact same load-error path a later refresh failure uses (no separate error
+UI, no loading flash either way — the fetch resolves before any HTML is sent). Confirmed the build
+marks `/` as `ƒ (Dynamic, server-rendered on demand)`, not `○ (Static)`.
+
+`features/phrases/components/PhraseList.tsx` (new) — owns `GET /phrases` rendering: a badge per item
+(`Única` / `Duplicado confirmado`), the floored similarity percentage when `score` is non-null, the
+empty state, and its own `list.loadError` + Reintentar state, entirely decoupled from `PhraseForm`'s
+machine. Exposes `refresh(): Promise<void>` via `forwardRef`/`useImperativeHandle` — deliberately never
+rejects (a failure only flips its own internal status), which is what structurally guarantees a
+post-201 refresh failure can never reach, let alone move, `PhraseForm`'s state machine.
+
+`features/phrases/components/PhraseWorkspace.tsx` (new, NOT named in design.md's own directory sketch
+— documented here, not silent) — the one client boundary tying `PhraseForm`'s `onSaved` callback to
+`PhraseList.refresh()`. Necessary because `app/page.tsx` is a Server Component and cannot itself hold
+the ref needed to connect the two client components as siblings.
+
+`features/phrases/scoreLabel.ts` (new) — extracted from `DuplicateAlert.tsx`'s previously-local
+`scoreLabel` helper (same `copy.duplicate.score` `{percent}` template) so `PhraseList` does not
+duplicate it; `DuplicateAlert.tsx` now imports the shared version (small refactor, net -0 behavior
+change, existing `DuplicateAlert.test.tsx` suite re-run green afterward with no changes needed).
+
+Six scenarios covered by `PhraseList.test.tsx` (Badge unique, Badge duplicate confirmed, Empty list,
+List load failure, a Reintentar-recovers case, and both a successful and a failing `refresh()` via the
+imperative handle) plus two integration scenarios in `PhraseWorkspace.test.tsx` (Refresh after save;
+Refresh fails after a successful save — asserting the machine stayed `idle` via the cleared text input
+and exactly one "Reintentar" button in the whole tree, proving the machine's own error-state
+"Reintentar" never rendered alongside the list's).
+
+**Scope note**: `app/page.tsx` itself has no dedicated vitest test — it is thin glue over
+already-tested `createApiClient`, and design.md's own testing-strategy table lists no "Frontend
+unit/component" row for the Server Component itself (only for `machine`, `percent`, `errorCopy`,
+`copy.es.ts`, and the client-side components); Unit 10's placeholder `page.tsx` set the same precedent
+(build-verified only). Verified instead via `tsc --noEmit` (clean) and `next build` (succeeds, `/`
+correctly `ƒ Dynamic`).
+
+### Verification (all green, nothing committed)
+
+```
+$ cd apps/web && npx vitest run
+Test Files  10 passed (10)
+     Tests  162 passed (162)          # up from 104 at the start of this unit
+
+$ cd apps/web && npx tsc --noEmit
+(no output — clean)
+
+$ cd apps/web && npm run build
+✓ Compiled successfully
+Route (app)
+┌ ƒ /                    # confirms force-dynamic took effect (not ○ Static)
+└ ○ /_not-found
+```
+
+### Review-budget STOP: measured, not trimmed, split proposal below
+
+`git diff --stat` (working tree vs. `develop`, all of Unit 13's changes, both tasks complete):
+
+| File | Ins/Del | Task |
+|------|---------|------|
+| `apps/web/src/i18n/copy.es.ts` | 33 (net, ins+del) | 13.1 |
+| `apps/web/src/i18n/copy.es.test.ts` | 64 / 0 | 13.1 |
+| `apps/web/src/i18n/errorCopy.ts` | 53 / 0 | 13.1 |
+| `apps/web/src/i18n/errorCopy.test.ts` | 53 / 0 | 13.1 |
+| `apps/web/src/features/phrases/components/PhraseForm.tsx` | 7 (net) | 13.1 |
+| `apps/web/src/features/phrases/components/PhraseForm.test.tsx` | 91 / 0 | 13.1 |
+| **13.1 subtotal** | **301 changed lines** | |
+| `apps/web/src/app/page.tsx` | 56 (net) | 13.2 |
+| `apps/web/src/features/phrases/components/DuplicateAlert.tsx` | 7 (net) | 13.2 |
+| `apps/web/src/features/phrases/components/PhraseList.tsx` | 103 / 0 | 13.2 |
+| `apps/web/src/features/phrases/components/PhraseList.test.tsx` | 133 / 0 | 13.2 |
+| `apps/web/src/features/phrases/components/PhraseWorkspace.tsx` | 40 / 0 | 13.2 |
+| `apps/web/src/features/phrases/components/PhraseWorkspace.test.tsx` | 128 / 0 | 13.2 |
+| `apps/web/src/features/phrases/scoreLabel.ts` | 13 / 0 | 13.2 |
+| **13.2 subtotal** | **480 changed lines** | |
+| **Grand total** | **748 insertions / 33 deletions = 781 changed lines, 13 files** | |
+
+**No trim pass was run**: unlike Units 6/6b/7, this is not a case of an over-verbose complete draft —
+each file maps to one spec requirement (copy table, `errorCopy` exhaustiveness, list rendering, the
+save→refresh wiring) with essentially no incidental duplication left in (the one duplication found,
+`scoreLabel`, was already extracted into a shared file rather than left in place). A trim pass would
+likely only recover 10-20 lines (e.g. collapsing some of `PhraseWorkspace.test.tsx`'s two scenarios'
+setup boilerplate), nowhere near enough to close either gap.
+
+**Split proposal (none applied yet — awaiting the user's decision):**
+
+| Option | Scope | Est. lines | Notes |
+|--------|-------|-----------|-------|
+| A. Single `size:exception` for all of Unit 13 as one PR | 13.1 + 13.2 together | 781 (measured) | Matches this session's Unit 6/6b/7/8/11/12 precedent (ask, then accept) — within range of Unit 11's own precedent-setting 1141-line exception, so not unprecedented, but still the largest-diff option here. |
+| B. Split at the task boundary named in this unit's own brief | PR 1 = 13.1 (copy table + exhaustive `errorCopy`, 301 lines, safely under budget, complete, already green); PR 2 = 13.2 (`page.tsx` + `PhraseList` + `PhraseWorkspace`, 480 lines — still over the 400 cap on its own) | 301 + 480 | Matches the task's own pre-named seam exactly, but 13.2 alone still needs a `size:exception` or a further split (Option C) — this option alone does not fully avoid an exception request. |
+| C. Split into three: 13.1 as-is, then 13.2 split further along its own natural sub-seam (list rendering vs. page/wiring glue) | PR 1 = 13.1 (301, as above); PR 2 = `PhraseList.tsx` + `PhraseList.test.tsx` + `scoreLabel.ts` + the `DuplicateAlert.tsx` refactor (103+133+13+7 = 256 lines); PR 3 = `app/page.tsx` + `PhraseWorkspace.tsx` + `PhraseWorkspace.test.tsx` (56+40+128 = 224 lines) | 301 + 256 + 224 | All three independently under the 400 cap — avoids ANY exception request. PR 3 depends on PR 2 merging first (`PhraseWorkspace` imports `PhraseList`); PR 2 depends on nothing from PR 1 functionally, though the exhaustive `errorCopy` (PR 1) is what makes `PhraseForm`'s existing error rendering correct — no hard dependency, just the same working tree. |
+
+This batch's recommendation, offered without self-authorizing it: **Option C** — three small,
+independently-reviewable, already-complete-and-green PRs, all under budget, no exception needed
+anywhere; PR 1 (13.1) is essentially ready to ship as-is (301 lines, closest of the three to the
+original ~290 estimate). Option B is a reasonable middle ground if the user prefers exactly two PRs
+matching the task's own 13.1/13.2 split and is willing to grant one `size:exception` for 13.2's 480
+lines. Option A is the fastest path if the user just wants Unit 13 shipped as one unit like most of
+this session's other over-budget units.
+
+### Unit 13 resolution: the 13a/13b/13c delivery
+
+Executed exactly as Option C proposed above. Verified `git diff --stat`/`wc -l` against this section's
+own per-file table before slicing (every file's line count matched exactly, no drift between the STOP
+report and the actual working tree). Each slice was staged file-by-file (never `git add -A`), committed
+with `cd apps/web && npx vitest run` green on the shared working tree at commit time, THEN re-verified
+in an isolated `git worktree` checkout of that branch's own tip (`git worktree add ../wt-13x <branch>`,
+fresh `npm install`, `npx vitest run`, `npx tsc --noEmit`) to prove each branch is self-consistent on
+its own — not merely "green because leftover untracked files from a later slice happened to still be
+sitting in the shared working directory." Worktrees removed after verification. Nothing pushed, no PR
+opened yet — branches are complete and verified locally, ready for the orchestrator to push and open
+in order.
+
+**13a — Copy module + error copy**
+- Commit: `feat(web): complete spanish copy table and exhaustive error copy map`
+- SHA: `f59a0ca`
+- Branch: `feat/pv-13a-copy-module`, cut from `develop` at `4a18d6b` (PR #29 / Unit 12's merge commit). Base: `develop`.
+- Files (284 insertions / 17 deletions, 301 changed lines, 6 files): `apps/web/src/i18n/copy.es.ts`, `apps/web/src/i18n/copy.es.test.ts` (new), `apps/web/src/i18n/errorCopy.ts` (new), `apps/web/src/i18n/errorCopy.test.ts` (new), `apps/web/src/features/phrases/components/PhraseForm.tsx`, `apps/web/src/features/phrases/components/PhraseForm.test.tsx`.
+- Isolated verification (`git worktree` at `f59a0ca`, fresh `npm install`): `npx vitest run` → 153/153 passed (8 test files — the full suite minus the not-yet-committed `PhraseList`/`PhraseWorkspace` tests, exactly as expected for this branch alone); `npx tsc --noEmit` → clean.
+
+**13b — Saved phrase list + status badges**
+- Commit: `feat(web): saved phrase list with status badges`
+- SHA: `3211bc5`
+- Branch: `feat/pv-13b-list-badges`, cut from `feat/pv-13a-copy-module` at `f59a0ca` (authoring-ahead — confirmed real dependency: `PhraseList.tsx` imports `copy.badge.*`/`copy.list.*`, both new keys added only in 13a's `copy.es.ts` diff, verified by reading the actual import statements and diffing `copy.es.ts`, not assumed). MUST be rebased onto `develop` and retargeted once 13a's PR merges.
+- Files (250 insertions / 6 deletions, 256 changed lines, 4 files): `apps/web/src/features/phrases/components/PhraseList.tsx` (new), `apps/web/src/features/phrases/components/PhraseList.test.tsx` (new), `apps/web/src/features/phrases/scoreLabel.ts` (new), `apps/web/src/features/phrases/components/DuplicateAlert.tsx`.
+- Isolated verification (`git worktree` at `3211bc5`, fresh `npm install`): `npx vitest run` → 160/160 passed (9 test files); `npx tsc --noEmit` → clean — confirms the 13a dependency resolves correctly when stacked, with nothing from 13c present.
+
+**13c — page.tsx + PhraseWorkspace wiring**
+- Commit: `feat(web): wire saved-list first paint into the phrase workspace`
+- SHA: `8a66eb1`
+- Branch: `feat/pv-13c-page-wiring`, cut from `feat/pv-13b-list-badges` at `3211bc5` (authoring-ahead — confirmed real dependency: `PhraseWorkspace.tsx` imports `PhraseList` from `./PhraseList`). MUST be rebased onto `develop` and retargeted once 13b's PR merges.
+- Files (214 insertions / 10 deletions, 224 changed lines, 3 files): `apps/web/src/app/page.tsx`, `apps/web/src/features/phrases/components/PhraseWorkspace.tsx` (new), `apps/web/src/features/phrases/components/PhraseWorkspace.test.tsx` (new).
+- Verification at this branch's own tip (the shared working tree, which by this point held exactly 13c's committed files plus no other untracked source files — only the still-uncommitted `tasks.md`/`apply-progress.md` doc edits and a stray untracked `gcm-diagnose.log`, neither of which vitest/tsc/next build touch): `npx vitest run` → 162/162 passed (10 test files, the full Unit 13 suite); `npx tsc --noEmit` → clean; `npm run build` → succeeds, `/` correctly `ƒ Dynamic`.
+
+### Status (Unit 13 — 13a/13b/13c all committed locally, verified in isolation, not yet pushed)
+
+13.1 and 13.2 both complete, green (162/162 vitest when all three slices are combined, clean `tsc`,
+successful `next build`, `/` correctly `ƒ Dynamic`). Three branches committed locally exactly as Option
+C proposed, each independently verified green at its own tip via an isolated `git worktree` (13a, 13b)
+or the equivalent clean-tree state (13c). Nothing pushed, no PR opened yet — that is the orchestrator's
+next step, in order: push 13a, open PR 1 against `develop`; after it merges, rebase/retarget 13b onto
+`develop`, push, open PR 2; after it merges, rebase/retarget 13c onto `develop`, push, open PR 3.
+
+## Unit 13 fix pass (reliability review of `PhraseList.tsx`, on `feat/pv-13b-list-badges`)
+
+A fresh-context reliability review of `apps/web/src/features/phrases/components/PhraseList.tsx`
+(the file lives entirely in the 13b slice) found two real, reproduced WARNING-level bugs, same
+"fix on the owning branch, then rebase forward" pattern as Unit 12's fix pass above:
+
+1. **Empty-state message shown during loading/retry.** The empty-state guard only excluded
+   `status === "error"`, not `status === "loading"` — so clicking Reintentar (or any refresh
+   starting from zero held items) briefly rendered "Aún no hay frases guardadas." while the
+   refetch was still in flight, contradicting the phrase-ui spec's "Saved phrase list with status
+   badge" requirement ("MUST show ... a loading state"). Reproduced with a throwaway test
+   (`status="loading"`, `items=[]]` → empty paragraph present) before fixing.
+2. **`badgeLabel` silently mislabeled any unrecognized status as "Única".** `validation.status` is
+   plain `string` in the generated API types (no literal union exists anywhere in this client to
+   narrow it against), so any value other than exactly `"duplicate_confirmed"` silently rendered as
+   the `unique` badge — a typo or a new backend status would be indistinguishable from a genuine
+   unique phrase, with no test coverage of that path.
+
+**Fix (TDD, RED confirmed against the pre-fix code before implementing, then GREEN):**
+- Empty-state condition narrowed from `status !== "error"` to `status === "idle"`, so it excludes
+  both `loading` and `error` — the existing `aria-busy={status === "loading"}` on the `<section>`
+  remains the (already-present) loading signal; no new copy key was added (`copy.es.ts` is
+  untouched, matching the "both fixes live in `PhraseList.tsx`/`PhraseList.test.tsx` only" scope).
+- `badgeLabel` keeps its `unique` fallback (exactly two statuses are contractually possible per the
+  backend's DB CHECK constraint from Unit 4, so a new badge/copy key would be over-engineering) but
+  now `console.warn`s whenever the status is neither `duplicate_confirmed` nor `unique`, so an
+  unrecognized value is never *silently* indistinguishable from a real one — the same
+  never-silently-swallow-an-unmapped-value convention `errorCopy.ts` (Unit 13a) already uses for
+  unknown `ErrorCode`s.
+- Two new regression tests added to `PhraseList.test.tsx`: a deferred-promise `refresh()` mid-flight
+  with zero items (asserts the empty message is absent and `aria-busy="true"` is present, then
+  resolves and asserts the empty message returns), and an unrecognized `validation.status` (asserts
+  `console.warn` fires with the unrecognized value).
+
+**Commit**: `fix(web): show loading state during list retry and guard unrecognized badge status`
+SHA: `a0e4a88`, on `feat/pv-13b-list-badges` (new tip, was `3211bc5`). 2 files changed (both
+`PhraseList.tsx`/`PhraseList.test.tsx`, no other file touched). Verified on this commit:
+`cd apps/web && npx vitest run` → 162/162 passed (9 test files); `npx tsc --noEmit` → clean.
+
+**Rebase of `feat/pv-13c-page-wiring` onto the new 13b tip**: `git rebase feat/pv-13b-list-badges
+feat/pv-13c-page-wiring` — no conflicts (13c never touches `PhraseList.tsx`), both of 13c's commits
+replayed cleanly. New 13c tip: `8a95272` (was `387bfe5`; `feat(web): wire saved-list first paint
+into the phrase workspace` is now `e7acfbf`, was `8a66eb1`). Re-verified at the new tip:
+`npx vitest run` → 164/164 passed (10 test files, the +2 fix-pass tests included); `npx tsc
+--noEmit` → clean; `npm run build` → succeeds, `/` correctly `ƒ Dynamic`.
+
+### Status (Unit 13 fix pass — complete, 13b and 13c both updated locally, not yet pushed)
+
+Both bugs fixed with TDD (RED confirmed, then GREEN), landed as one commit on `feat/pv-13b-list-badges`
+(`a0e4a88`), and `feat/pv-13c-page-wiring` rebased forward onto it, then carrying its own docs
+follow-up commit (final tip `6acc6fe`) with a clean rebase and full green re-verification
+(164/164 vitest, tsc clean, build clean). `feat/pv-13a-copy-module` is unaffected (untouched by this
+fix, tip `f59a0ca`).
+
+**Delivered**: all three branches pushed and opened as PRs in dependency order —
+**PR #30** (`feat/pv-13a-copy-module` -> `develop`), **PR #31** (`feat/pv-13b-list-badges` -> #30,
+authoring-ahead), **PR #32** (`feat/pv-13c-page-wiring` -> #31, authoring-ahead). #31 and #32 will be
+retargeted to `develop` as their respective bases merge, per this session's established
+authoring-ahead pattern (same as Units 2b/2c and 3b/3c/3d).

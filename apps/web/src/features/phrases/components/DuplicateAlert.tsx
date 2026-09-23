@@ -4,7 +4,7 @@ import type { PhraseApiClient } from "@/lib/api/client";
 import { copy } from "@/i18n/copy.es";
 
 import type { DuplicateDetails } from "../machine";
-import { floorPercent } from "../percent";
+import { scoreLabel } from "../scoreLabel";
 import { useMatchesInfiniteScroll } from "../hooks/useMatchesInfiniteScroll";
 
 export interface DuplicateAlertProps {
@@ -17,11 +17,6 @@ export interface DuplicateAlertProps {
   onConfirm: () => void;
   onCancel: () => void;
   onInvalidCursor: () => void;
-}
-
-/** `copy.duplicate.score`'s `{percent}` template, filled in — the one interpolated copy string in this module. */
-function scoreLabel(score: number): string {
-  return copy.duplicate.score.replace("{percent}", String(floorPercent(score)));
 }
 
 /**
