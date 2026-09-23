@@ -6095,3 +6095,340 @@ fix, tip `f59a0ca`).
 authoring-ahead), **PR #32** (`feat/pv-13c-page-wiring` -> #31, authoring-ahead). #31 and #32 will be
 retargeted to `develop` as their respective bases merge, per this session's established
 authoring-ahead pattern (same as Units 2b/2c and 3b/3c/3d).
+
+## Unit 14: Full compose wiring and healthchecks -- DONE
+
+Branch `feat/pv-14-compose-wiring`, cut from `develop` (HEAD after Units 0-13 merged). Both assigned
+tasks (14.1, 14.2) are complete. **This batch had real Docker** (confirmed: `docker --version`,
+`docker compose version` v5.1.4, `docker ps` all working, a `todo-ia-db-1` container already up from a
+prior session) -- the first session able to actually build and run the `api` image's `api-builder`
+stage (Unit 8's CPU-only torch wheel + baked embedding checkpoint) and the full four-service stack end
+to end. It found and fixed **two genuine production bugs** and **one genuine test-fixture bug**, all
+three previously undetectable without a live Docker/Postgres environment, all three explicitly flagged
+as open risk in earlier units' own apply-progress notes (see "What this batch found" below).
+
+### 14.1: `docker-compose.yml` extended with `api` and `web`
+
+- **`api`**: `build: { context: ./services/api, target: api }` (the Dockerfile's OWN final stage is
+  literally named `api`, not `api-builder` -- verified by reading the Dockerfile, not assumed, per the
+  CONTEXT's explicit instruction). Every non-image-fixed `Settings` env var from design.md's
+  Configuration table is passed through `${VAR:-default}` (same pattern as `db`/`migrate`, Unit 0/4);
+  `EMBEDDING_MODEL_REVISION`'s default is the real verified Hub SHA (`e8f8c211...`, Unit 8), NOT the Unit
+  0 `.env.example` draft's all-zero placeholder -- see "Finding 0" below for why that placeholder is
+  actually broken. `depends_on: migrate: condition: service_completed_successfully`. `env_file: - path:
+  .env, required: false` (Compose spec >= 2.24, confirmed supported by this environment's Compose
+  v5.1.4) -- no `.env` file needs to exist (still permanently blocked, see below), every var has a
+  working fallback regardless.
+- **`web`**: `build: { context: ./apps/web }` (no explicit `target`; the Dockerfile's last stage,
+  `runner`, is the default), build args `NEXT_PUBLIC_API_URL`/`NEXT_PUBLIC_PHRASE_MAX_LENGTH` (must be
+  build args, not runtime env -- Next.js inlines `NEXT_PUBLIC_*` into the client bundle at `next build`
+  time, D5). Runtime `environment: API_INTERNAL_URL: ${API_INTERNAL_URL:-http://api:8000}` -- **load-
+  bearing**: `page.tsx`'s own in-code fallback is `http://localhost:8000`, which would NOT resolve to
+  the `api` container from inside `web`'s network namespace; without this line the Server Component
+  first paint would fail against the real compose network. `depends_on: api: condition:
+  service_healthy`.
+- Both healthchecks and their tuned `start_period`/`retries` are documented under 14.2 below (measured,
+  not guessed).
+- `.env.example` remains **permanently blocked** by the same hard tool-permission deny confirmed in
+  Units 0/4/8 (re-confirmed this batch: `Glob`/`ls` on any `.env*` path still denied outright). The
+  full intended content -- **corrected** from Unit 0's draft, see Finding 0 -- is recorded verbatim at
+  the end of this section for a human (or a session with `.env*` write permission) to paste in.
+
+### 14.2: VERIFY -- real measurements, not estimates
+
+Ran the literal sequence four times total across this batch (`docker compose down -v && time docker
+compose up -d --build`, poll for health, diagnose, fix, repeat) as two real production bugs surfaced
+mid-verification and had to be fixed before the stack could ever reach `healthy`. Final, official,
+completely clean run (`docker compose down -v` immediately before) is the one reported below.
+
+**Real measured build time** (cold layers -- torch wheel download + `snapshot_download` of all 28
+model files from the Hub, no local cache): `api-builder`'s `pip install torch==2.14.0 && pip install
+.[embeddings]` step took **71.6s**; `snapshot_download` took **139.5s** (~2m20s, 28 files, "unauthenticated
+requests" rate-limited by the Hub); image export/unpack took **157.7s**. Total wall time for
+`docker compose up -d --build` from a fully cold `down -v`, first attempt through container-start
+handoff: **under ~400s** (bounded by this batch's own polling granularity, not separately re-timed
+after the fixes below since subsequent runs hit Docker's build-layer cache for the unrelated `db`/
+`migrate` images and only re-ran the invalidated `api`/`web` layers).
+
+**Real measured container-start -> healthy time** (the actual number 14.2 asks for), from the FINAL
+clean run's `docker inspect todo-ia-api-1`:
+- `StartedAt`: `2026-09-23T17:31:22.372779124Z`
+- First healthcheck attempt failed at `+5.1s` (app/model still warming, connection refused -- expected,
+  not a bug).
+- **Second healthcheck attempt succeeded at `+10.6s`** (an EARLIER measurement on the same fixed image,
+  captured with full `docker inspect ... .State.Health` JSON, computed precisely as `10.619738s`) --
+  this is the actual moment Docker flips the container to `healthy`, since a single success is enough
+  regardless of `start_period`.
+- **Conclusion: `start_period: 120s`/`retries: 12` was the pre-verification ESTIMATE for a runtime
+  model DOWNLOAD that this design deliberately never does** (Unit 8: the model is baked into the image
+  at BUILD time; boot only loads already-local weights from `/opt/models` into memory plus one warmup
+  embed -- fast, no network). **Tuned down** to `start_period: 30s, interval: 5s, timeout: 5s, retries:
+  6` (still a ~3x safety margin over the measured ~10.6s, for slower reviewer hardware/disk), per the
+  task's explicit instruction to adjust the file's values to match reality, not just report the
+  mismatch. `web`'s healthcheck (not explicitly asked for a measurement, but tuned from the same real
+  run for consistency): `start_period: 20s, interval: 5s, timeout: 5s, retries: 4`.
+- **Full stack confirmed healthy end to end** in the final run: `api` healthy, `web` healthy, `db`
+  healthy, `migrate` exited 0 -- `docker compose ps -a` output captured in full below.
+
+**`infra/scripts/smoke.sh`** (new, 62 lines): `curl`-only (no `jq`/`python` dependency, portable to any
+reviewer machine with curl -- Docker/Compose are already mandatory per design.md so no NEW dependency is
+introduced), `set -euo pipefail`, three steps in the literal order the task named -- `POST
+/phrases/validate` (200, `is_duplicate` present) -> `POST /phrases` (201, saved text echoed back) ->
+`GET /phrases` (200, saved text present in `items`) -- each step asserts the exact status code and a
+concrete body field, failing fast with the full response body printed on any mismatch. Run against the
+real stack, **passed**:
+```
+==> POST http://localhost:8000/phrases/validate
+OK: validate 200, is_duplicate present
+==> POST http://localhost:8000/phrases
+OK: save 201, saved phrase echoed back
+==> GET http://localhost:8000/phrases
+OK: list 200, saved phrase present
+Smoke test passed: validate -> save -> list all succeeded end to end.
+```
+Also spot-checked beyond the task's literal ask, both real: `GET /health` returned the full 200 payload
+with the REAL sentence-transformers model (`"model":"ready"`, `"dimensions":384,
+"embedding_model":"sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2"`, real
+`embedding_cache` hit/miss counters proving actual inference ran, not a stub); `curl http://localhost:3000/`
+served the real SSR'd page and its HTML body contained the literal smoke-test phrase text saved
+moments earlier via the API -- proving the Server Component's `API_INTERNAL_URL` wiring (Unit 13c)
+genuinely works against the real compose network, not just in `TestClient`.
+
+**Docker environment left clean**, per the CONTEXT's explicit instruction: `docker compose down -v`
+run immediately after the smoke test passed. `docker ps` afterward shows zero `todo-ia-*` containers
+(only pre-existing, unrelated `salestrack_*` containers from a different project remain, untouched).
+Built images (`todo-ia-api`, `todo-ia-migrate`, `todo-ia-web`) were left in the local image cache
+(cheap, not "heavy containers/volumes running" -- speeds up the next session's rebuild) but every
+container and the `pgdata` volume were removed.
+
+### What this batch found (three genuine bugs, all previously undetectable without live Docker)
+
+**Finding 1 (production bug): `Settings.cors_origins` crashed on every real container boot.**
+`api-1`'s FIRST boot attempt (first-ever real `docker compose up` of this image) failed immediately:
+`pydantic_settings.exceptions.SettingsError: error parsing value for field "cors_origins" from source
+"EnvSettingsSource"`. Root cause: pydantic-settings' `EnvSettingsSource` treats any `list[...]`-typed
+field as "complex" and calls `json.loads` on the RAW env string BEFORE the field's own
+`mode="before"` validator (`_split_comma_separated`) ever runs -- so a real, non-JSON
+`CORS_ORIGINS=http://localhost:3000` from an actual OS environment variable crashed at import time,
+every time, in every environment. **Every existing test constructed `Settings` via keyword arguments**
+(`Settings(cors_origins=...)`, pydantic's `InitSettingsSource`), which never exercises
+`EnvSettingsSource` at all -- so this was a 100%-precise gap in the existing 38-test `TestCorsOrigins`
+coverage, invisible to the entire prior test suite across every unit from 6 onward. Fixed with
+`Annotated[list[str], NoDecode]` on the field (pydantic-settings' documented escape hatch): `NoDecode`
+keeps the raw string untouched at the source level so the existing `mode="before"` validator remains
+the ONLY thing that ever parses it, on every source uniformly.
+- RED: new test `test_comma_separated_value_from_a_real_os_environment_variable_is_split`
+  (`tests/unit/platform/test_settings.py`), using `monkeypatch.setenv` (real env, not init kwargs) --
+  reproduced the exact `SettingsError` before the fix.
+- GREEN: `Annotated[list[str], NoDecode]` fix; test passes; full `TestCorsOrigins` class (5 tests) and
+  the whole `test_settings.py` file (39 tests) re-run green; zero regression.
+
+**Finding 2 (production bug): `read_vector_column_dimensions`'s SQL never actually worked.**
+`api-1`'s SECOND boot attempt (after Finding 1's fix) failed differently, deeper into `_lifespan`:
+`sqlalchemy.exc.ProgrammingError: (psycopg.errors.SyntaxError) syntax error at or near ":"` --
+`SELECT atttypmod FROM pg_attribute WHERE attrelid = :table::regclass AND attname = %(column)s`. Root
+cause: SQLAlchemy's named-bind-param parser never substitutes a `:name` immediately followed by `::`
+(it assumes a Postgres type cast on an already-resolved literal and leaves the WHOLE `:table::regclass`
+token as literal, unparsed text) -- so `:table` was silently never bound at all, while the unrelated
+`:column` (not followed by `::`) WAS correctly translated to `%(column)s`. Unit 8's own docstring on
+this exact function had explicitly flagged it as "not confirmed against a live column in this
+environment (no Postgres available)" -- confirmed broken on the very first live column it ever touched.
+Fixed by rewriting the cast as `CAST(:table AS regclass)`, which SQLAlchemy binds normally; manually
+verified the corrected SQL directly against the running `db` container
+(`docker exec todo-ia-db-1 psql ... "SELECT atttypmod FROM pg_attribute WHERE attrelid = CAST('phrases'
+AS regclass) AND attname = 'embedding';"` -> `384`, matching `EMBEDDING_DIMENSIONS`'s default) before
+touching the Python source.
+- New integration test file `tests/integration/test_embedding_boot.py` (89 lines, 3 tests, real
+  Postgres via the same `phrases_test` fixture convention as `test_schema.py`): `typmod == 384` against
+  the real migrated `phrases.embedding` column; `check_database_reachable` returns `True` against the
+  real running engine and `False` against an engine pointed at a closed port (`connect_timeout=1`) --
+  closes the exact gap Unit 8's own docstrings flagged as "Not exercised by a test in this batch -- no
+  live Postgres available", using the first real Postgres this codebase has had all session.
+
+**Finding 3 (test-fixture bug, not production): `test_get_phrases_returns_newest_first_against_real_
+postgres` had never actually run.** After Findings 1-2 were fixed, `api-1` finally booted and the full
+stack became healthy -- but the pre-existing integration suite still had one real failure:
+`test_endpoints_pgvector.py`'s newest-first test crashed with `KeyError: 'first'` inside
+`FakeEmbedder.embed`. The module's shared `_client()` helper only ever pre-seeded `FakeEmbedder` with a
+vector for the constant `_QUERY_TEXT` ("query text"); this one test tries to save THREE different
+phrases ("first"/"second"/"third"), none of which is `_QUERY_TEXT`. The Unit 7b fix-pass that wrote
+this test said so itself, explicitly: "**NOT executed, verified only by careful reading** -- no
+`sqlalchemy` installed and no docker/Postgres available... **Recommended follow-up: run `pytest
+tests/integration -m integration -q` in a docker-capable session** before this endpoint is considered
+fully production-verified end to end" -- this IS that session, and the very first real run caught
+exactly the kind of bug that "verified only by reading" cannot catch. Fixed by adding a reusable
+`orthogonal_vector(index)` helper to `tests/contract_suite/vectors.py` (a standard basis vector --
+cosine similarity exactly 0 between any two distinct indices, safe under any realistic
+`SIMILARITY_THRESHOLD`) and giving `_client()` an optional `vectors` parameter so this one test can
+supply three genuinely non-duplicate vectors, one per saved phrase, without touching the other two
+(passing) tests in the same file, which keep the old default. Confirmed: production `list_recent` code
+was already correct (Unit 7b fix-pass's own concern); only the TEST's fixture data was wrong.
+
+**Finding 0 (documentation-only, no code change): the Unit 0 `.env.example` draft's
+`EMBEDDING_MODEL_REVISION` placeholder is invalid.** While wiring `docker-compose.yml`'s default for
+this var, re-counted the Unit 0 draft's all-zero placeholder
+(`0000000000000000000000000000000000000`, recorded verbatim in this file's own Unit 0 section) and
+found it is **37 characters, not 40** -- it would fail `Settings`' own `pattern=r"^[0-9a-fA-F]{40}$"`
+validation the instant a human pastes it into a real `.env.example`/`.env`. `docker-compose.yml`'s
+`${EMBEDDING_MODEL_REVISION:-default}` fallback below uses the REAL, verified, 40-hex Unit 8 SHA
+instead, so this batch's own compose file is unaffected -- but the corrected full `.env.example`
+content at the end of this section fixes the placeholder too, so a future human paste does not
+reproduce this bug.
+
+### TDD Cycle Evidence (Unit 14)
+
+| Task / Finding | Test File | Layer | RED | GREEN | TRIANGULATE | REFACTOR |
+|---|---|---|---|---|---|---|
+| 14.1 (compose wiring) | N/A (infra config, no test file; verified by 14.2's real `docker compose up` + healthchecks) | N/A | N/A -- structural compose config | ✅ all four services healthy against the real stack | N/A | ✅ healthcheck `localhost`->`127.0.0.1` fix folded in after Finding 3's own real-run diagnosis (see below) |
+| 14.2 (verify) | `infra/scripts/smoke.sh` (not pytest -- this unit's own Verify line IS the test, per the CONTEXT's instruction) | End-to-end | ✅ first real run failed at container boot (Findings 1-2) | ✅ final clean run: build, boot, healthcheck, smoke script all green | ✅ 3 endpoints (validate/save/list) plus 2 unplanned spot-checks (`/health`, SSR page content) | ➖ none needed |
+| Finding 1 (CORS env crash) | `tests/unit/platform/test_settings.py` | Unit | ✅ `SettingsError` reproduced via `monkeypatch.setenv`, real env source | ✅ `NoDecode` annotation fixes it | ➖ single scenario matches the finding's exact scope | ➖ none needed |
+| Finding 2 (typmod SQL) | `tests/integration/test_embedding_boot.py` (new) | Integration | ✅ `ProgrammingError` reproduced live against `todo-ia-db-1` via `psql` before touching Python | ✅ `CAST(:table AS regclass)` fix; 3/3 new tests pass | ✅ typmod-matches + reachable-true + reachable-false (closed port) | ➖ none needed |
+| Finding 3 (FakeEmbedder KeyError) | `tests/integration/test_endpoints_pgvector.py` | Integration | ✅ `KeyError: 'first'` reproduced via a throwaway direct `container.save_phrase()` script (not through HTTP, to get the real traceback past `raise_server_exceptions=False`) | ✅ `orthogonal_vector` + `_client(vectors=...)` fix; 3/3 tests in the file pass | ✅ verified the OTHER two tests in the same file still pass unchanged (default `vectors=None` preserves old behaviour) | ➖ none needed |
+
+### Test Summary (Unit 14)
+- **New test files**: 1 (`tests/integration/test_embedding_boot.py`, 3 tests)
+- **New tests in existing files**: 1 (`test_settings.py`'s CORS env-source test)
+- **Modified (fixed) tests**: 1 (`test_endpoints_pgvector.py`'s newest-first test)
+- **Non-integration suite**: 287 passed, 1 deselected (unchanged count from before this batch -- the
+  one new CORS test replaces nothing, `test_embedding_boot.py`/the `test_endpoints_pgvector.py` fix are
+  both `integration`-marked, outside this command's scope)
+- **Integration suite** (`pytest tests/integration -m integration -q`, against the real `db` container
+  from this batch's own compose stack, host-side on `localhost:5432`): **41 passed** (was 40 passing +
+  1 failing before Finding 3's fix; net +1 file, all green)
+- `ruff check src tests`, `mypy src` (`Success: no issues found in 43 source files`), `lint-imports`
+  (`Contracts: 5 kept, 0 broken`) -- all clean, re-run after every fix, not just once at the end
+
+### Measured diff (git, intent-to-add for the two new untracked files)
+
+```
+docker-compose.yml                                 | 120 ++++++++++++++++++++-
+infra/scripts/smoke.sh                             |  62 +++++++++++
+openspec/changes/phrase-validation/tasks.md        |   4 +-
+services/api/src/app/platform/embedding_boot.py    |  19 ++--
+services/api/src/app/platform/settings.py          |  16 ++-
+services/api/tests/contract_suite/vectors.py       |  13 +++
+services/api/tests/integration/test_embedding_boot.py |  89 +++++++++++++++
+services/api/tests/integration/test_endpoints_pgvector.py |  27 +++--
+services/api/tests/unit/platform/test_settings.py  |  18 ++++
+9 files changed, 348 insertions(+), 20 deletions(-)
+```
+**368 changed lines total (348 + 20) -- under the 400-line cap**, no `size:exception` needed, despite
+absorbing three unplanned real-bug fixes discovered only because this was the first Docker-capable
+session (roughly 1.7x the ~200 estimate, consistent with this session's own observed 1.2x-3.9x pattern
+noted in the CONTEXT).
+
+### Deviations from design.md / tasks.md
+
+1. **Three unplanned bug fixes** (Findings 1-3 above) were not named in tasks.md's Unit 14 text, but
+   all three directly blocked 14.2's literal Verify line (the stack cannot become healthy, and the
+   pre-existing integration suite cannot be fully green, without them) -- judged in-scope by the same
+   reasoning Unit 8's own `PgVectorUnitOfWorkFactory` judgment call used: small, clearly necessary to
+   finish THIS unit's own assigned Verify line, not scope-creep into a future unit's territory.
+2. **`start_period`/`retries` tuned down from tasks.md's literal `120s`/`12`** -- per 14.2's own
+   explicit instruction ("tune start_period/retries if the 120s estimate is wrong... adjust the
+   compose file's values to match reality, don't just report a mismatch and leave bad values in
+   place"). Not a deviation from intent, a completion of the literal task text.
+3. **Healthcheck target changed from `localhost` to `127.0.0.1`** in both `api` and `web` -- not named
+   in tasks.md's literal text at all, but directly required for the `web` healthcheck to ever succeed
+   (see Finding 3's TDD-evidence-table note above; discovered mid-verification, not a separate
+   "finding" heading of its own since it never blocked application code, only the healthcheck command
+   string itself).
+
+### `.env.example` still blocked -- corrected content recorded here
+
+Same permanent tool-permission deny as every prior unit (Glob/`ls` denied outright on any `.env*`
+path). Full intended content below, **corrected** from Unit 0's draft (Finding 0: the
+`EMBEDDING_MODEL_REVISION` placeholder is now a real, valid-shaped 40-hex value, though still a
+placeholder -- a real deployment should still set the value that matches whatever SHA the image was
+actually built with):
+
+```dotenv
+# Copy to `.env` before running `docker compose up`. Every variable here maps
+# 1:1 to the Configuration table in openspec/changes/phrase-validation/design.md.
+# Two image-fixed vars (HF_HUB_OFFLINE/TRANSFORMERS_OFFLINE, SENTENCE_TRANSFORMERS_HOME)
+# are baked into the API image and are intentionally NOT listed here.
+
+# --- Database ---
+DATABASE_URL=postgresql+psycopg://todo_ia:todo_ia@db:5432/todo_ia
+POSTGRES_USER=todo_ia
+POSTGRES_PASSWORD=todo_ia
+POSTGRES_DB=todo_ia
+
+# --- Domain policy ---
+SIMILARITY_THRESHOLD=0.80
+MATCHES_PAGE_SIZE=50
+PHRASE_MAX_LENGTH=280
+PHRASES_LIST_LIMIT=200
+MAX_REQUEST_BYTES=1048576
+
+# --- Embeddings ---
+EMBEDDING_PROVIDER=sentence_transformers
+EMBEDDING_MODEL=sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2
+# 40-hex Hugging Face Hub commit SHA the image was built with (Unit 14 fix:
+# Unit 0's original placeholder here was only 37 chars -- invalid. This is the
+# REAL SHA verified and baked by Unit 8's Dockerfile ARG default).
+EMBEDDING_MODEL_REVISION=e8f8c211226b894fcb81acc59f3b34ba3efd5f42
+EMBEDDING_DIMENSIONS=384
+EMBEDDING_TIMEOUT_SECONDS=10.0
+EMBEDDING_MAX_CONCURRENCY=2
+EMBEDDING_CACHE_SIZE=512
+HNSW_EF_SEARCH=200
+
+# --- Concurrency ---
+LOCK_TIMEOUT_MS=5000
+
+# --- API / platform ---
+CORS_ORIGINS=http://localhost:3000
+LOG_LEVEL=INFO
+
+# --- Web (Next.js) ---
+NEXT_PUBLIC_API_URL=http://localhost:8000
+NEXT_PUBLIC_PHRASE_MAX_LENGTH=280
+API_INTERNAL_URL=http://api:8000
+```
+
+**Verify (all confirmed by RUNNING this batch, real Docker)**:
+- `docker compose down -v && docker compose up -d --build` (four separate real runs across this batch
+  as bugs were found and fixed) -> final clean run: all four services created; `db`/`api`/`web`
+  healthy, `migrate` exited 0.
+- `docker inspect todo-ia-api-1` -> container-start to healthy: **~10.6s measured** (see 14.2 above).
+- `bash infra/scripts/smoke.sh` -> all three steps (validate/save/list) passed against the real stack.
+- `curl http://localhost:8000/health` -> real 200 payload, real model, real cache counters.
+- `curl http://localhost:3000/` -> real SSR page containing the just-saved phrase text.
+- `cd services/api && .venv/Scripts/python.exe -m pytest tests/unit tests/contract_suite tests/contract
+  -m "not integration and not slow" -q` -> **287 passed, 1 deselected**.
+- `cd services/api && DATABASE_URL=postgresql+psycopg://todo_ia:todo_ia@localhost:5432/todo_ia
+  .venv/Scripts/python.exe -m pytest tests/integration -m integration -q` -> **41 passed** (against the
+  real `db` container from this batch's own stack).
+- `.venv/Scripts/ruff.exe check src tests` -> `All checks passed!`
+- `.venv/Scripts/mypy.exe src` -> `Success: no issues found in 43 source files`
+- `.venv/Scripts/lint-imports.exe` -> `Contracts: 5 kept, 0 broken.`
+- `docker compose down -v` (final) -> confirmed clean: `docker ps` shows zero `todo-ia-*` containers.
+
+**Commit**: `feat(infra): full compose wiring and healthchecks` (pending -- committed immediately after
+this apply-progress update, single squashed RED+GREEN commit per strict-tdd.md convention, same as
+every prior unit).
+**Branch**: `feat/pv-14-compose-wiring`
+**Base**: `develop` (HEAD after Units 0-13 merged; no CI run expected on this PR -- `.github/workflows/
+ci.yml` only fires against `main`, per this session's branch-strategy note).
+**Lines changed**: 348 insertions / 20 deletions, 9 files, 368 total -- under the 400-line cap, no
+`size:exception` needed.
+**Not pushed, no PR opened** -- per the CONTEXT's explicit instruction ("Do NOT push or open a PR.
+Implement, verify with real Docker, commit locally only. Report the commit SHA when done.").
+
+## Remaining Tasks (as of the end of this batch)
+
+- [x] Unit 14 (14.1, 14.2): done, verified with real Docker end to end, committed locally on
+  `feat/pv-14-compose-wiring`, not pushed (per instruction). Three real bugs found and fixed (see
+  Findings 1-3 above) -- all three were previously undetectable without live Docker/Postgres and were
+  explicitly flagged as open risk in Units 0/8/7b's own apply-progress notes.
+- [ ] `.env.example` still blocked (same standing tool-permission gap since Unit 0) -- now also needed
+  for Unit 15's README `cp .env.example .env` step. Corrected full content recorded above.
+- [ ] Unit 15 (README and architecture): not started, needs Unit 14 (this PR, done) -- ready to start.
+- [ ] Unit 16 (Decision log): not started, needs Unit 9 (calibration fixture, PR #25 not yet confirmed
+  merged in this batch's context) and benefits from Unit 14's real measurements above (ADR-003's
+  "measured image size, p95 latency" and ADR-008's pgvector/exact-scan notes can now cite this batch's
+  real `docker images`/timing data if still accurate when Unit 16 runs).
+- [ ] Review and merge all still-open PRs from prior units (#23 fix/pv-07-review-fixes, #24 fix/pv-08,
+  #25 Unit 9, #29-#32 Units 12/13a/13b/13c) -- out of this batch's scope, tracked here for visibility
+  only.

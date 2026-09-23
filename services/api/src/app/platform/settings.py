@@ -21,9 +21,10 @@ only by the `db` compose service -- this app only reads `DATABASE_URL`.
 from __future__ import annotations
 
 from enum import StrEnum
+from typing import Annotated
 
 from pydantic import Field, field_validator
-from pydantic_settings import BaseSettings, SettingsConfigDict
+from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
 
 
 class EmbeddingProviderName(StrEnum):
@@ -63,7 +64,18 @@ class Settings(BaseSettings):
     embedding_cache_size: int = Field(default=512, ge=0)
     hnsw_ef_search: int = Field(default=200, ge=1, le=1000)
     lock_timeout_ms: int = Field(default=5000, ge=1)
-    cors_origins: list[str] = Field(default_factory=lambda: ["http://localhost:3000"])
+    # `NoDecode`: pydantic-settings' `EnvSettingsSource` otherwise treats any
+    # `list[...]` field as "complex" and calls `json.loads` on the raw env
+    # string BEFORE the `_split_comma_separated` validator below ever runs
+    # -- crashing `SettingsError` on a real `CORS_ORIGINS=http://host:port`
+    # value from an actual OS environment variable (Unit 14 finding: only
+    # surfaced by a real `docker compose up`, never by a test constructing
+    # `Settings(cors_origins=...)` directly via keyword args). `NoDecode`
+    # keeps the raw string untouched so the `mode="before"` validator is the
+    # only thing that ever parses it, on every source (env or init kwargs).
+    cors_origins: Annotated[list[str], NoDecode] = Field(
+        default_factory=lambda: ["http://localhost:3000"]
+    )
     log_level: LogLevel = LogLevel.INFO
 
     @field_validator("database_url")

@@ -108,6 +108,24 @@ class TestCorsOrigins:
         with pytest.raises(ValidationError):
             _settings(cors_origins=value)
 
+    def test_comma_separated_value_from_a_real_os_environment_variable_is_split(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Unit 14 finding: every other test above constructs `Settings` via
+        keyword args (pydantic's `InitSettingsSource`), which never exercises
+        pydantic-settings' `EnvSettingsSource`. That source treats
+        `list[str]` fields as "complex" and calls `json.loads` on the raw
+        env string BEFORE any field validator runs, so a real
+        `CORS_ORIGINS=http://localhost:3000` (not JSON) crashed
+        `Settings()` with `SettingsError` on every actual container boot --
+        caught only by Unit 14's real `docker compose up` against the built
+        image, never by the pre-existing suite. `NoDecode` on the field
+        annotation is the fix (see `platform/settings.py`)."""
+        monkeypatch.setenv("DATABASE_URL", "postgresql+psycopg://u:p@localhost:5432/db")
+        monkeypatch.setenv("CORS_ORIGINS", "http://a.example,http://b.example")
+        settings = Settings()  # type: ignore[call-arg]
+        assert settings.cors_origins == ["http://a.example", "http://b.example"]
+
 
 class TestEmbeddingModelRevision:
     def test_default_is_forty_hex_characters(self) -> None:

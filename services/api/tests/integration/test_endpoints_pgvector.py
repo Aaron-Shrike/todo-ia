@@ -55,9 +55,9 @@ from app.main import create_app  # noqa: E402 -- must follow the env var default
 from app.modules.phrases.adapters.pgvector_repository import PgVectorUnitOfWorkFactory
 from app.modules.phrases.container import build_phrases_container
 from app.modules.similarity.adapters.fake import FakeEmbedder
-from app.modules.similarity.contracts import SimilarityPolicy
+from app.modules.similarity.contracts import SimilarityPolicy, Vector
 from app.platform.settings import Settings
-from tests.contract_suite.vectors import PROBE
+from tests.contract_suite.vectors import PROBE, orthogonal_vector
 
 pytestmark = pytest.mark.integration
 
@@ -100,11 +100,11 @@ def _freshly_migrated_schema(database_url: str) -> Iterator[None]:
     yield
 
 
-def _client(engine: Engine) -> TestClient:
+def _client(engine: Engine, *, vectors: dict[str, Vector] | None = None) -> TestClient:
     settings = Settings(database_url=_database_url())
     app = create_app(settings)
     app.state.phrases = build_phrases_container(
-        embedder=FakeEmbedder({_QUERY_TEXT: PROBE}),
+        embedder=FakeEmbedder(vectors if vectors is not None else {_QUERY_TEXT: PROBE}),
         uow_factory=PgVectorUnitOfWorkFactory(engine),
         policy=SimilarityPolicy(threshold=settings.similarity_threshold),
         phrase_max_length=settings.phrase_max_length,
@@ -141,8 +141,23 @@ def test_get_phrases_returns_newest_first_against_real_postgres(engine: Engine) 
     # (see apply-progress.md's Unit 7b "Discovered gap" note), so this
     # endpoint 500'd with an `AttributeError` against real Postgres despite
     # every contract test (against the in-memory adapter only) passing.
-    client = _client(engine)
-    for phrase_text in ("first", "second", "third"):
+    #
+    # Unit 14 finding: this test was written but, by the Unit 7b fix-pass's
+    # own admission, never actually RUN before (no docker/Postgres in that
+    # environment). It failed on its very first real execution -- not with
+    # the `list_recent` bug it was written to catch, but one step earlier:
+    # the module's shared `_client()` only pre-seeded `FakeEmbedder` with a
+    # vector for `_QUERY_TEXT` ("query text"), so saving "first" raised
+    # `KeyError` inside `FakeEmbedder.embed`, a test-fixture bug, not a
+    # production one. Fixed by giving THIS test its own client with a
+    # distinct, pairwise-orthogonal vector per phrase (see
+    # `orthogonal_vector` in `tests/contract_suite/vectors.py`), so none of
+    # the three saves is ever flagged a duplicate of another.
+    phrases = ("first", "second", "third")
+    client = _client(
+        engine, vectors={text: orthogonal_vector(i) for i, text in enumerate(phrases)}
+    )
+    for phrase_text in phrases:
         response = client.post("/phrases", json={"text": phrase_text})
         assert response.status_code == 201
     response = client.get("/phrases")

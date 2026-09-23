@@ -441,8 +441,8 @@ Covers (unchanged, now spread across 13a-13c as noted per task): Saved phrase li
 
 Commit: `feat(infra): full compose wiring and healthchecks`. Rollback: revert (compose returns to db + migrate).
 Covers: api-contract Env documented (compose consumes `.env`); Ready (container healthcheck uses `/health`); Model not loaded (unhealthy until warm).
-- [ ] 14.1 Extend `docker-compose.yml`: `api` (build `services/api`, port 8000, `depends_on migrate: service_completed_successfully`, healthcheck `GET /health` with `start_period: 120s`, `interval: 10s`, `timeout: 5s`, `retries: 12`), `web` (build `apps/web`, build args, port 3000, `depends_on api: service_healthy`, healthcheck `GET /`), single `.env` via `env_file`, no `-f` needed.
-- [ ] 14.2 VERIFY (unmeasured): `docker compose down -v && time docker compose up -d --build`, poll `docker compose ps` until `api` is `healthy`; record container-start -> healthy seconds and tune `start_period`/`retries` (120 s is an estimate). Add `infra/scripts/smoke.sh` (`curl` validate, save, list) and run it.
+- [x] 14.1 Extend `docker-compose.yml`: `api` (build `services/api`, port 8000, `depends_on migrate: service_completed_successfully`, healthcheck `GET /health` with `start_period: 120s`, `interval: 10s`, `timeout: 5s`, `retries: 12`), `web` (build `apps/web`, build args, port 3000, `depends_on api: service_healthy`, healthcheck `GET /`), single `.env` via `env_file`, no `-f` needed.
+- [x] 14.2 VERIFY (unmeasured): `docker compose down -v && time docker compose up -d --build`, poll `docker compose ps` until `api` is `healthy`; record container-start -> healthy seconds and tune `start_period`/`retries` (120 s is an estimate). Add `infra/scripts/smoke.sh` (`curl` validate, save, list) and run it.
 - Verify: `docker compose up -d --build && bash infra/scripts/smoke.sh && docker compose down -v`.
 
 ## Unit 15: README and architecture (~300)

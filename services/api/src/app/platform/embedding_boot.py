@@ -61,15 +61,22 @@ def read_vector_column_dimensions(connection: Connection, *, table: str, column:
     """Reads `pg_attribute.atttypmod` for a `vector(n)` column: pgvector
     stores the declared dimension directly in typmod, with no
     `VARHDRSZ`-style offset (unlike `varchar`) -- per pgvector's
-    `vector_typmod_in` C source. **Not exercised by a test in this
-    environment** -- no live Postgres instance and `sqlalchemy` itself is
-    not installed in this dev venv; this is a genuine, documented gap for
-    the next docker-capable session (see apply-progress.md's Unit 8
-    section)."""
+    `vector_typmod_in` C source.
+
+    Unit 14 finding: the original query wrote `:table::regclass` --
+    SQLAlchemy's named-bind-param parser never substitutes a `:name`
+    immediately followed by `::` (it leaves it as literal text, assuming a
+    Postgres cast on an already-resolved value), so the bind was silently
+    left as the literal string `:table` and Postgres raised a syntax error
+    at the first real `docker compose up` against a live database (Unit
+    8's own docstring here had flagged this exact function as "not
+    exercised... no live Postgres" -- now confirmed broken). Fixed with an
+    explicit `CAST(:table AS regclass)`, which SQLAlchemy binds normally."""
     from sqlalchemy import text
 
     query = text(
-        "SELECT atttypmod FROM pg_attribute WHERE attrelid = :table::regclass AND attname = :column"
+        "SELECT atttypmod FROM pg_attribute "
+        "WHERE attrelid = CAST(:table AS regclass) AND attname = :column"
     )
     return int(connection.execute(query, {"table": table, "column": column}).scalar_one())
 
