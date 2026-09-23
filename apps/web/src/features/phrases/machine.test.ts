@@ -21,6 +21,7 @@ const SAMPLE_DETAILS: DuplicateDetails = {
   matches: [{ id: "7", text: "Comprar leche", score: 0.9312 }],
   nextCursor: null,
   hasMore: false,
+  total: 1,
 };
 
 // Deliberately distinct from SAMPLE_DETAILS so a test asserting the
@@ -33,6 +34,7 @@ const FRESH_DETAILS: DuplicateDetails = {
   matches: [{ id: "9", text: "Ir a comprar leche", score: 1 }],
   nextCursor: "cursor-2",
   hasMore: true,
+  total: 2,
 };
 
 const SAMPLE_ERROR: ErrorInfo = {

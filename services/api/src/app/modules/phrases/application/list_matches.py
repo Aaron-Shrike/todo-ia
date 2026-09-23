@@ -42,4 +42,5 @@ class ListMatches:
             page = uow.repo.find_matches(
                 vector, max_distance=self._policy.max_distance(), limit=limit, cursor=match_cursor
             )
-        return build_matches_page(page, self._policy, comparison=comparison)
+            total = uow.repo.count_matches(vector, max_distance=self._policy.max_distance())
+        return build_matches_page(page, self._policy, comparison=comparison, total=total)

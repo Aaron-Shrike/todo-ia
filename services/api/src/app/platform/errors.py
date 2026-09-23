@@ -27,6 +27,7 @@ from dataclasses import dataclass
 
 from app.modules.phrases.domain.cursor import InvalidCursor
 from app.modules.phrases.domain.errors import EmptyPhraseText, PhraseTooLong
+from app.modules.phrases.domain.list_cursor import InvalidListCursor
 from app.modules.similarity.domain.errors import EmbeddingTimeout, EmbeddingUnavailable
 
 
@@ -62,6 +63,7 @@ def _too_long_details(exc: Exception) -> dict[str, object]:
 
 ERROR_REGISTRY: dict[type[Exception], ErrorMapping] = {
     InvalidCursor: ErrorMapping(400, "INVALID_CURSOR"),
+    InvalidListCursor: ErrorMapping(400, "INVALID_CURSOR"),
     EmptyPhraseText: ErrorMapping(422, "VALIDATION_ERROR"),
     PhraseTooLong: ErrorMapping(422, "VALIDATION_ERROR"),
     EmbeddingUnavailable: ErrorMapping(503, "EMBEDDING_UNAVAILABLE"),

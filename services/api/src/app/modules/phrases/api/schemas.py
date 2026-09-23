@@ -21,8 +21,22 @@ def page_limit(max_value: int) -> Any:
     """Strict-int type bounded to `[1, max_value]` -- design.md's shared
     `PageLimit` rule. `max_value` is `settings.matches_page_size`, injected
     by the caller (Unit 6b/7) so the two paginated endpoints share one
-    bound. Strict typing rejects `"10"`, `true` and `10.5`."""
+    bound. Strict typing rejects `"10"`, `true` and `10.5` -- for a JSON
+    request BODY field, where a numeric-string value is a real distinction
+    the client could make. NOT for a query parameter -- see `query_limit`."""
     return Annotated[int, Field(strict=True, ge=1, le=max_value)]
+
+
+def query_limit(max_value: int) -> Any:
+    """Int type bounded to `[1, max_value]` for a QUERY parameter (`GET
+    /phrases`'s `?limit=`). Deliberately NOT `strict=True`: every query
+    value arrives as text on the wire, so "strict" would reject `?limit=10`
+    itself (there is no non-string form a query value could take, unlike a
+    JSON body field) -- FastAPI's own lenient str->int coercion for query
+    params still rejects `?limit=abc` or `?limit=10.5` as a real 422, it
+    just isn't fooled into treating "the value came from a URL" as "the
+    client sent the wrong JSON type"."""
+    return Annotated[int, Field(ge=1, le=max_value)]
 
 
 def raw_phrase_text(max_length: int) -> Any:

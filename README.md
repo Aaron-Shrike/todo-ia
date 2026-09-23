@@ -87,7 +87,8 @@ runs even before `.env` exists; copying `.env.example` to `.env` only lets you o
 | `SIMILARITY_THRESHOLD` | `0.80` | float, `0 <= t <= 1`; working default, calibrated in `docs/evidence/calibration.md` |
 | `MATCHES_PAGE_SIZE` | `50` | int, 1..200; also the max accepted `limit` on `/phrases/matches` |
 | `PHRASE_MAX_LENGTH` | `280` | int, 1..4000; raw pre-normalization cap is `4 × PHRASE_MAX_LENGTH` |
-| `PHRASES_LIST_LIMIT` | `200` | int, 1..1000; hard cap on `GET /phrases` |
+| `PHRASES_LIST_LIMIT` | `200` | int, 1..1000; max `?limit=` a client may request on `GET /phrases` |
+| `PHRASES_PAGE_SIZE` | `10` | int, 1..1000; default page size for `GET /phrases` when `?limit=` is omitted |
 | `MAX_REQUEST_BYTES` | `1048576` | int >= 4096; request bodies above it are rejected with 413 before parsing |
 | `EMBEDDING_PROVIDER` | `sentence_transformers` | the only runtime value; `fake` exists only in the test settings class |
 | `EMBEDDING_MODEL` | `sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2` | non-empty |

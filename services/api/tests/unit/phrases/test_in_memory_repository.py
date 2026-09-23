@@ -225,6 +225,31 @@ def test_find_matches_filters_by_max_distance_and_orders_by_bucket_then_id() -> 
     assert page.next_cursor is None
 
 
+def test_count_matches_reports_the_full_count_independent_of_limit() -> None:
+    factory = InMemoryUnitOfWorkFactory()
+    with factory() as uow:
+        for i, distance in enumerate((0.05, 0.10, 0.15, 0.90)):
+            uow.repo.add(
+                NewPhrase(
+                    text=f"p{i}",
+                    normalized_text=f"p{i}",
+                    embedding=_vector_at_distance(distance),
+                    similarity_score=None,
+                    most_similar_phrase_id=None,
+                    validation_status=ValidationStatus.UNIQUE,
+                    validated_at=datetime.now(UTC),
+                )
+            )
+        uow.commit()
+
+    with factory(read_only=True) as uow:
+        total = uow.repo.count_matches(PROBE, max_distance=0.2)  # excludes the 0.90 phrase
+        page = uow.repo.find_matches(PROBE, max_distance=0.2, limit=1, cursor=None)
+
+    assert total == 3
+    assert len(page.items) == 1  # `limit` bounds the page, not `count_matches`
+
+
 def test_find_matches_limit_plus_one_probe_and_cursor_continuation() -> None:
     factory = InMemoryUnitOfWorkFactory()
     with factory() as uow:

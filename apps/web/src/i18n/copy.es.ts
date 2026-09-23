@@ -33,6 +33,7 @@ export const copy = {
     mostSimilar: "Frase más similar",
     score: "Similitud: {percent}%",
     matchesTitle: "Coincidencias",
+    matchesCounter: "{loaded}/{total}",
     loadingMore: "Cargando más coincidencias...",
     loadMoreError: "No se pudieron cargar más coincidencias.",
   },
@@ -43,6 +44,9 @@ export const copy = {
   list: {
     empty: "Aún no hay frases guardadas.",
     loadError: "No se pudieron cargar las frases.",
+    counter: "{loaded}/{total}",
+    loadingMore: "Cargando más frases...",
+    loadMoreError: "No se pudieron cargar más frases.",
   },
   saved: {
     success: "Frase guardada.",

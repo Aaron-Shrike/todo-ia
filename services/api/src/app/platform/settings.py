@@ -51,7 +51,10 @@ class Settings(BaseSettings):
     similarity_threshold: float = 0.80
     matches_page_size: int = Field(default=50, ge=1, le=200)
     phrase_max_length: int = Field(default=280, ge=1, le=4000)
+    # Max value a client's `?limit=` on `GET /phrases` may request.
     phrases_list_limit: int = Field(default=200, ge=1, le=1000)
+    # Default page size for `GET /phrases` when `?limit=` is omitted.
+    phrases_page_size: int = Field(default=10, ge=1, le=1000)
     max_request_bytes: int = Field(default=1_048_576, ge=4096)
     embedding_provider: EmbeddingProviderName = EmbeddingProviderName.SENTENCE_TRANSFORMERS
     embedding_model: str = Field(

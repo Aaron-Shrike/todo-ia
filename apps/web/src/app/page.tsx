@@ -6,7 +6,7 @@ import type { components } from "@/types/api";
 
 import styles from "./page.module.css";
 
-type PhraseOut = components["schemas"]["_PhraseOut"];
+type PhraseListData = components["schemas"]["_PhraseListData"];
 
 // Server-side-only (never bundled to the browser) — the Server-Component
 // counterpart of the browser-facing `NEXT_PUBLIC_API_URL` `client.ts`'s
@@ -20,7 +20,7 @@ const API_INTERNAL_URL = process.env.API_INTERNAL_URL ?? "http://localhost:8000"
 // (design.md "First paint and list refresh").
 export const dynamic = "force-dynamic";
 
-async function fetchInitialItems(): Promise<PhraseOut[] | null> {
+async function fetchInitialPage(): Promise<PhraseListData | null> {
   const client = createApiClient({
     baseUrl: API_INTERNAL_URL,
     // `client.ts`'s own `request()` never sets `cache` (it is also used
@@ -31,8 +31,10 @@ async function fetchInitialItems(): Promise<PhraseOut[] | null> {
     fetchImpl: (input, init) => fetch(input, { ...init, cache: "no-store" }),
   });
   try {
-    const { items } = await client.listPhrases();
-    return items;
+    // No `limit`/`cursor`: the server's own default page size applies, same
+    // as any other first load — `PhraseList` continues paging from this
+    // page's own `next_cursor` on scroll.
+    return await client.listPhrases();
   } catch {
     // A first-paint fetch failure renders the exact same load-error state
     // `PhraseList` shows for a later refresh failure — no separate path,
@@ -43,14 +45,14 @@ async function fetchInitialItems(): Promise<PhraseOut[] | null> {
 }
 
 export default async function HomePage() {
-  const initialItems = await fetchInitialItems();
+  const initialPage = await fetchInitialPage();
 
   return (
     <main className={styles.page}>
       <SiteHeader />
       <div className={styles.content}>
         <h1 className={styles.title}>{copy.title}</h1>
-        <PhraseWorkspace initialItems={initialItems} />
+        <PhraseWorkspace initialPage={initialPage} />
       </div>
       <SiteFooter />
     </main>

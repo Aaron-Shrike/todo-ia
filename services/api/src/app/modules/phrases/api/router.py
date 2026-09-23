@@ -18,7 +18,13 @@ from fastapi import APIRouter, Request
 from pydantic import BaseModel, ConfigDict, Field, StrictBool
 from starlette.responses import JSONResponse
 
-from app.modules.phrases.api.schemas import PhraseId, error_responses, page_limit, raw_phrase_text
+from app.modules.phrases.api.schemas import (
+    PhraseId,
+    error_responses,
+    page_limit,
+    query_limit,
+    raw_phrase_text,
+)
 from app.modules.phrases.application._shared import MatchView, MostSimilarView, VerdictView
 from app.modules.phrases.container import PhrasesContainer
 from app.modules.phrases.contracts import Phrase
@@ -50,6 +56,7 @@ _MATCHES_ERRORS = error_responses(
     (503, "EMBEDDING_UNAVAILABLE"),
     (504, "EMBEDDING_TIMEOUT"),
 )
+_LIST_ERRORS = error_responses((400, "INVALID_CURSOR"), (422, "VALIDATION_ERROR"))
 
 
 class _ScoredPhrase(BaseModel):
@@ -115,6 +122,7 @@ def _verdict_details(verdict: VerdictView) -> dict[str, object]:
         "matches": matches,
         "next_cursor": verdict.next_cursor,
         "has_more": verdict.has_more,
+        "total": verdict.total,
     }
 
 
@@ -126,6 +134,7 @@ class _ValidateData(BaseModel):
     matches: list[_ScoredPhrase]
     next_cursor: str | None
     has_more: bool
+    total: int
 
 
 class _ValidateResponse(BaseModel):
@@ -159,6 +168,7 @@ def build_validate_router(*, phrase_max_length: int, matches_page_size: int) -> 
                 matches=matches,
                 next_cursor=verdict.next_cursor,
                 has_more=verdict.has_more,
+                total=verdict.total,
             )
         )
 
@@ -169,6 +179,7 @@ class _MatchesData(BaseModel):
     matches: list[_ScoredPhrase]
     next_cursor: str | None
     has_more: bool
+    total: int
 
 
 class _MatchesResponse(BaseModel):
@@ -181,15 +192,24 @@ class _PhraseResponse(BaseModel):
 
 class _PhraseListData(BaseModel):
     items: list[_PhraseOut]
+    total: int
+    next_cursor: str | None
+    has_more: bool
 
 
 class _PhraseListResponse(BaseModel):
     data: _PhraseListData
 
 
-def build_phrases_router(*, phrase_max_length: int, matches_page_size: int) -> APIRouter:
+def build_phrases_router(
+    *,
+    phrase_max_length: int,
+    matches_page_size: int,
+    phrases_list_limit: int,
+    phrases_page_size: int,
+) -> APIRouter:
     """`POST /phrases`, `POST /phrases/matches` (tasks.md 7.1),
-    `GET /phrases` (tasks.md 7b.1)."""
+    `GET /phrases` (keyset-paginated, newest first)."""
     router = APIRouter()
 
     class _SaveRequest(BaseModel):
@@ -244,15 +264,26 @@ def build_phrases_router(*, phrase_max_length: int, matches_page_size: int) -> A
                 matches=[_scored_phrase(m) for m in page.matches],
                 next_cursor=page.next_cursor,
                 has_more=page.has_more,
+                total=page.total,
             )
         )
 
-    @router.get("/phrases", response_model=_PhraseListResponse)
-    def list_phrases(request: Request) -> _PhraseListResponse:
-        # No parameters, not paginated -- hard-capped at `PHRASES_LIST_LIMIT`
-        # inside `ListPhrases` itself (design.md's "Request shapes").
+    @router.get("/phrases", response_model=_PhraseListResponse, responses=_LIST_ERRORS)
+    def list_phrases(
+        request: Request,
+        limit: query_limit(phrases_list_limit) | None = None,  # type: ignore[valid-type]
+        cursor: str | None = None,
+    ) -> _PhraseListResponse:
         container: PhrasesContainer = request.app.state.phrases
-        phrases = container.list_phrases()
-        return _PhraseListResponse(data=_PhraseListData(items=[_phrase_out(p) for p in phrases]))
+        resolved_limit = limit if limit is not None else phrases_page_size
+        view = container.list_phrases(limit=resolved_limit, cursor=cursor)
+        return _PhraseListResponse(
+            data=_PhraseListData(
+                items=[_phrase_out(p) for p in view.items],
+                total=view.total,
+                next_cursor=view.next_cursor,
+                has_more=view.has_more,
+            )
+        )
 
     return router

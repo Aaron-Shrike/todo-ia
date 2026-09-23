@@ -4,6 +4,7 @@ import { useEffect, useRef, useState } from "react";
 
 import { ApiError, type PhraseApiClient } from "@/lib/api/client";
 
+import { MATCHES_PAGE_SIZE } from "../constants";
 import type { ScoredPhrase } from "../machine";
 
 export interface UseMatchesInfiniteScrollParams {
@@ -13,6 +14,8 @@ export interface UseMatchesInfiniteScrollParams {
   initialMatches: ScoredPhrase[];
   initialCursor: string | null;
   initialHasMore: boolean;
+  /** Full count of matches meeting the threshold, from the same response `initialMatches` came from. */
+  initialTotal: number;
   /**
    * True while the machine is `saving` (Confirmar in flight, mirrors
    * `DuplicateAlert`'s own `disabled` prop). `duplicate.saving.INVALID_CURSOR`
@@ -33,6 +36,7 @@ export interface UseMatchesInfiniteScrollParams {
 
 export interface UseMatchesInfiniteScrollResult {
   matches: ScoredPhrase[];
+  total: number;
   hasMore: boolean;
   isLoadingMore: boolean;
   loadError: boolean;
@@ -40,6 +44,8 @@ export interface UseMatchesInfiniteScrollResult {
   retry: () => void;
   /** Attach to the sentinel element rendered at the end of the match list (omit the element entirely when `hasMore` is false). */
   sentinelRef: (node: Element | null) => void;
+  /** Attach to the match list's own scrollable container (its `overflow-y: auto` element) — the sentinel intersects against THIS, not the page viewport. */
+  rootRef: (node: Element | null) => void;
 }
 
 /** Appends `incoming` after `existing`, in order, skipping any id already present ("Deduplicate on overlap"). */
@@ -55,12 +61,14 @@ export function useMatchesInfiniteScroll({
   initialMatches,
   initialCursor,
   initialHasMore,
+  initialTotal,
   disabled,
   onInvalidCursor,
 }: UseMatchesInfiniteScrollParams): UseMatchesInfiniteScrollResult {
   const [matches, setMatches] = useState(initialMatches);
   const [cursor, setCursor] = useState(initialCursor);
   const [hasMore, setHasMore] = useState(initialHasMore);
+  const [total, setTotal] = useState(initialTotal);
   const [isLoadingMore, setIsLoadingMore] = useState(false);
   const [loadError, setLoadError] = useState(false);
 
@@ -126,6 +134,7 @@ export function useMatchesInfiniteScroll({
     setMatches(initialMatches);
     setCursor(initialCursor);
     setHasMore(initialHasMore);
+    setTotal(initialTotal);
     setLoadError(false);
     inFlight.current = false;
     // eslint-disable-next-line react-hooks/exhaustive-deps -- see comment above; onInvalidCursor is a stable callback prop, not session state to reset on.
@@ -137,7 +146,7 @@ export function useMatchesInfiniteScroll({
     inFlight.current = true;
     setIsLoadingMore(true);
     setLoadError(false);
-    client.listMatches({ text, cursor }).then(
+    client.listMatches({ text, cursor, limit: MATCHES_PAGE_SIZE }).then(
       (page) => {
         inFlight.current = false;
         if (unmounted.current || sessionId.current !== requestSession) return;
@@ -145,6 +154,7 @@ export function useMatchesInfiniteScroll({
         setMatches((prev) => appendDeduped(prev, page.matches));
         setCursor(page.next_cursor);
         setHasMore(page.has_more);
+        setTotal(page.total);
       },
       (err: unknown) => {
         inFlight.current = false;
@@ -178,24 +188,37 @@ export function useMatchesInfiniteScroll({
   loadNextPageRef.current = loadNextPage;
 
   const [sentinelNode, setSentinelNode] = useState<Element | null>(null);
+  // The match list scrolls in its OWN `overflow-y: auto` container, not the
+  // page — an observer with the default `root: null` (the viewport) sees
+  // the sentinel as "visible" the instant the alert renders, since the
+  // whole (clipped) container sits inside the viewport regardless of its
+  // own internal scroll position, and would auto-load every page at once.
+  // Scoping `root` to this container makes intersection track the
+  // container's own scroll instead.
+  const [rootNode, setRootNode] = useState<Element | null>(null);
 
   useEffect(() => {
     if (!sentinelNode || typeof IntersectionObserver === "undefined") return;
-    const observer = new IntersectionObserver((entries) => {
-      if (entries.some((entry) => entry.isIntersecting)) {
-        loadNextPageRef.current();
-      }
-    });
+    const observer = new IntersectionObserver(
+      (entries) => {
+        if (entries.some((entry) => entry.isIntersecting)) {
+          loadNextPageRef.current();
+        }
+      },
+      { root: rootNode },
+    );
     observer.observe(sentinelNode);
     return () => observer.disconnect();
-  }, [sentinelNode]);
+  }, [sentinelNode, rootNode]);
 
   return {
     matches,
+    total,
     hasMore,
     isLoadingMore,
     loadError,
     retry: loadNextPage,
     sentinelRef: setSentinelNode,
+    rootRef: setRootNode,
   };
 }

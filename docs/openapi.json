@@ -68,12 +68,17 @@
               }
             ],
             "title": "Next Cursor"
+          },
+          "total": {
+            "title": "Total",
+            "type": "integer"
           }
         },
         "required": [
           "matches",
           "next_cursor",
-          "has_more"
+          "has_more",
+          "total"
         ],
         "title": "_MatchesData",
         "type": "object"
@@ -124,16 +129,38 @@
       },
       "_PhraseListData": {
         "properties": {
+          "has_more": {
+            "title": "Has More",
+            "type": "boolean"
+          },
           "items": {
             "items": {
               "$ref": "#/components/schemas/_PhraseOut"
             },
             "title": "Items",
             "type": "array"
+          },
+          "next_cursor": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Next Cursor"
+          },
+          "total": {
+            "title": "Total",
+            "type": "integer"
           }
         },
         "required": [
-          "items"
+          "items",
+          "total",
+          "next_cursor",
+          "has_more"
         ],
         "title": "_PhraseListData",
         "type": "object"
@@ -285,6 +312,10 @@
           "threshold": {
             "title": "Threshold",
             "type": "number"
+          },
+          "total": {
+            "title": "Total",
+            "type": "integer"
           }
         },
         "required": [
@@ -294,7 +325,8 @@
           "most_similar",
           "matches",
           "next_cursor",
-          "has_more"
+          "has_more",
+          "total"
         ],
         "title": "_ValidateData",
         "type": "object"
@@ -407,6 +439,42 @@
     "/phrases": {
       "get": {
         "operationId": "list_phrases_phrases_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maximum": 200,
+                  "minimum": 1,
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Limit"
+            }
+          },
+          {
+            "in": "query",
+            "name": "cursor",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Cursor"
+            }
+          }
+        ],
         "responses": {
           "200": {
             "content": {
@@ -417,6 +485,26 @@
               }
             },
             "description": "Successful Response"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            },
+            "description": "Error envelope; `error.code` = `INVALID_CURSOR`."
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            },
+            "description": "Error envelope; `error.code` = `VALIDATION_ERROR`."
           }
         },
         "summary": "List Phrases"

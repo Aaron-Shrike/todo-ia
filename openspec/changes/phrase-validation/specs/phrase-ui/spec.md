@@ -70,7 +70,7 @@ While a request is in flight the UI MUST display a progress message for the curr
 
 ### Requirement: Duplicate alert
 
-In state `duplicate` the UI MUST show an alert with: the message "Posible duplicado", the most similar phrase text and its score (shown as a whole percentage FLOORED from the 4-decimal score, computed on integer basis points to avoid float error, e.g. 0.9312 shows "93%", 0.9950 and 0.9999 show "99%", and "100%" appears only for an exact 1.0), the list of matches (see infinite scroll), and the actions Confirmar ("Guardar de todos modos") and Cancelar. The alert MUST use `role="alertdialog"` (or `role="alert"`) and be keyboard operable.
+In state `duplicate` the UI MUST show an alert with: the message "Posible duplicado", the most similar phrase text and its score (shown as a whole percentage FLOORED from the 4-decimal score, computed on integer basis points to avoid float error, e.g. 0.9312 shows "93%", 0.9950 and 0.9999 show "99%", and "100%" appears only for an exact 1.0), a `{loaded}/{total}` counter (e.g. "10/46"), the list of matches (see infinite scroll), and the actions Confirmar ("Guardar de todos modos") and Cancelar. The alert MUST use `role="alertdialog"` (or `role="alert"`) and be keyboard operable.
 
 #### Scenario: Alert content
 - GIVEN validation returned most_similar "Comprar leche" at 0.9312
@@ -104,12 +104,12 @@ In state `duplicate` the UI MUST show an alert with: the message "Posible duplic
 
 ### Requirement: Infinite scroll over matches
 
-The alert's match list MUST show the first page returned by validate (or 409 `details`) and MUST load subsequent pages automatically as the user scrolls to the end of the list (sentinel/IntersectionObserver), by calling `POST /phrases/matches` with the same text and the last `next_cursor`, appending results in order. It MUST stop when `has_more` is false and MUST let the user reach every match. While loading a page it MUST show "Cargando más coincidencias..."; on failure it MUST show an inline error with a retry action and keep already loaded items. It MUST NOT request a page while one is in flight and MUST NOT duplicate items.
+The alert's match list MUST show the first page returned by validate (or 409 `details`) and MUST load subsequent pages automatically as the user scrolls to the end of the list (sentinel/IntersectionObserver), by calling `POST /phrases/matches` with the same text, `limit: 10` and the last `next_cursor`, appending results in order — the UI requests page size 10 explicitly on both the initiating validate/save call and every subsequent page (`MATCHES_PAGE_SIZE`'s own configured default, e.g. 50, remains the server-side bound for any client that does not override `limit`; this UI always does). It MUST show a `{loaded}/{total}` counter next to the match list (e.g. "10/46", growing to "20/46" as more pages load), reading `total` from the same validate/matches/409 response. It MUST stop when `has_more` is false and MUST let the user reach every match. While loading a page it MUST show "Cargando más coincidencias..."; on failure it MUST show an inline error with a retry action and keep already loaded items. It MUST NOT request a page while one is in flight and MUST NOT duplicate items.
 
 #### Scenario: Load next page on scroll
-- GIVEN page 1 (50 items) with `has_more` true
+- GIVEN page 1 (10 items, `total` 46) with `has_more` true
 - WHEN the end sentinel becomes visible
-- THEN exactly one `POST /phrases/matches` with `cursor = next_cursor` is sent and its items are appended after the existing 50
+- THEN exactly one `POST /phrases/matches` with `cursor = next_cursor` and `limit: 10` is sent, its items are appended after the existing 10, and the counter reads "20/46"
 
 #### Scenario: Invalid cursor restarts validation
 - GIVEN the next-page request returns 400 `INVALID_CURSOR`
@@ -261,6 +261,35 @@ The UI MUST render saved phrases (from `GET /phrases`, newest first) with a stat
 - WHEN handled
 - THEN "No se pudieron cargar las frases." and a Reintentar action are shown
 
+### Requirement: Infinite scroll over the saved list
+
+The saved-phrase list loads one page at a time (`GET /phrases`'s `limit`/`cursor`, server default page size 10) and MUST load subsequent pages automatically as the user scrolls to the end of the list (sentinel/IntersectionObserver), appending results in order — same mechanism as "Infinite scroll over matches", applied to this list. It MUST show a `{loaded}/{total}` counter next to the list (e.g. "10/60", growing to "20/60" as more pages load) and MUST stop requesting once `has_more` is false. While loading a page it MUST show "Cargando más frases..."; on failure it MUST show an inline error with a retry action and keep already loaded items. It MUST NOT request a page while one is in flight and MUST NOT duplicate items. A `refresh()` (after a save, or Reintentar on a full load failure) always restarts from page 1, discarding any pages loaded via scroll.
+
+#### Scenario: Load next page on scroll
+- GIVEN page 1 (10 items, `total` 60) with `has_more` true
+- WHEN the end sentinel becomes visible
+- THEN exactly one `GET /phrases?cursor=<next_cursor>` is sent, its items are appended after the existing 10, and the counter reads "20/60"
+
+#### Scenario: Reach the end
+- GIVEN 25 stored phrases
+- WHEN the user scrolls through all pages
+- THEN 25 items are shown, the counter reads "25/25", no further request is sent after `has_more` is false, and no sentinel remains
+
+#### Scenario: No concurrent page requests
+- GIVEN a page request is in flight
+- WHEN the sentinel intersects again
+- THEN no second request is sent
+
+#### Scenario: Page load failure
+- GIVEN the next-page request fails
+- WHEN the failure arrives
+- THEN loaded items remain, "No se pudieron cargar más frases." and a "Reintentar" action appear
+
+#### Scenario: Deduplicate on overlap
+- GIVEN a later page repeats an id already displayed (a phrase saved between pages)
+- WHEN the page is appended
+- THEN the repeated id is not shown twice
+
 ### Requirement: Spanish copy table
 
 All user-visible strings MUST come from a single copy module using exactly these values (neutral Spanish, no regional slang):
@@ -283,12 +312,16 @@ All user-visible strings MUST come from a single copy module using exactly these
 | `duplicate.mostSimilar` | Frase más similar |
 | `duplicate.score` | Similitud: {percent}% |
 | `duplicate.matchesTitle` | Coincidencias |
+| `duplicate.matchesCounter` | {loaded}/{total} |
 | `duplicate.loadingMore` | Cargando más coincidencias... |
 | `duplicate.loadMoreError` | No se pudieron cargar más coincidencias. |
 | `badge.unique` | Única |
 | `badge.duplicate_confirmed` | Duplicado confirmado |
 | `list.empty` | Aún no hay frases guardadas. |
 | `list.loadError` | No se pudieron cargar las frases. |
+| `list.counter` | {loaded}/{total} |
+| `list.loadingMore` | Cargando más frases... |
+| `list.loadMoreError` | No se pudieron cargar más frases. |
 | `saved.success` | Frase guardada. |
 | `error.tooLong` | La frase no puede superar 280 caracteres. |
 | `error.empty` | Escribe una frase antes de continuar. |

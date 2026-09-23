@@ -24,6 +24,8 @@ export interface DuplicateDetails {
   matches: ScoredPhrase[];
   nextCursor: string | null;
   hasMore: boolean;
+  /** Full count of matches meeting the threshold, independent of pagination — the "10/46" counter. */
+  total: number;
 }
 
 export interface ErrorInfo {

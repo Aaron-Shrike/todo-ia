@@ -13,6 +13,11 @@ import { PhraseWorkspace } from "./PhraseWorkspace";
 
 type ValidateData = components["schemas"]["_ValidateData"];
 type PhraseOut = components["schemas"]["_PhraseOut"];
+type PhraseListData = components["schemas"]["_PhraseListData"];
+
+function fakePage(items: PhraseOut[], overrides: Partial<PhraseListData> = {}): PhraseListData {
+  return { items, total: items.length, next_cursor: null, has_more: false, ...overrides };
+}
 
 function createDeferred<T>() {
   let resolve!: (value: T) => void;
@@ -42,6 +47,7 @@ const UNIQUE_RESULT: ValidateData = {
   matches: [],
   next_cursor: null,
   has_more: false,
+  total: 0,
 };
 
 function fakePhrase(overrides: Partial<PhraseOut> = {}): PhraseOut {
@@ -73,9 +79,9 @@ describe("PhraseWorkspace", () => {
     const client = createFakeClient({
       validatePhrase: vi.fn(() => validateDeferred.promise),
       savePhrase: vi.fn(() => saveDeferred.promise),
-      listPhrases: vi.fn(async () => ({ items: [savedPhrase] })),
+      listPhrases: vi.fn(async () => fakePage([savedPhrase])),
     });
-    render(<PhraseWorkspace client={client} initialItems={[]} />);
+    render(<PhraseWorkspace client={client} initialPage={fakePage([])} />);
 
     typeText("Comprar leche");
     fireEvent.click(screen.getByRole("button", { name: copy.button.save }));
@@ -102,7 +108,7 @@ describe("PhraseWorkspace", () => {
         throw new Error("down");
       }),
     });
-    render(<PhraseWorkspace client={client} initialItems={[]} />);
+    render(<PhraseWorkspace client={client} initialPage={fakePage([])} />);
 
     typeText("Comprar leche");
     fireEvent.click(screen.getByRole("button", { name: copy.button.save }));

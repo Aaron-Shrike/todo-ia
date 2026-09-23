@@ -14,6 +14,13 @@ export interface ApiClientConfig {
   fetchImpl?: typeof fetch;
 }
 
+export interface ListPhrasesParams {
+  /** Page size; server default (10) applies when omitted. */
+  limit?: number;
+  /** Opaque continuation from a previous page's `next_cursor`. */
+  cursor?: string;
+}
+
 export interface PhraseApiClient {
   validatePhrase(
     body: Schemas["_ValidateRequest"],
@@ -22,7 +29,7 @@ export interface PhraseApiClient {
     body: Schemas["_MatchesRequest"],
   ): Promise<Schemas["_MatchesData"]>;
   savePhrase(body: Schemas["_SaveRequest"]): Promise<Schemas["_PhraseOut"]>;
-  listPhrases(): Promise<Schemas["_PhraseListData"]>;
+  listPhrases(params?: ListPhrasesParams): Promise<Schemas["_PhraseListData"]>;
 }
 
 interface DataEnvelope<T> {
@@ -143,8 +150,17 @@ export function createApiClient(config: ApiClientConfig = {}): PhraseApiClient {
         { method: "POST", body: JSON.stringify(body) },
         resolved,
       ),
-    listPhrases: () =>
-      request<Schemas["_PhraseListData"]>("/phrases", { method: "GET" }, resolved),
+    listPhrases: (params) => {
+      const query = new URLSearchParams();
+      if (params?.limit !== undefined) query.set("limit", String(params.limit));
+      if (params?.cursor !== undefined) query.set("cursor", params.cursor);
+      const qs = query.toString();
+      return request<Schemas["_PhraseListData"]>(
+        `/phrases${qs ? `?${qs}` : ""}`,
+        { method: "GET" },
+        resolved,
+      );
+    },
   };
 }
 

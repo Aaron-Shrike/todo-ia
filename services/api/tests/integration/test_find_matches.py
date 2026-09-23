@@ -94,6 +94,25 @@ class TestPgVectorMatchesContract(MatchesContractSuite):
         return PgVectorUnitOfWorkFactory(engine)
 
 
+def test_count_matches_reports_the_full_count_independent_of_page_size(engine: Engine) -> None:
+    policy = SimilarityPolicy(threshold=0.80)
+    with engine.connect() as conn:
+        repo = PgVectorPhraseRepository(conn)
+        for i in range(5):
+            # all above threshold
+            repo.add(_new_phrase(f"m{i}", vector_at_distance(0.05 + i * 0.001)))
+        repo.add(_new_phrase("far", vector_at_distance(1.5)))  # below threshold
+        conn.commit()
+
+        repo = PgVectorPhraseRepository(conn, read_only=True)
+        total = repo.count_matches(PROBE, max_distance=policy.max_distance())
+        page = repo.find_matches(PROBE, max_distance=policy.max_distance(), limit=2, cursor=None)
+        conn.rollback()
+
+    assert total == 5  # the orthogonal phrase is excluded, unaffected by `limit`
+    assert len(page.items) == 2  # `limit` still bounds the page itself
+
+
 def test_explain_shows_no_hnsw_and_no_offset_and_set_local_does_not_leak(engine: Engine) -> None:
     with engine.connect() as conn:
         rows = [
@@ -143,7 +162,7 @@ def test_boundary_0_79996_in_0_79994_out_via_tail_rule(engine: Engine) -> None:
 
     assert {m.id for m in page.items} == {id_in, id_out}  # SQL admits both (widened bound)
 
-    result = build_matches_page(page, policy, comparison="probe")
+    result = build_matches_page(page, policy, comparison="probe", total=len(page.items))
     assert [m.id for m in result.matches] == [id_in]  # tail rule stops at the first failing row
     assert result.has_more is False
 

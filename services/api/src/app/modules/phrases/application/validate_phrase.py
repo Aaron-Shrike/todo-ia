@@ -41,7 +41,8 @@ class ValidatePhrase:
             page = uow.repo.find_matches(
                 vector, max_distance=self._policy.max_distance(), limit=limit, cursor=None
             )
-        matches_page = build_matches_page(page, self._policy, comparison=comparison)
+            total = uow.repo.count_matches(vector, max_distance=self._policy.max_distance())
+        matches_page = build_matches_page(page, self._policy, comparison=comparison, total=total)
 
         if matches_page.matches:
             # Reconciliation rule: the exact scan is authoritative over the
@@ -55,6 +56,7 @@ class ValidatePhrase:
                 matches=matches_page.matches,
                 next_cursor=matches_page.next_cursor,
                 has_more=matches_page.has_more,
+                total=matches_page.total,
             )
 
         score: float | None = None
@@ -70,4 +72,5 @@ class ValidatePhrase:
             matches=[],
             next_cursor=None,
             has_more=False,
+            total=matches_page.total,
         )
