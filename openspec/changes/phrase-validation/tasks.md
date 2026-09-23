@@ -437,7 +437,7 @@ Covers (unchanged, now spread across 13a-13c as noted per task): Saved phrase li
   `createApiClient`; same precedent as Unit 10's placeholder `page.tsx`), verified instead via
   `tsc --noEmit` and `next build`.
 
-## Unit 14: Full compose wiring and healthchecks (~200)
+## Unit 14: Full compose wiring and healthchecks (~200) -- SHIPPED (`size:exception`, user-approved)
 
 Commit: `feat(infra): full compose wiring and healthchecks`. Rollback: revert (compose returns to db + migrate).
 Covers: api-contract Env documented (compose consumes `.env`); Ready (container healthcheck uses `/health`); Model not loaded (unhealthy until warm).
@@ -445,6 +445,10 @@ Covers: api-contract Env documented (compose consumes `.env`); Ready (container 
 - [x] 14.2 VERIFY (unmeasured): `docker compose down -v && time docker compose up -d --build`, poll `docker compose ps` until `api` is `healthy`; record container-start -> healthy seconds and tune `start_period`/`retries` (120 s is an estimate). Add `infra/scripts/smoke.sh` (`curl` validate, save, list) and run it.
 - Verify: `docker compose up -d --build && bash infra/scripts/smoke.sh && docker compose down -v`.
 - Related follow-up (not part of 14.1/14.2, added after a fresh-context review of this unit's diff): `.github/workflows/ci.yml` gained a `backend-integration` job running `pytest -m integration` against a `pgvector/pgvector:pg16` GitHub Actions service container, closing the regression-protection gap for Finding 2 (SQL bind-param bug) and Finding 3 (broken test fixture) above -- see apply-progress.md's Unit 14 section for details.
+- **`size:exception`**: the CI follow-up above pushed the code-only diff (excluding this file and
+  apply-progress.md) to ~425 changed lines, ~25 over the 400 cap (~6% overage). Accepted by explicit
+  user sign-off -- the user requested the CI addition themselves, already aware it would add lines,
+  and declined a further trim pass given the marginal size. No split proposed for a 6% overage.
 
 ## Unit 15: README and architecture (~300)
 
