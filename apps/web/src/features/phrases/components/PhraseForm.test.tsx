@@ -242,6 +242,57 @@ describe("PhraseForm", () => {
       expect(region).not.toHaveTextContent(copy.progress.revalidating);
       expect(region).not.toHaveTextContent(copy.progress.validating);
     });
+
+    it("409 while confirming (defensive): a 409 from Confirmar returns to duplicate populated from the fresh details", async () => {
+      const validateDeferred = createDeferred<ValidateData>();
+      const saveDeferred = createDeferred<PhraseOut>();
+      const client = createFakeClient({
+        validatePhrase: vi.fn(() => validateDeferred.promise),
+        savePhrase: vi.fn(() => saveDeferred.promise),
+      });
+      render(<PhraseForm client={client} />);
+
+      typeText("Comprar leche");
+      fireEvent.click(screen.getByRole("button", { name: copy.button.validate }));
+      await act(async () => {
+        validateDeferred.resolve(DUPLICATE_RESULT);
+      });
+      await waitFor(() =>
+        expect(screen.getByText(copy.duplicate.title)).toBeInTheDocument(),
+      );
+
+      fireEvent.click(screen.getByRole("button", { name: copy.button.confirm }));
+      await waitFor(() =>
+        expect(screen.getByRole("status")).toHaveTextContent(copy.progress.saving),
+      );
+
+      await act(async () => {
+        saveDeferred.reject(
+          new ApiError({
+            code: "DUPLICATE_CONFIRMATION_REQUIRED",
+            status: 409,
+            message: "duplicate requires confirmation",
+            details: {
+              threshold: 0.8,
+              score: 1,
+              most_similar: { id: "8", text: "Comprar leche fresca", score: 1 },
+              matches: [{ id: "8", text: "Comprar leche fresca", score: 1 }],
+              next_cursor: null,
+              has_more: false,
+            },
+          }),
+        );
+      });
+
+      await waitFor(() =>
+        expect(screen.getByRole("alertdialog")).toHaveTextContent(
+          "Comprar leche fresca",
+        ),
+      );
+      expect(
+        screen.getByRole("button", { name: copy.button.confirm }),
+      ).not.toBeDisabled();
+    });
   });
 
   describe("duplicate alert: Cancelar", () => {

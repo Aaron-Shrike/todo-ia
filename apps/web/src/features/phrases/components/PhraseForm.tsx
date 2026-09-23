@@ -13,6 +13,7 @@ import {
   type ErrorInfo,
   type MachineState,
 } from "../machine";
+import { DuplicateAlert } from "./DuplicateAlert";
 
 type ValidateData = components["schemas"]["_ValidateData"];
 type PhraseOut = components["schemas"]["_PhraseOut"];
@@ -208,6 +209,10 @@ export function PhraseForm({ client, maxLength = ENV_MAX_LENGTH, onSaved }: Phra
     dispatch({ type: "RETRY" });
   }
 
+  function handleInvalidCursor() {
+    dispatch({ type: "INVALID_CURSOR" });
+  }
+
   const duplicateDetails = duplicateDetailsOf(state);
 
   return (
@@ -238,23 +243,15 @@ export function PhraseForm({ client, maxLength = ENV_MAX_LENGTH, onSaved }: Phra
       {state.status === "ok" && <p>{copy.validation.ok}</p>}
 
       {duplicateDetails && (
-        <div>
-          <h2>{copy.duplicate.title}</h2>
-          <button
-            type="button"
-            onClick={handleConfirm}
-            disabled={state.status === "saving"}
-          >
-            {copy.button.confirm}
-          </button>
-          <button
-            type="button"
-            onClick={handleCancel}
-            disabled={state.status === "saving"}
-          >
-            {copy.button.cancel}
-          </button>
-        </div>
+        <DuplicateAlert
+          client={client}
+          text={submittedText.current}
+          details={duplicateDetails}
+          disabled={state.status === "saving"}
+          onConfirm={handleConfirm}
+          onCancel={handleCancel}
+          onInvalidCursor={handleInvalidCursor}
+        />
       )}
 
       {state.status === "error" && (
