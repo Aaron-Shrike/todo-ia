@@ -57,7 +57,10 @@ Rule from Unit 4 onward: branch N is cut from `develop` after PR N-1 has merged 
 | 10 | `feat/pv-10-web-scaffold` | `develop` | web scaffold + client | ~300 |
 | 11 | `feat/pv-11-web-machine-form` | `develop` | state machine + form -- `size:exception` user-approved (1141 hand-written lines, single PR) | ~360 est., 1141 actual |
 | 12 | `feat/pv-12-web-duplicate-alert` | `develop` | alert + infinite scroll | ~310 |
-| 13 | `feat/pv-13-web-list-copy` | `develop` | list, badges, copy | ~290 |
+| 13 | ~~`feat/pv-13-web-list-copy`~~ | ~~`develop`~~ | ~~list, badges, copy~~ — **superseded by the 13a-13c split below** (review-budget STOP before any commit/push/PR; 781 measured lines vs. the 400 cap) | ~~~290~~ |
+| 13a | `feat/pv-13a-copy-module` | `develop` | copy module + error copy | ~301 |
+| 13b | `feat/pv-13b-list-badges` | `feat/pv-13a-copy-module`* | saved phrase list + badges | ~256 |
+| 13c | `feat/pv-13c-page-wiring` | `feat/pv-13b-list-badges`* | page.tsx + workspace wiring | ~224 |
 | 14 | `feat/pv-14-compose-wiring` | `develop` | full compose | ~200 |
 | 15 | `docs/pv-15-readme-architecture` | `develop` | README + architecture | ~300 |
 | 16 | `docs/pv-16-decision-log` | `develop` | ADRs | ~340 |
@@ -66,6 +69,12 @@ Rule from Unit 4 onward: branch N is cut from `develop` after PR N-1 has merged 
 already used for 2/2d/2c/2b against an unmerged `feat/pv-02-ports-inmemory`) and MUST be rebased
 onto `main` and retargeted the moment the branch they were cut from merges — each will show as
 stacked on its parent in GitHub until then, which is expected, not a mistake.
+
+*13b/13c are likewise cut authoring-ahead, this time against `develop`-era branches: 13b depends on
+13a's `copy.badge.*`/`copy.list.*` keys (import-verified, not assumed), 13c depends on 13b's
+`PhraseList` component. Both MUST be rebased onto `develop` and retargeted the moment the branch
+they were cut from merges, same convention as 3b/3c/3d above but for the Unit-4-onward `develop`
+base.
 
 ### Dependency and parallelism
 
@@ -381,13 +390,33 @@ Covers: Duplicate alert x7 (Alert content, Percentage never overstates, Confirm,
 - [x] 12.2 RED then GREEN `DuplicateAlert.tsx` and `useMatchesInfiniteScroll.ts` (IntersectionObserver sentinel, in-flight guard, dedupe by id, stop on `has_more=false`, `INVALID_CURSOR` discards matches and re-runs validation) with component tests on the typed fake client.
 - Verify: `cd apps/web && npx vitest run` -- 136/136 passed.
 
-## Unit 13: Saved list, status badges, Spanish copy module (~290)
+## Unit 13: Saved list, status badges, Spanish copy module (~290) -- SPLIT into 13a-13c
 
-Commit: `feat(web): saved list, status badges and the spanish copy module`. Rollback: revert (web track only).
-Covers: Saved phrase list x6 (Badge unique, Badge duplicate confirmed, Empty list, Refresh after save, Refresh fails after a successful save, List load failure); Spanish copy table x4 (Single source of copy, Copy values, Success message, English code Spanish UI); Error handling x4 (Model unavailable, Timeout, Network failure, Unknown code).
-- [ ] 13.1 RED then GREEN complete `copy.es.ts` (verbatim values from the phrase-ui copy table; snapshot test) and `errorCopy.ts` exhaustive over the generated `ErrorCode` union incl. `INVALID_CURSOR` (test walks the union; unknown code falls back to generic copy).
-- [ ] 13.2 RED then GREEN `app/page.tsx` Server Component list first paint via `API_INTERNAL_URL` with `dynamic = "force-dynamic"`/`no-store`, `PhraseList.tsx` with status badges, browser-side refetch after a 201, post-201 refresh failure leaves machine `idle`, keeps "Frase guardada." and shows the list error with Reintentar (never the `error` state).
-- Verify: `cd apps/web && npx vitest run && npm run build`.
+**Resolution**: both 13.1 and 13.2 were fully implemented and green (strict RED->GREEN TDD, 162/162
+vitest, clean `tsc --noEmit`, successful `next build` with `/` correctly `ƒ Dynamic`) before this unit's
+own mandatory stop-and-report step measured the diff at 781 changed lines (13 files) against the ~290
+estimate and the 400-line cap -- see apply-progress.md's original "Unit 13" STOP report for the full
+per-file table and the three options offered (A: single `size:exception` for 781 lines; B: split at the
+13.1/13.2 boundary, 301 + 480 -- 13.2 alone still over budget; C: split further along 13.2's own
+list-vs-wiring seam, 301 + 256 + 224, all three independently under the cap). **The user explicitly
+chose Option C**: three independently-reviewable PRs, no `size:exception` anywhere. Delivered exactly
+as proposed and verified in isolated `git worktree` checkouts of each branch's own tip (not just the
+shared working tree) before this section was written -- see apply-progress.md's "Unit 13 resolution"
+section for the three commit SHAs and the isolated verification output.
+
+Covers (unchanged, now spread across 13a-13c as noted per task): Saved phrase list x6 (Badge unique, Badge duplicate confirmed, Empty list, Refresh after save, Refresh fails after a successful save, List load failure); Spanish copy table x4 (Single source of copy, Copy values, Success message, English code Spanish UI); Error handling x4 (Model unavailable, Timeout, Network failure, Unknown code).
+
+### Unit 13a: Copy module + error copy (`feat/pv-13a-copy-module`, base `develop`, ~301 lines)
+- [x] 13.1 RED then GREEN complete `copy.es.ts` (verbatim values from the phrase-ui copy table; `copy.es.test.ts` compares the whole exported object against the spec's table with `toEqual`) and `errorCopy.ts` exhaustive `Record<ErrorCode, CopyKey>` over the generated `ErrorCode` union incl. `INVALID_CURSOR` (`errorCopy.test.ts` walks the union; unknown code falls back to `error.generic`); `PhraseForm.tsx`'s error block rewired from the hardcoded `copy.error.generic` to `copyForErrorCode(state.error.code)`, plus 4 new `PhraseForm.test.tsx` scenarios (Model unavailable/503, Timeout/504, Network failure, Unknown code).
+- Verify: `cd apps/web && npx vitest run` (153/153 passed in an isolated `git worktree` at this branch's own tip) and `npx tsc --noEmit` clean.
+
+### Unit 13b: Saved phrase list + status badges (`feat/pv-13b-list-badges`, base `feat/pv-13a-copy-module`*, ~256 lines)
+- [x] 13.2a RED then GREEN `PhraseList.tsx` (status badges via `copy.badge.*`, floored similarity percentage, `copy.list.empty`/`copy.list.loadError` states, `refresh(): Promise<void>` exposed via `forwardRef`/`useImperativeHandle`, never rejects) and `PhraseList.test.tsx` (six scenarios: Badge unique, Badge duplicate confirmed, Empty list, List load failure, Reintentar recovers, successful and failing `refresh()`); `scoreLabel.ts` extracted from `DuplicateAlert.tsx`'s previously-local helper and shared, `DuplicateAlert.tsx` refactored to import it (net -0 behaviour change).
+- Verify: `cd apps/web && npx vitest run` (160/160 passed in an isolated `git worktree` at this branch's own tip) and `npx tsc --noEmit` clean. Depends on 13a's `copy.badge.*`/`copy.list.*` keys (import-verified via `rg "^import" PhraseList.tsx`, not assumed) -- authored ahead against `feat/pv-13a-copy-module`, must rebase onto `develop` and retarget once 13a's PR merges.
+
+### Unit 13c: page.tsx + PhraseWorkspace wiring (`feat/pv-13c-page-wiring`, base `feat/pv-13b-list-badges`*, ~224 lines)
+- [x] 13.2b RED then GREEN `app/page.tsx` rewritten into the real Server Component list first paint via `API_INTERNAL_URL` with `dynamic = "force-dynamic"`/`no-store` (reuses `client.ts`'s `fetchImpl` seam, no `client.ts` changes); `PhraseWorkspace.tsx` (new, not named in design.md's directory sketch -- the one client boundary tying `PhraseForm`'s `onSaved` callback to `PhraseList.refresh()`, needed because `page.tsx` is a Server Component) and `PhraseWorkspace.test.tsx` (two integration scenarios: Refresh after save; Refresh fails after a successful save -- machine stays `idle`, exactly one Reintentar button in the tree).
+- Verify: `cd apps/web && npx vitest run && npm run build` (162/162, clean `tsc --noEmit`, `/` correctly `ƒ Dynamic`), checked at this branch's own tip. Depends on 13b's `PhraseList` (import-verified) -- authored ahead against `feat/pv-13b-list-badges`, must rebase onto `develop` and retarget once 13b's PR merges. `app/page.tsx` itself has no dedicated vitest test (thin glue over already-tested `createApiClient`; same precedent as Unit 10's placeholder `page.tsx`), verified instead via `tsc --noEmit` and `next build`.
 
 ## Unit 14: Full compose wiring and healthchecks (~200)
 
