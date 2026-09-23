@@ -15,6 +15,7 @@ import {
   type MachineState,
 } from "../machine";
 import { DuplicateAlert } from "./DuplicateAlert";
+import styles from "./phrases.module.css";
 
 type ValidateData = components["schemas"]["_ValidateData"];
 type PhraseOut = components["schemas"]["_PhraseOut"];
@@ -215,31 +216,49 @@ export function PhraseForm({ client, maxLength = ENV_MAX_LENGTH, onSaved }: Phra
   const duplicateDetails = duplicateDetailsOf(state);
 
   return (
-    <section>
-      <label htmlFor="phrase-text">{copy.input.label}</label>
+    <section className={styles.formCard}>
+      <label className={styles.label} htmlFor="phrase-text">
+        {copy.input.label}
+      </label>
       <textarea
         id="phrase-text"
+        className={styles.textarea}
         placeholder={copy.input.placeholder}
         value={text}
         onChange={handleChange}
         disabled={busy}
         aria-describedby="phrase-counter"
       />
-      <span id="phrase-counter">
-        {trimmedLength}/{maxLength}
-      </span>
-      {isOverLength && <p>{copy.error.tooLong}</p>}
+      <div className={styles.metaRow}>
+        <span
+          id="phrase-counter"
+          className={`${styles.counter} ${isOverLength ? styles.counterOver : ""}`}
+        >
+          {trimmedLength}/{maxLength}
+        </span>
+      </div>
+      {isOverLength && <p className={styles.errorText}>{copy.error.tooLong}</p>}
 
-      <div>
-        <button type="button" onClick={handleValidate} disabled={!canSubmit}>
+      <div className={styles.actions}>
+        <button
+          type="button"
+          className={`${styles.button} ${styles.buttonGhost}`}
+          onClick={handleValidate}
+          disabled={!canSubmit}
+        >
           {copy.button.validate}
         </button>
-        <button type="button" onClick={handleSave} disabled={!canSubmit}>
+        <button
+          type="button"
+          className={`${styles.button} ${styles.buttonPrimary}`}
+          onClick={handleSave}
+          disabled={!canSubmit}
+        >
           {copy.button.save}
         </button>
       </div>
 
-      {state.status === "ok" && <p>{copy.validation.ok}</p>}
+      {state.status === "ok" && <p className={styles.okMessage}>{copy.validation.ok}</p>}
 
       {duplicateDetails && (
         <DuplicateAlert
@@ -254,15 +273,19 @@ export function PhraseForm({ client, maxLength = ENV_MAX_LENGTH, onSaved }: Phra
       )}
 
       {state.status === "error" && (
-        <div>
+        <div className={styles.errorBox}>
           <p>{copyForErrorCode(state.error.code)}</p>
-          <button type="button" onClick={handleRetry}>
+          <button
+            type="button"
+            className={`${styles.button} ${styles.buttonGhost}`}
+            onClick={handleRetry}
+          >
             {copy.button.retry}
           </button>
         </div>
       )}
 
-      <p role="status" aria-live="polite">
+      <p className={styles.liveRegion} role="status" aria-live="polite">
         {liveMessage}
       </p>
     </section>

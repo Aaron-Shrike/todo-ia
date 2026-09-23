@@ -1,7 +1,10 @@
 import { createApiClient } from "@/lib/api/client";
 import { copy } from "@/i18n/copy.es";
 import { PhraseWorkspace } from "@/features/phrases/components/PhraseWorkspace";
+import { SiteFooter, SiteHeader } from "@/components/SiteChrome";
 import type { components } from "@/types/api";
+
+import styles from "./page.module.css";
 
 type PhraseOut = components["schemas"]["_PhraseOut"];
 
@@ -43,9 +46,13 @@ export default async function HomePage() {
   const initialItems = await fetchInitialItems();
 
   return (
-    <main>
-      <h1>{copy.title}</h1>
-      <PhraseWorkspace initialItems={initialItems} />
+    <main className={styles.page}>
+      <SiteHeader />
+      <div className={styles.content}>
+        <h1 className={styles.title}>{copy.title}</h1>
+        <PhraseWorkspace initialItems={initialItems} />
+      </div>
+      <SiteFooter />
     </main>
   );
 }

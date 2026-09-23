@@ -52,6 +52,23 @@ All targets are wired through the root `Makefile` and run against `services/api/
 | `make test-slow` | Backend tests marked `slow` — real-model runs (real sentence-transformers weights, no fakes) against the ES/EN calibration fixture. |
 | `make evidence` | Regenerates `docs/evidence/calibration.md` from the ES/EN fixture, scored against the real model. |
 
+## Seeding data
+
+`services/api/scripts/seed_phrases.py` generates and inserts realistic, Peruvian-themed phrases
+(dishes, places, drinks, colloquial dichos, combined via templates with
+[Faker](https://faker.readthedocs.io/)) directly into Postgres, embedding them in batches with the
+real model. It bypasses the request-time save path on purpose — that path re-scans the whole table
+on every insert (by design, see `duplicate-confirmation` spec), which would make seeding thousands
+of rows take hours instead of minutes — so every seeded row lands as `validation_status='unique'`
+with no recorded neighbour (a legitimate resting state, not a data-model shortcut). Future saves
+from the UI still run the app's normal exact-scan duplicate check against this seeded corpus.
+
+```bash
+docker compose exec api pip install faker   # once per container lifetime; see pyproject.toml's `seed` extra
+make seed N=1000                            # any count; generates + embeds + inserts
+make seed N=20000
+```
+
 ## Environment variables
 
 Every variable below maps 1:1 to the `Settings` class (`services/api/src/app/platform/settings.py`)
