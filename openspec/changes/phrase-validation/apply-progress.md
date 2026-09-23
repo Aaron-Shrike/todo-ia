@@ -6612,4 +6612,164 @@ risk it behaves differently in practice.
   real `docker images`/timing data if still accurate when Unit 16 runs).
 - [ ] Review and merge all still-open PRs from prior units (#23 fix/pv-07-review-fixes, #24 fix/pv-08,
   #25 Unit 9, #29-#32 Units 12/13a/13b/13c) -- out of this batch's scope, tracked here for visibility
-  only.
+
+## Unit 16: Decision log -- STOPPED, review-budget STOP, awaiting split decision (resolved below)
+
+**Nothing in this section is committed or pushed.** All 16 files below exist on disk on
+`feat/pv-16-decision-log` (cut from `develop` at `580ac52`, Unit 9's merge), staged (`git add -A`) but
+not committed, per the explicit instruction: "If your actual diff exceeds 400, do NOT self-authorize a
+`size:exception` -- STOP, report the measured diff and a proposed split ... and end your turn." All
+content is written, all tests pass; only the commit/PR boundary is undecided.
+
+### Measured diff
+
+`git diff --cached --stat` (16 files, all new): **476 insertions, 0 deletions** -- 76 lines (~19%) over
+the 400 cap. Per-file breakdown:
+
+| File | Lines |
+| --- | --- |
+| `docs/decisions/ADR-001-full-match-list.md` | 17 |
+| `docs/decisions/ADR-002-modular-monorepo.md` | 17 |
+| `docs/decisions/ADR-003-local-embedding-runtime.md` | 82 |
+| `docs/decisions/ADR-004-nextjs-frontend.md` | 18 |
+| `docs/decisions/ADR-005-staged-progress.md` | 25 |
+| `docs/decisions/technical/ADR-006-partial-unique-index.md` | 21 |
+| `docs/decisions/technical/ADR-007-keyset-pagination.md` | 17 |
+| `docs/decisions/technical/ADR-008-hnsw-exact-scan-split.md` | 63 |
+| `docs/decisions/technical/ADR-009-browser-direct-no-bff.md` | 11 |
+| `docs/decisions/technical/ADR-010-compose-db-for-integration-tests.md` | 10 |
+| `docs/decisions/technical/ADR-011-embedding-cache.md` | 46 |
+| `docs/decisions/technical/ADR-012-two-reads-reconciliation.md` | 19 |
+| `docs/decisions/technical/ADR-013-rounding-contract.md` | 18 |
+| `docs/decisions/technical/ADR-014-bigint-ids-opaque-strings.md` | 11 |
+| `docs/decisions/technical/ADR-015-unit-of-work-isolation.md` | 14 |
+| `services/api/tests/unit/test_decision_log.py` | 87 |
+
+Beyond-brief ADRs (001-005) subtotal: **159 lines**. Technical ADRs (006-015) subtotal: **230 lines**.
+Test file: **87 lines**. ADR-003 and ADR-008 are the two enriched entries (measured numbers woven in per
+the task's ask) and account for most of the overage versus the ~340 estimate; the other 13 ADRs are
+short, close to a direct reformat of design.md's existing table rows.
+
+### Proposed split
+
+tasks.md's own Unit 16 Notes line already names a seam for exactly this situation: *"Seam if over 400:
+technical ADRs 010-015 into unit 16b."* Using that literal seam (not the coarser "5 vs 10" framing) keeps
+part 1 self-contained (all five beyond-brief entries plus the four technical ADRs that are most tightly
+coupled to them -- ADR-006-009 -- plus the doc-check test) and moves only the six least-coupled technical
+ADRs to a follow-up:
+
+- **Unit 16 (this PR)**: ADR-001-005 (159) + ADR-006-009 (21+17+63+11 = 112) +
+  `test_decision_log.py` (87) = **358 lines**, under the cap.
+- **Unit 16b (follow-up)**: ADR-010-015 (10+46+19+18+11+14 = **118 lines**), well under the cap.
+  `test_decision_log.py`'s `test_technical_adrs_are_present_and_typed_technical` asserts exactly 10
+  technical files, so it would need to move (or its exact-10 assertion temporarily relaxed) to Unit 16b
+  along with the last six files, or Unit 16 ships with only a "technical dir is non-empty and every
+  present file is typed technical" assertion and 16b tightens it to exactly-10 once all ten exist.
+
+All 16 files are already written and verified (`pytest tests/unit/test_decision_log.py -q` -> 3 passed,
+1 xfailed; full unit suite -> 290 passed, 47 deselected, 1 xfailed, no regressions) -- the split is a
+commit-boundary decision, not a content gap. Awaiting the user's choice: accept `size:exception` for a
+single ~476-line PR, or split along the tasks.md-documented seam above.
+
+### Measured numbers gathered this batch (for whichever split ships)
+
+- **API image size** (`docker images todo-ia-api`, reusing the image Unit 14 built and left cached):
+  `todo-ia-api:latest` -> **10.4 GB disk usage / 4.4 GB content size**. Not a from-clean-build
+  measurement (see ADR-003's own caveat); still the first real number recorded anywhere for this image,
+  closing part of the open Verification Status item Unit 8/14 left unmeasured.
+- **p95 embedding latency**: confirmed **still UNMEASURED** after searching Units 8 and 14 -- neither
+  timed `embed()` p50/p95 or a warm/cold validate+save pair against the real model. Recorded honestly as
+  unmeasured in ADR-003/ADR-011 rather than estimated.
+- **Casefold margins** (`docs/evidence/calibration.md`, Unit 9): cased score **0.3313** / margin
+  **-0.4687**, casefolded score **1.0** / margin **+0.2000** on `case_and_spacing_variant`. This
+  corrects design.md's own "~0.98, unmeasured" estimate and flips the original risk framing: casefolding
+  is not a threat to separation here, it is what makes the pair a recognizable duplicate at all (the
+  cased score alone falls well below the 0.80 threshold).
+- **pgvector tag/version**: `pgvector/pgvector:pg16`, 621 MB, Debian 12 bookworm, Postgres 16.15,
+  `extversion` 0.8.6 (Unit 4's measurement, re-confirmed this batch against a fresh throwaway container).
+- **Exact-scan timings** (`docs/evidence/exact-scan-timings.md`, Unit 5a): 500 rows -> 0.529 ms, 10,000
+  rows -> 5.719 ms, both `Seq Scan` + top-N heapsort, no HNSW -- single local run, flagged in the
+  evidence file itself as needing averaging for a production-grade number.
+- **`hnsw.iterative_scan` GUC** (task 16.3's optional secondary check): verified to **exist** on the
+  pinned `pgvector/pgvector:pg16` image (extversion 0.8.6), default value **`off`** -- confirmed via a
+  throwaway container, `CREATE EXTENSION vector` then a vector literal in the SAME session before `SHOW`
+  (the GUC is only registered once the extension's library loads into that backend; a fresh session
+  without a prior vector call reports "unrecognized configuration parameter"). Existence/default
+  verified; recall/latency behaviour under `strict_order` remains unverified and deferred, unchanged from
+  design.md.
+- **fastembed support** (task 16.3, required check): ran the literal command from tasks.md in a
+  throwaway venv (fastembed 0.8.1, Python 3.14.5, no prior fastembed install found anywhere in this repo
+  or its venvs). Result: **`sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2` IS in
+  fastembed's supported-model list** -- the documented ONNX/fastembed migration path is viable directly;
+  the `optimum` manual-export fallback is not required for this checkpoint (recorded in ADR-003).
+
+### `test_decision_log.py`: README-linkage assertion deliberately `xfail`
+
+`test_readme_links_every_adr` is `@pytest.mark.xfail(strict=True, reason="README.md is Unit 15's
+deliverable ...")`. README.md does not exist yet (confirmed: `ls` on `docs/architecture.md`/`README.md`
+finds neither) -- Unit 15 is the user's explicitly deferred prerequisite for real ADR links, run after
+this unit on purpose. `strict=True` means the test suite will FAIL (not silently pass) if README.md
+starts existing and satisfying the assertion without a human first removing the `xfail` decorator --
+this is the "close the loop" mechanism Unit 15's own batch should hit and resolve, rather than a TODO
+comment that could be missed.
+
+### Task status (content complete, commit pending)
+
+- [x] 16.1: five beyond-brief ADRs written, `type: beyond-brief`, ADR-003 enriched with the measured
+  image size, casefold margins, migration triggers, score-equivalence gate and the fastembed result.
+- [x] 16.2: ten technical ADRs written under `docs/decisions/technical/`, `type: technical`; ADR-008
+  enriched with the pgvector tag/version, exact-scan timings and image-size note; ADR-011 keeps its
+  beyond-brief framing in prose while typed `technical`, with an explicit classification note explaining
+  why (matches design.md's own note on ADR-011).
+- [x] 16.3: fastembed check run for real (result: supported); `hnsw.iterative_scan` optional check run
+  for real (result: exists, default `off`); both recorded in ADR-003/ADR-008.
+- [x] 16.4: `services/api/tests/unit/test_decision_log.py` written and green (3 passed, 1 xfailed); ADR
+  file-count/front-matter assertions run now, README-linkage assertion `xfail`-deferred to Unit 15.
+- [x] Commit/PR boundary: resolved -- see "Unit 16 resolution" immediately below.
+
+## Unit 16 resolution: split into Unit 16 and Unit 16b (user's explicit choice)
+
+The user was given the STOP report above and explicitly chose the tasks.md-documented seam over a
+`size:exception`: **technical ADRs 010-015 move to a follow-up unit 16b**, keeping both slices
+independently under the 400-line cap (358 + 118 lines, per the per-file table above). No new ADR
+content was written for this resolution -- all 16 files were already correct; only the commit boundary
+and one test assertion needed to move.
+
+**Test adjustment** (the one necessary change beyond re-slicing the same files):
+`test_technical_adrs_are_present_and_typed_technical` originally hard-asserted `len(files) == 10`, which
+would fail at Unit 16's own tip (only ADR-006-009, 4 files, exist there). Relaxed in Unit 16 to a
+structural-only check (technical dir non-empty, every present file typed `technical`, no hard count) so
+it stays meaningful (still fails on an empty dir or a wrong `type`) without being tied to a file count
+that is only true once Unit 16b lands. Unit 16b restores the original exact-10-count assertion, since by
+its own tip all ten technical files genuinely exist. Verified by actually checking out each branch's own
+tip in an isolated `git worktree` and running the test there (not assumed) -- see each subsection below.
+
+### Unit 16 (`feat/pv-16-decision-log`, base `develop` at `580ac52`)
+
+Commit: `docs: beyond-brief decision log and core technical ADRs (16.1, 16.3, 16.4)`.
+Files: `docs/decisions/ADR-001-full-match-list.md` .. `ADR-005-staged-progress.md`,
+`docs/decisions/technical/ADR-006-partial-unique-index.md` .. `ADR-009-browser-direct-no-bff.md`,
+`services/api/tests/unit/test_decision_log.py` (relaxed technical-count assertion, see above),
+`openspec/changes/phrase-validation/tasks.md`, `openspec/changes/phrase-validation/apply-progress.md`
+(this section). 358 lines (code-only, excluding the two doc-tracking files).
+Verify (own-tip, isolated `git worktree`): `services/api/.venv/bin/python -m pytest
+tests/unit/test_decision_log.py -q` -> 3 passed, 1 xfailed (confirmed for real in a detached
+`git worktree` at this commit, not assumed).
+Commit SHA: `947b603`.
+
+### Unit 16b (`feat/pv-16b-decision-log-technical`, base `feat/pv-16-decision-log`*)
+
+Commit: `docs: remaining technical ADRs (010-015)`.
+Files: `docs/decisions/technical/ADR-010-compose-db-for-integration-tests.md` ..
+`ADR-015-unit-of-work-isolation.md`, `services/api/tests/unit/test_decision_log.py` (technical-count
+assertion restored to exact-10), `openspec/changes/phrase-validation/tasks.md`,
+`openspec/changes/phrase-validation/apply-progress.md`. 118 lines (code-only).
+Verify (own-tip, isolated `git worktree`): `services/api/.venv/bin/python -m pytest
+tests/unit/test_decision_log.py -q` -> 3 passed, 1 xfailed; full unit suite
+(`pytest tests/unit tests/contract_suite tests/contract -m "not integration and not slow" -q`) green,
+no regressions.
+*Authored ahead against `feat/pv-16-decision-log`'s tip (`947b603`, depends on its files existing) --
+must rebase onto `develop` and retarget once Unit 16's own PR merges, same pattern as Units 2b/2c and
+13a-13c elsewhere in this file.
+Commit SHA: this commit's own hash is not knowable from within itself (same limitation noted for Unit
+16 above) -- reported directly to the user at the end of this batch rather than self-embedded here.

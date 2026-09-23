@@ -470,15 +470,44 @@ Covers: "Beyond the brief" decision log: README summary; api-contract Env docume
 - [ ] 15.2 `docs/architecture.md`: monorepo layout, hexagonal modules and import-linter contracts, the embedding microservice seam and its honest limit, three read shapes (`find_nearest`, `find_nearest_exact`, `find_matches`), keyset paging, cache invariant (never cache verdicts/pages), blind-save sequence, transactions/locking, residual risks.
 - Verify: fresh-clone dry run of README steps on a clean checkout; `rg -n "TODO|TBD" README.md docs/architecture.md` returns nothing.
 
-## Unit 16: Decision log (~340)
+## Unit 16: Decision log (~340) -- SPLIT into Unit 16 and Unit 16b
 
-Commit: `docs: decision log`. Rollback: revert (docs only). Seam if over 400: technical ADRs 010-015 into unit 16b.
-Covers: Decision log x4 (Five entries present, Technical ADRs are separate, README summary linkage, ONNX path documented); Concurrency: Limitation documented (ADR-006).
-- [ ] 16.1 Exactly five beyond-brief ADRs in `docs/decisions/`: `ADR-001-full-match-list.md` ... `ADR-005-staged-progress.md` (front-matter `type: beyond-brief`, "brief asked / we decided / because"; ADR-003 includes the measured image size, p95 latency, casefold margins and the migration triggers plus the score-equivalence gate).
-- [ ] 16.2 Technical ADRs in `docs/decisions/technical/`: ADR-006 to ADR-015 (`type: technical`); ADR-008 records the pgvector tag/version, exact-scan timings and image-size notes; ADR-011 keeps its beyond-brief framing and lives here.
-- [ ] 16.3 VERIFY (unverified): fastembed support for the checkpoint, `python -c "from fastembed import TextEmbedding; print([m['model'] for m in TextEmbedding.list_supported_models()])"`; record result (fallback: manual `optimum` export) in ADR-003. Optional: `SHOW hnsw.iterative_scan;` on the pinned image for ADR-008's deferred scaling path.
-- [ ] 16.4 Doc check test `tests/unit/test_decision_log.py`: `docs/decisions/*.md` (top level) count is exactly 5 and all `type: beyond-brief`; every file in `technical/` is `type: technical`; README links every ADR.
-- Verify: `pytest tests/unit/test_decision_log.py -q`.
+**Resolution**: all 16 files (five beyond-brief ADRs, ten technical ADRs, the doc-check test) were
+written and verified (`pytest tests/unit/test_decision_log.py -q` -> 3 passed, 1 xfailed; full unit
+suite -> 290 passed, 47 deselected, 1 xfailed, no regressions) before this unit's own mandatory
+stop-and-report step measured the diff at 476 changed lines against the ~340 estimate and the 400-line
+cap -- see apply-progress.md's original "Unit 16" STOPPED section for the full per-file table. This
+unit's own Notes line already named the seam for exactly this situation ("technical ADRs 010-015 into
+unit 16b"). **The user explicitly chose that seam**: Unit 16 ships the five beyond-brief ADRs plus the
+four technical ADRs most tightly coupled to them (ADR-006-009) plus the doc-check test (358 lines);
+Unit 16b ships the remaining six technical ADRs (ADR-010-015, 118 lines), both independently under the
+cap. `test_decision_log.py`'s technical-ADR test was relaxed in Unit 16 to a structural check only (dir
+non-empty, every present file typed `technical`, no hard count) since only 4 of the eventual 10
+technical files exist at Unit 16's own tip; Unit 16b restores the exact-10-count assertion once all ten
+exist. Delivered as **PR #35** (`feat/pv-16-decision-log` -> `develop`) and **PR #36**
+(`feat/pv-16b-decision-log-technical` -> #35, authoring-ahead). See apply-progress.md's
+"Unit 16 resolution" section for both branches' final commit SHAs.
+
+Covers (unchanged, now spread across Unit 16/16b as noted per task): Decision log x4 (Five entries
+present, Technical ADRs are separate, README summary linkage, ONNX path documented); Concurrency:
+Limitation documented (ADR-006).
+
+### Unit 16 (`feat/pv-16-decision-log`, base `develop`, ~358 lines)
+
+Commit: `docs: beyond-brief decision log and core technical ADRs (16.1, 16.3, 16.4)`. Rollback: revert (docs only).
+- [x] 16.1 Exactly five beyond-brief ADRs in `docs/decisions/`: `ADR-001-full-match-list.md` ... `ADR-005-staged-progress.md` (front-matter `type: beyond-brief`, "brief asked / we decided / because"; ADR-003 includes the measured image size, p95 latency, casefold margins and the migration triggers plus the score-equivalence gate).
+- [x] 16.2a Technical ADRs ADR-006 to ADR-009 in `docs/decisions/technical/` (`type: technical`); ADR-008 records the pgvector tag/version, exact-scan timings and image-size notes. (ADR-010-015 moved to Unit 16b.)
+- [x] 16.3 VERIFY: fastembed support for the checkpoint run for real (`sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2` IS in fastembed's supported-model list; `optimum` fallback not needed), recorded in ADR-003. `SHOW hnsw.iterative_scan;` on the pinned image run for real (exists, default `off`), recorded in ADR-008.
+- [x] 16.4 Doc check test `tests/unit/test_decision_log.py`: `docs/decisions/*.md` (top level) count is exactly 5 and all `type: beyond-brief`; technical dir gets a structural-only check at this tip (dir non-empty, every present file typed `technical`, no hard count -- see resolution note above); README-linkage assertion `xfail`-deferred to Unit 15.
+- Verify: `services/api/.venv/bin/python -m pytest tests/unit/test_decision_log.py -q` (own-tip, isolated worktree) -- 3 passed, 1 xfailed.
+
+### Unit 16b (`feat/pv-16b-decision-log-technical`, base `feat/pv-16-decision-log`*, ~118 lines)
+
+Commit: `docs: remaining technical ADRs (010-015)`. Rollback: revert (docs only).
+- [x] 16.2b Remaining technical ADRs ADR-010 to ADR-015 in `docs/decisions/technical/` (`type: technical`); ADR-011 keeps its beyond-brief framing in prose while typed `technical`, with an explicit classification note explaining why.
+- [x] 16.4b `test_decision_log.py`'s technical-ADR test restored to the exact-10-count assertion (`ADR-006..015`), green now that all ten exist.
+- Verify: `services/api/.venv/bin/python -m pytest tests/unit/test_decision_log.py -q` (own-tip, isolated worktree) -- 3 passed, 1 xfailed; full unit suite green, no regressions.
+- *authored ahead against `feat/pv-16-decision-log` (depends on Unit 16's files existing) -- must rebase onto `develop` and retarget once Unit 16's PR merges, same pattern as Units 2b/2c and 13a-13c.
 
 ---
 
