@@ -5725,3 +5725,85 @@ rather than self-authorize a `size:exception`. Two options are in front of the u
 approvals this session), or (b) request the 4-slice split proposed above (not yet built — would
 require re-authoring the test files). Ready for `sdd-apply` to resume once the decision is made; not
 ready for `sdd-verify` until delivery (or an explicit decision to skip it) is resolved.
+
+## Unit 12 fix pass (4-lens review: risk + resilience + readability + reliability)
+
+A follow-up apply batch on `feat/pv-12-web-duplicate-alert` (PR open against `develop`, base commit
+`2f05c8d`/`cbb665c`, not merged) fixed 2 confirmed bugs plus 1 lower-severity gap from an adversarial
+4-lens review of Unit 12's shipped scope, all in `useMatchesInfiniteScroll.ts`/`DuplicateAlert.tsx`.
+Landed as ONE new commit (not an amend of `2f05c8d`/`cbb665c`), strict TDD followed: every new/
+strengthened test was run against the unmodified (pre-fix-pass) code first to confirm a genuine RED
+before touching production code.
+
+1. **[Resilience CRITICAL] Stale-response race with no unmount guard.** `loadNextPage`'s
+   `.then`/`.catch` handlers called `setMatches`/`onInvalidCursor`/`setLoadError` unconditionally, with
+   no cancellation guard — a stale `INVALID_CURSOR` response from an old, already-unmounted (or
+   text-changed) alert/hook instance could still fire `onInvalidCursor()`, dispatching into whatever
+   the machine's CURRENT state now is (e.g. a fresh `duplicate` for a different, later-validated text),
+   wiping valid details and forcing an unwanted restart. **Genuine RED confirmed**: two new
+   `DuplicateAlert.test.tsx` tests ("Stale response after unmount", "Stale response after text
+   changes") both failed against the unmodified hook — `onInvalidCursor` was called once in both cases
+   when it should not have been. Fixed with a session-token `useRef` (`sessionId`, bumped every time the
+   reset effect re-runs for a new `text`/`initialMatches`) captured at request time and compared at
+   resolution time, plus a separate `unmounted` ref set once by a mount-only effect's cleanup. A single
+   boolean `cancelled` flag (the first attempt, mirroring `PhraseForm.tsx`'s pattern literally) was
+   insufficient here and caught by the "text changes" test: the reset effect's cleanup and its own new
+   setup run atomically in the same commit on a live rerender, so a boolean flip back to `false`
+   immediately, defeating the guard for the same-instance-different-session case (as opposed to
+   `PhraseForm.tsx`'s effect, which only ever needs to guard against a true unmount). The two-ref
+   session-token approach handles both boundaries correctly.
+2. **[Reliability BLOCKER] Stale match list survives a fresh same-text duplicate result
+   (409-while-confirming).** The hook's reset effect was keyed on `[text]` only, with a comment
+   claiming "a fresh duplicate result for the SAME text is not expected mid-alert" — wrong: a defensive
+   409 while confirming (`saving` → `CONFLICT` in `machine.ts`) delivers a brand-new `details` payload
+   for the SAME text, but the rendered match `<ul>` kept showing the OLD pre-confirm matches/cursor/
+   hasMore (only the "most similar" summary line, which reads `details` directly, updated). **Genuine
+   RED confirmed**: the existing "409 while confirming (defensive)" test in `PhraseForm.test.tsx` was
+   first strengthened to assert on `screen.getAllByRole("listitem")` content (it previously only
+   asserted `alertdialog` text content, which the unrelated summary line already satisfied — tautological,
+   could not catch this bug) and failed against unmodified code (list item still showed `"Comprar
+   leche"`, not the fresh `"Comprar leche fresca"`). Fixed by adding `initialMatches`' identity to the
+   reset effect's dependency array alongside `text`: a genuinely new API response always produces a
+   fresh `matches` array (confirmed by reading `toDuplicateDetails`/`detailsFromApiError` in
+   `PhraseForm.tsx`), while the `duplicate` → `saving` transition (`CONFIRM`) reuses the exact same
+   `details` object reference, so this does not fire mid-confirm. `initialCursor`/`initialHasMore` were
+   deliberately left out of the dependency list — their VALUE can coincidentally repeat (e.g. both
+   `null`) across two different results and would miss a reset that `initialMatches`' identity always
+   catches.
+3. **[Reliability WARNING] `INVALID_CURSOR` mid-flight during `saving` silently empties the visible
+   match list.** `machine.test.ts` documents `duplicate.saving.INVALID_CURSOR` as IGNORED, but the hook
+   itself unconditionally cleared `matches` to `[]` on any `INVALID_CURSOR`, regardless of `saving`
+   state — a page fetch resolving `INVALID_CURSOR` while the user was mid-confirm left them looking at
+   an empty list under a dialog still showing "saving" in the background, no error, no restart.
+   **Genuine RED confirmed**: the new `DuplicateAlert.test.tsx` test "Invalid cursor mid-flight during
+   saving does not silently empty the match list" failed against unmodified code (list was empty, 0
+   items, instead of the expected 1). Fixed by threading a new `disabled` param through to the hook
+   (mirrors `DuplicateAlert`'s own `disabled` prop, sourced from `state.status === "saving"`), tracked
+   in a `disabledRef` kept current every render (needed because a request can be sent while `disabled`
+   is `false` and resolve after it flips `true` — the closure captured at call time is stale by
+   resolution time). When `INVALID_CURSOR` arrives while `disabledRef.current` is `true`, the hook now
+   falls back to the existing `setLoadError(true)` page-load-failure/retry UI instead of clearing the
+   list or calling `onInvalidCursor`.
+
+**Verification** (all green): `cd apps/web && npx vitest run` (139/139, up from 136 — 3 new tests: the
+two "Stale response..." tests and the "Invalid cursor mid-flight during saving" test; the 4th finding's
+test, "409 while confirming (defensive)", was an existing test strengthened in place, not a new one);
+`cd apps/web && npx tsc --noEmit` (clean); backend regression check `cd services/api && .venv/Scripts/
+python.exe -m pytest tests/unit tests/contract_suite tests/contract -m "not integration and not slow"
+-q` (286 passed, 1 deselected — identical to Unit 12's own baseline, unaffected, no backend files
+touched).
+
+**Commit**: `fix(web): guard stale infinite-scroll responses and resync matches on 409-while-confirming`
+**SHA**: `9f6d9f6` (4 files changed, 178 insertions / 6 deletions) — a new commit on
+`feat/pv-12-web-duplicate-alert`, on top of `2f05c8d`/`cbb665c`, not an amend of either.
+
+### Fix-pass TDD Cycle Evidence (Unit 12)
+
+| Finding | Test File | Layer | Safety Net | RED | GREEN | Notes |
+|---|---|---|---|---|---|---|
+| #1 Stale-response race, no unmount guard | `DuplicateAlert.test.tsx` (2 new tests: unmount, text-change) | Component | ✅ 18/18 (16 pre-existing + 2 new) | ✅ Confirmed failing — `onInvalidCursor` called once in both cases against unmodified code | ✅ Passed after the session-token + unmounted-ref fix (a first boolean-flag attempt was caught failing the "text changes" test and revised) | Real bug fix |
+| #2 Stale match list on 409-while-confirming | `PhraseForm.test.tsx` (existing test strengthened) | Component | ✅ 18/18 (17 pre-existing unchanged + this one strengthened) | ✅ Confirmed failing — list item showed `"Comprar leche"`, not `"Comprar leche fresca"` | ✅ Passed after adding `initialMatches` to the reset effect's deps | Real bug fix; test was tautological before (asserted only on the unrelated summary line) |
+| #3 INVALID_CURSOR silently empties list while saving | `DuplicateAlert.test.tsx` (1 new test) | Component | ✅ 19/19 (18 + this one) | ✅ Confirmed failing — 0 list items instead of 1 | ✅ Passed after threading `disabled`/`disabledRef` through and falling back to the load-error UI | Real bug fix |
+
+**Test summary**: 3 new committed tests (2 for #1, 1 for #3), 1 existing test strengthened in place
+(#2, same scenario, stronger assertion). `apps/web` vitest total: 139/139 passing (was 136).
