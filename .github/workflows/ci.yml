@@ -32,7 +32,7 @@ jobs:
         run: pytest -m "not integration and not slow" -q
 
   frontend:
-    name: Frontend (unit)
+    name: Frontend (unit + typecheck + build)
     runs-on: ubuntu-latest
     defaults:
       run:
@@ -44,5 +44,29 @@ jobs:
           node-version: "22"
       - name: Install dependencies
         run: npm ci
+      # No ESLint ruleset is wired yet (openspec/config.yaml), so a focused
+      # test guard lives here as a grep check instead of an eslint-plugin-
+      # vitest rule: `test.only`/`describe.only`/`it.only` make the suite
+      # exit green while silently skipping everything else. First frontend
+      # test suite in this repo, with several more test-heavy units (11-13)
+      # about to land on the same setup, so this guard exists from day one.
+      - name: Check for focused tests (.only)
+        run: |
+          if grep -rEn "\b(describe|it|test)\.only\(" src --include="*.test.ts" --include="*.test.tsx"; then
+            echo "::error::Focused test(s) found above — remove .only before merging, it silently skips the rest of the suite." >&2
+            exit 1
+          fi
       - name: Vitest
         run: npm test
+      - name: Typecheck
+        run: npm run typecheck
+      - name: Build
+        run: npm run build
+      # Drift guard for the openapi-typescript-generated file (design.md:
+      # "generated types/api.ts regenerated in CI; build fails on diff").
+      # `make types` lives at the repo root, not apps/web, hence the override.
+      - name: Regenerate generated types and check for drift
+        working-directory: .
+        run: |
+          make types
+          git diff --exit-code -- apps/web/src/types/api.ts
