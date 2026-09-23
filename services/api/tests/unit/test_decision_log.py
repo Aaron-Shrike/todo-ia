@@ -1,23 +1,20 @@
-"""Doc-check test for the decision log (tasks.md 16.4; design.md's
+"""Doc-check test for the decision log (tasks.md 16.4/15.1; design.md's
 "Beyond the Brief" Decision Log).
 
-Two independent concerns, deliberately kept in separate test functions:
+Two independent concerns, kept in separate test functions:
 
-1. ADR file/front-matter structure under `docs/decisions/` -- this is
-   Unit 16's own scope and runs now.
-2. README.md linking every ADR by filename -- README.md is Unit 15's
-   deliverable, deliberately written AFTER Unit 16 so it can link real
-   files instead of placeholders. That assertion is marked `xfail(strict=
-   True)` below with the reason spelled out; Unit 15 must remove the
-   `xfail` decorator once README.md exists and links every ADR, not
-   delete or weaken the assertion.
+1. ADR file/front-matter structure under `docs/decisions/` -- Unit 16's
+   own scope.
+2. README.md linking every ADR by filename -- Unit 15's deliverable.
+   README.md was deliberately written AFTER Unit 16 so it could link
+   real files instead of placeholders; this assertion was `xfail(strict=
+   True)` until Unit 15 wrote README.md and removed the marker.
 """
 
 from __future__ import annotations
 
 from pathlib import Path
 
-import pytest
 import yaml
 
 # tests/unit/test_decision_log.py -> tests -> api -> services -> repo root
@@ -70,15 +67,6 @@ def test_technical_adrs_are_present_and_typed_technical() -> None:
     assert not wrong, f"technical ADRs missing front-matter type: technical: {wrong}"
 
 
-@pytest.mark.xfail(
-    reason=(
-        "README.md is Unit 15's deliverable, deliberately deferred until after "
-        "Unit 16 so it can link real ADR files instead of placeholders (see "
-        "apply-progress.md's Unit 16 section). Remove this xfail once Unit 15 "
-        "writes README.md and links every ADR by filename/anchor."
-    ),
-    strict=True,
-)
 def test_readme_links_every_adr() -> None:
     assert README_PATH.exists(), "README.md does not exist yet (Unit 15)"
     content = README_PATH.read_text(encoding="utf-8")
