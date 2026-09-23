@@ -3352,15 +3352,697 @@ fix/pv-07-review-fixes --title "fix(api): resolve Unit 7 4-lens review findings"
 --json baseRefName,headRefName,state`: `baseRefName: "develop"`, `headRefName:
 "fix/pv-07-review-fixes"`, `state: "OPEN"`.
 
+## Unit 8: sentence-transformers adapter, bounded provider, cache wiring, image bake -- PAUSED, review-budget STOP, awaiting split decision
+
+**Nothing in this section is committed or pushed.** This batch stopped mid-unit, uncommitted, per the
+CONTEXT's explicit ask-on-risk delivery instruction: "If this unit's diff exceeds 400 lines, STOP and
+report back with a clear split proposal -- do not unilaterally create a deferred sub-unit AND ship an
+oversized PR without asking." All files below exist on disk on `feat/pv-08-embeddings-image` (cut from
+`fix/pv-07-review-fixes` at `48bff7b`), fully green, but `git status` shows them untracked/modified,
+not committed.
+
+### Environment findings (correcting two assumptions in this batch's own CONTEXT block)
+
+1. **Docker: confirmed absent**, as assumed. `docker --version` -> `command not found`; `which docker`
+   -> nothing. 8.3's Dockerfile changes can be written as file content but not verified by building;
+   8.4 cannot be attempted at all.
+2. **Network: available, contrary to the CONTEXT's "may also be unavailable" caution.** `curl -sI
+   https://pypi.org` -> `HTTP/2 200`; `curl https://huggingface.co/api/models/sentence-transformers/
+   paraphrase-multilingual-MiniLM-L12-v2` -> a real, full model-metadata JSON response. This let 8.0's
+   SHA lookup be a genuine verification (see below) rather than a guess or a skip. It does NOT change
+   the docker conclusion -- image builds and `pytest -m slow` against a real downloaded model both
+   still require `docker`/a multi-hundred-MB `sentence-transformers`+`torch` install, neither of which
+   is in this venv and neither of which this batch attempted to add (out of scope per the CONTEXT's own
+   "unit tests use a stubbed model object" instruction for 8.2, and 8.4 is blocked by docker regardless).
+
+### 8.0: Hub commit SHA -- VERIFIED, not yet applied to any file
+
+`huggingface_hub` itself is not installed in this venv (`ModuleNotFoundError`), so the literal
+`python -c "from huggingface_hub import model_info; ..."` command from the task text could not run
+as written. Used the equivalent underlying HTTP call directly instead (`model_info(...).sha` is a thin
+wrapper over `GET /api/models/{repo_id}`'s `sha` field):
+
+```
+curl -s --max-time 10 "https://huggingface.co/api/models/sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2"
+  | python3 -c "import json,sys; d=json.load(sys.stdin); print('sha:', d.get('sha')); print('lastModified:', d.get('lastModified'))"
+```
+
+Result: **`sha: e8f8c211226b894fcb81acc59f3b34ba3efd5f42`**, `lastModified: 2026-01-28T10:02:26.000Z`.
+40 lowercase-hex characters, matches `Settings.embedding_model_revision`'s existing
+`^[0-9a-fA-F]{40}$` validator (already in place since Unit 6 -- see `platform/settings.py`). This is
+the commit backing the repo's default branch at fetch time, the same semantics `huggingface_hub.
+model_info(repo_id).sha` returns for the same endpoint.
+
+**Not yet applied anywhere**:
+- `.env.example` still does not exist on disk -- confirmed still blocked by the same hard
+  `Edit(.env.*)` deny rule noted in Unit 0 (this batch did not attempt the write, per the CONTEXT's own
+  "do not retry the blocked write" instruction). The exact line for a human/broader-permission session
+  to add, in the position the design's Configuration table implies (next to `EMBEDDING_MODEL`):
+  ```
+  EMBEDDING_MODEL_REVISION=e8f8c211226b894fcb81acc59f3b34ba3efd5f42
+  ```
+- The Dockerfile `ARG EMBEDDING_MODEL_REVISION` default: NOT written yet. 8.3 (the whole Dockerfile
+  bake) was deliberately not started once the running diff crossed 400 lines (see below) -- writing
+  more file content before the split decision would only grow an already-oversized change further.
+
+### 8.1: `BoundedEmbeddingProvider` -- DONE, fully verified
+
+`services/api/src/app/modules/similarity/adapters/bounded.py`: `ThreadPoolExecutor(max_workers=
+EMBEDDING_MAX_CONCURRENCY)` + `threading.BoundedSemaphore(EMBEDDING_MAX_CONCURRENCY)`. `embed()`
+acquires the semaphore within `timeout_seconds` (`EmbeddingTimeout` on failure), submits the inner call,
+releases the semaphore via the future's OWN `add_done_callback` (never on the caller's timeout path --
+this is what keeps a stuck forward pass from freeing a slot it never actually gave back), and maps a
+`concurrent.futures.TimeoutError` on `future.result()` to `EmbeddingTimeout`. Exception translation: an
+inner `EmbeddingUnavailable`/`EmbeddingTimeout` passes through unchanged; any OTHER inner exception
+becomes `EmbeddingUnavailable` (design.md's literal "any inner exception becomes/propagates as
+EmbeddingUnavailable" line -- read as covering both the pass-through case for already-typed domain
+errors and the wrapping case for a raw library exception).
+
+`tests/unit/similarity/test_bounded.py`: a `_BlockingEmbedder` fake blocks `embed()` on a
+`threading.Event` (no `time.sleep` anywhere, per design.md's "no sleeps" requirement); a `release`
+fixture ALWAYS calls `event.set()` on teardown (even on assertion failure) so a stuck worker thread can
+never hang the pytest process at exit. 8 tests, all green:
+1. `test_embed_times_out_when_no_slot_is_free_within_the_timeout` -- tiny timeout, event never set ->
+   `EmbeddingTimeout`.
+2. `test_a_held_slot_rejects_the_next_call_without_reaching_the_inner_provider` -- two calls while the
+   slot is held; both time out; `inner.call_count == 1` (the second call never reached the inner
+   provider -- "no extra queue").
+3. `test_releasing_the_event_frees_the_slot_for_a_later_call` -- first call times out, `release.set()`,
+   second call succeeds with the real vector.
+4. `test_a_timed_out_result_is_never_cached` -- `CachingEmbeddingProvider(BoundedEmbeddingProvider(...))`:
+   a timed-out attempt leaves `cache.stats.size == 0`; after release, a fresh call succeeds AND is
+   cached (`size == 1`).
+5. `test_a_raw_inner_exception_becomes_embedding_unavailable` -- a fake raising bare `RuntimeError` ->
+   `EmbeddingUnavailable`.
+6. `test_an_inner_embedding_unavailable_propagates_unchanged` -- `FailingEmbedder` (Unit 2's existing
+   double) wrapped by `BoundedEmbeddingProvider` -> still `EmbeddingUnavailable`, not double-wrapped.
+7. `test_model_id_and_dimensions_are_forwarded_from_the_inner_provider`.
+8. `test_check_ready_delegates_to_the_inner_provider` -- a `FailingEmbedder`'s `check_ready()` raising
+   propagates through `BoundedEmbeddingProvider.check_ready()` unchanged.
+
+Verified: `pytest tests/unit/similarity -q` -> 42 passed (was 34 before this batch); `ruff check` clean;
+`mypy src/app/modules/similarity/adapters/bounded.py` -> `Success: no issues found in 1 source file`;
+`lint-imports` -> `Contracts: 5 kept, 0 broken.` **219 changed lines** (`bounded.py` 69 insertions,
+`test_bounded.py` 150 insertions) -- safely under the 400-line cap on its own.
+
+### 8.2: PARTIAL -- adapter + container wiring DONE; dimension coherence + lifespan warmup NOT STARTED
+
+**Done and verified** (`services/api/src/app/modules/similarity/adapters/sentence_transformers.py`):
+`SentenceTransformersEmbedder(model, *, model_name, revision)` wraps an ALREADY-LOADED, duck-typed
+model object (`_EncodeModel` Protocol: `encode(text, *, normalize_embeddings) -> object`,
+`get_sentence_embedding_dimension() -> int`) -- this class itself never imports the
+`sentence_transformers` package. `model_id = f"{model_name}@{revision}"`; `dimensions` read once at
+construction; `embed()` calls `model.encode(text, normalize_embeddings=True)` (the library's own flag
+does the L2-normalization design.md's contract requires -- no extra pass needed) and coerces the result
+to `list[float]`; `check_ready()` is a no-op (the model already loaded synchronously if this object
+exists at all). `load_sentence_transformer(settings) -> SentenceTransformersEmbedder` is the ONE
+function in this module tree that imports `sentence_transformers` -- lazily, inside its own body -- so
+every unit test stays import-safe with neither `sentence_transformers` nor `torch` installed (confirmed
+absent in this venv: `ModuleNotFoundError` for both, and for `huggingface_hub`).
+
+`tests/unit/similarity/test_sentence_transformers.py`: a `_StubModel` duck-typed fake backs 5 green
+unit tests (model_id assembly, dimensions read from the stub, `embed()` delegates with
+`normalize_embeddings=True`, a SECOND distinct text/vector pair for triangulation, `check_ready()`
+touches the model zero times). A 6th test, `test_the_real_model_loads_and_reports_384_dimensions`, is
+marked `@pytest.mark.slow` and calls the REAL `load_sentence_transformer` against the verified SHA --
+written per the task's own "marker `slow` for the real-model test" instruction, but **NOT executed in
+this environment**: no `sentence-transformers`/`torch` install and no attempt to add one (a
+multi-hundred-MB download+install is out of this batch's scope even though the network itself is
+reachable -- see "Environment findings" above). `pytest -m "not slow"` deselects it, same as every
+other `slow` test in this suite; it is ready for a future docker/network-capable session to run.
+
+`services/api/src/app/modules/similarity/container.py` (extended, not replaced): `build_model_id(*,
+model, revision) -> str` (pure, trivial, one-line delegate of the same format the adapter builds
+internally -- kept as its own function because `main.py`'s eventual lifespan needs to report the BARE
+model name on `/health` while the adapter needs the JOINED form for the cache key, and having one named
+function documents which is which). `build_embedding_provider(base: EmbeddingProvider, *, settings:
+Settings) -> EmbeddingProvider` wires the fixed order design.md names -- `base` (caller-supplied,
+already built; production callers use `load_sentence_transformer`, tests use a `FakeEmbedder`) ->
+`BoundedEmbeddingProvider` -> `wrap_with_cache` (existing Unit 6b function, unchanged, still the
+`EMBEDDING_CACHE_SIZE=0` kill switch). Taking an already-built `base` instead of loading a model itself
+keeps this function -- and therefore the WIRING ORDER -- unit-testable with a `FakeEmbedder`, no real
+model required.
+
+`tests/unit/similarity/test_container.py`: 4 green tests -- `build_model_id` format; the wired provider
+caches repeated calls through the bounded layer (`inner.call_count == 1` after two identical `embed()`
+calls, `isinstance(provider, CachingEmbeddingProvider)`); `EMBEDDING_CACHE_SIZE=0` triangulation
+(`inner.call_count == 2`, NOT a `CachingEmbeddingProvider` -- proves the kill switch produces a
+genuinely different wiring, not a hardcoded wrapper); `model_id`/`dimensions` still forwarded through
+the full stack.
+
+Verified: `pytest tests/unit/similarity -q -m "not slow"` -> 51 passed, 1 deselected; full regression
+`pytest tests/unit tests/contract_suite tests/contract -m "not integration and not slow" -q` -> **253
+passed** (was 232 before this batch), 0 regressions; `ruff check src tests` -> clean; `mypy src` ->
+`Success: no issues found in 40 source files`; `lint-imports` -> `Contracts: 5 kept, 0 broken.`
+
+**NOT YET DONE** (the rest of 8.2's literal scope): the dimension-coherence check (a typmod reader over
+`pg_attribute.atttypmod` for the `phrases.embedding` column, a pure `check_dimension_coherence(*,
+typmod, provider_dimensions, configured_dimensions)` comparison, and a new `EmbeddingDimensionMismatch`
+error -- "boot aborts on mismatch") and the `main.py` lifespan warmup wiring (load the real model,
+build the full provider stack, run the coherence check, do one sentinel `embed()` to flip readiness,
+attach `app.state.health`). Design work done in this batch's analysis but not yet written as code:
+- The pure `check_dimension_coherence` function is fully unit-testable without a database (three plain
+  ints in, compare, raise or not) and was SIZED but not written.
+- The typmod-reading SQL itself (`SELECT atttypmod FROM pg_attribute WHERE attrelid = 'phrases'::
+  regclass AND attname = 'embedding'`) cannot be verified in this environment regardless of the split
+  decision below -- no live Postgres is available (same category of gap as Unit 4's deferred
+  typmod-reader test, apply-progress.md's Unit 4 section). pgvector stores the declared dimension
+  directly in `atttypmod` with no `VARHDRSZ`-style offset (unlike `varchar`) -- this is a documented
+  claim about pgvector's C source (`vector_typmod_in`), not something this batch could confirm against
+  a running column.
+- A genuine, NOT-in-tasks.md gap surfaced while designing the lifespan hook: no task anywhere in
+  tasks.md schedules wiring a PRODUCTION `UnitOfWorkFactory` (`PgVectorUnitOfWorkFactory`) into
+  `main.py` -- `app.state.phrases` would still be unset after a literal reading of 8.2's task text,
+  which only names the EMBEDDING side (`similarity/container.py`'s stack, the coherence check, the
+  warmup). `main.py`'s own Unit 6b docstring says "until Unit 8 wires a real container," implying the
+  repository side too, but no task text says so explicitly anywhere in the file. Flagged here rather
+  than silently deciding either way -- see the split proposal's Option B below for how this factors in.
+
+### Review-budget STOP: measured, not trimmed, split proposal below
+
+`git diff --stat` against `fix/pv-07-review-fixes` (the branch base), for everything written and
+verified so far (8.1 complete + 8.2's adapter/wiring slice only -- NOT dimension coherence, NOT
+lifespan, NOT Dockerfile):
+
+| File | Ins/Del |
+|------|---------|
+| `services/api/src/app/modules/similarity/adapters/bounded.py` | 69 / 0 |
+| `services/api/src/app/modules/similarity/adapters/sentence_transformers.py` | 73 / 0 |
+| `services/api/src/app/modules/similarity/container.py` | 40 / 5 |
+| `services/api/tests/unit/similarity/test_bounded.py` | 150 / 0 |
+| `services/api/tests/unit/similarity/test_container.py` | 69 / 0 |
+| `services/api/tests/unit/similarity/test_sentence_transformers.py` | 102 / 0 |
+| **Total** | **498 insertions / 5 deletions = 503 changed lines, 6 files** |
+
+**No trim pass was run** (unlike Units 6/6b/7): those units trimmed an ALREADY-COMPLETE draft down as
+far as real reduction would go, then stopped. Here, 8.2 itself is not yet complete (dimension coherence
++ lifespan remain unwritten, plausibly another 150-250 lines of production+test code by this batch's
+own estimate, though unmeasured since it was never written), so there is no complete draft to trim yet
+-- continuing to write more code before a split decision would only make an already-oversized diff
+larger, which is exactly what the CONTEXT's ask-on-risk instruction says to stop before doing.
+
+A real trim IS still possible on what exists (e.g. `test_bounded.py`'s 8 tests could drop the
+`model_id`/`dimensions`-forwarding and `check_ready`-delegation tests -- 2 of the 4 non-tasks.md-named
+scenarios -- for roughly -20 to -30 lines), but that alone cannot close a ~100-line gap, let alone the
+larger gap once the remaining 8.2 scope is added.
+
+**Split proposal (none applied yet -- awaiting the user's decision):**
+
+| Option | Scope | Est. lines | Notes |
+|--------|-------|-----------|-------|
+| A. Single `size:exception` for everything written so far | 8.1 + 8.2's adapter/wiring slice, as one PR | 503 (measured) | Matches this session's Unit 6/6b/7 precedent (ask, then accept). Leaves the dimension-coherence + lifespan wiring as a clearly-scoped follow-up ("Unit 8b" per the task's own pre-authorized seam name, broadened from "just the Dockerfile" to "boot orchestration + Dockerfile"). |
+| B. Split 8.1 from 8.2 | PR 1 = `bounded.py` alone (219 lines, safely under budget, complete, already green); PR 2 = `sentence_transformers.py` adapter + container wiring (279 lines, also under budget alone) | 219 + 279 | Two clean, independently mergeable, already-complete slices; avoids ANY exception request. Natural dependency-free split -- `sentence_transformers.py` does not import `bounded.py` (only `container.py` composes them), so either could land first, though `bounded.py` first matches numeric task order (8.1 before 8.2). |
+| C. Defer dimension-coherence + lifespan + Dockerfile bake + the PgVectorUnitOfWorkFactory gap to a NEW "Unit 8b" (boot orchestration) and Dockerfile bake stays "Unit 8c" (or folds into 8b) | Whichever of A/B is chosen for THIS PR, plus a new deferred unit for the rest | Unmeasured -- not yet written | Matches the task's own pre-authorized "split the Dockerfile bake into its own unit 8b" seam, broadened per this batch's finding that the boot-orchestration half is ALSO large and untestable-without-a-real-DB regardless of split choice. |
+
+This batch's recommendation, offered without self-authorizing it: **Option B + C** -- ship `bounded.py`
+alone first (zero risk, already green, smallest possible unit), then the adapter+wiring slice as a
+second PR (also already green), then open a literal "Unit 8b" for dimension-coherence + lifespan +
+Dockerfile once the DB/UnitOfWork-factory gap above is resolved (either explicitly deferred to Unit 14,
+or added as new task text) -- all of which needs the user's decision on the tasks.md gap first, not
+just a line-budget call.
+
+### Status (Unit 8, first sub-batch -- SUPERSEDED, see continuation below)
+
+8.0 verified (SHA obtained, not yet applied to any file). 8.1 complete, green, 219 lines. 8.2 partial:
+adapter + container wiring complete and green (279 lines); dimension coherence + lifespan warmup NOT
+started. 8.3/8.4 NOT started. **Nothing committed, nothing pushed, no PR opened** -- this batch stopped
+to report back per the CONTEXT's ask-on-risk instruction, with the measured numbers and a concrete,
+unresolved split proposal above.
+
+## Unit 8 continuation: user chose Option A (`size:exception`, single PR) -- 8.0-8.3 completed
+
+**User decision, verbatim intent**: "ship everything as ONE PR with `size:exception` for Unit 8, not
+the B+C split into 8/8b... keep going in this same branch/commit until Unit 8's actually-completable
+scope (8.0-8.3) is done, then ship it all as one exception PR." This section documents the completion
+of 8.2's remaining scope, all of 8.3, and the judgment call on the `PgVectorUnitOfWorkFactory` gap --
+continuing directly from the STOP report above, same branch (`feat/pv-08-embeddings-image`), same
+uncommitted working tree.
+
+### A second environment gap discovered while finishing 8.2: `sqlalchemy` is not installed in this dev venv
+
+Before writing the dimension-coherence check, attempted `pytest tests/unit/platform/test_db.py`
+importing straight from `platform/db.py` (the obvious place for `read_vector_column_dimensions`,
+next to the existing `acquire_write_lock`) and hit `ModuleNotFoundError: No module named 'sqlalchemy'`
+at COLLECTION time. Confirmed via `.venv/bin/pip list`: **`sqlalchemy`, `alembic`, and `psycopg` are
+NOT installed in this venv at all**, despite being core `dependencies` in `pyproject.toml` since Unit
+4/5a/5b. This had never surfaced before because the only two modules that import `sqlalchemy` at
+module level (`platform/db.py`, `phrases/adapters/pgvector_repository.py`) were previously reachable
+ONLY from `tests/integration/*` (excluded by `-m "not integration"`, this codebase's own `make
+test-unit` scope) -- nothing under `tests/unit`/`tests/contract`/`tests/contract_suite` had ever
+imported either module before this batch. This dev venv appears to have been synced for `test-unit`
+scope only (fastapi/pydantic-settings/pytest/ruff/mypy/import-linter -- confirmed present), not a full
+`pip install -e .[dev]`.
+
+**Response, not a workaround**: rather than modify the EXISTING, already-shipped `platform/db.py`
+(Unit 5b code, whose own integration tests cannot be re-run here as a safety net -- touching it would
+be a real regression risk with no way to verify), the new dimension-coherence logic was written in a
+BRAND NEW module, `platform/embedding_boot.py`, using the SAME lazy-import pattern already established
+in this batch for `adapters/sentence_transformers.py::load_sentence_transformer`: the pure comparison
+function (`check_dimension_coherence`) needs no import at all; the two DB-touching functions
+(`read_vector_column_dimensions`, `check_database_reachable`) import `sqlalchemy`/`text`/
+`OperationalError` LAZILY, inside their own function bodies, with `Connection`/`Engine` type hints
+guarded behind `TYPE_CHECKING` (safe because `from __future__ import annotations` is active). This
+keeps the WHOLE module importable in this incomplete venv while remaining fully correct once
+`sqlalchemy` IS installed (which it always is in any full/production install -- the app cannot run at
+all otherwise, since `pgvector_repository.py` already hard-requires it).
+
+`main.py`'s new `_lifespan` function needed the SAME discipline for `create_engine` and
+`PgVectorUnitOfWorkFactory` (which imports `pgvector_repository.py`, itself `sqlalchemy`-dependent):
+both are imported LAZILY inside `_lifespan`'s own body, not at `main.py`'s module top -- critical,
+because `main.py` is imported by nearly every test file in this codebase (`from app.main import
+create_app`), so a top-level import there would have broken all 259 currently-passing tests, not just
+the new ones. No test in this codebase ever triggers `_lifespan` (see below), so the lazy import is
+never attempted during any test run here.
+
+### 8.2 completed: dimension coherence + lifespan warmup
+
+`services/api/src/app/platform/embedding_boot.py` (new):
+- `EmbeddingDimensionMismatch(Exception)`: carries `typmod`/`provider_dimensions`/
+  `configured_dimensions` for a clear boot-failure message.
+- `check_dimension_coherence(*, typmod, provider_dimensions, configured_dimensions) -> None`: PURE,
+  raises unless all three values are identical. This is the actual "boot aborts on mismatch" contract
+  design.md names, and the only piece of this file that is unit-tested (no I/O).
+- `read_vector_column_dimensions(connection, *, table, column) -> int`: `SELECT atttypmod FROM
+  pg_attribute WHERE attrelid = :table::regclass AND attname = :column`. pgvector stores the declared
+  dimension directly in typmod, with no `VARHDRSZ`-style offset (unlike `varchar`) -- per pgvector's
+  `vector_typmod_in` C source, a documented claim, NOT confirmed against a live column in this
+  environment (no Postgres available -- same category of gap as Unit 4's deferred typmod-reader test).
+- `check_database_reachable(engine) -> bool`: `SELECT 1`, catching `OperationalError` specifically (a
+  genuinely-down database) and letting any other exception propagate (a bug to surface, not a
+  readiness signal to swallow). Also not exercised without a live Postgres.
+
+`tests/unit/platform/test_embedding_boot.py` (new, 3 tests, green): all three dimensions agreeing
+passes silently; three parametrized single-disagreement cases (typmod off, provider off, configured
+off) each raise `EmbeddingDimensionMismatch` with the exact offending values attached.
+
+`services/api/src/app/main.py` (extended): `create_app` gained an OPTIONAL `lifespan:
+Callable[[FastAPI], AbstractAsyncContextManager[None]] | None = None` parameter, defaulting to `None`
+-- every EXISTING test (all of which call `create_app(settings)` with no lifespan and set
+`app.state.phrases`/`app.state.health` directly, per `test_validate_health.py`'s `_client()` and its
+many callers, all unchanged) keeps behaving IDENTICALLY, since `TestClient` only ever runs a
+`lifespan` when used as a context manager (`with TestClient(app):`), which no existing test does. A
+new `_lifespan(app, settings)` async context manager (production-only): loads the real model
+(`load_sentence_transformer`), wires the ST -> bounded -> caching stack (`build_embedding_provider`),
+reads the column typmod and runs `check_dimension_coherence` (an unhandled
+`EmbeddingDimensionMismatch` here propagates out of the lifespan, which FastAPI/uvicorn surfaces as a
+failed startup -- boot genuinely aborts, not just logs a warning), warms the model with one embed of a
+fixed sentinel string, wires a real `PgVectorUnitOfWorkFactory` (see judgment call below) into
+`app.state.phrases`, and flips `app.state.health` to ready with a real `check_database_reachable`
+closure and the real `CacheStats` snapshot (reusing the exact `asdict(...)`-if-`CachingEmbeddingProvider`
+pattern `test_validate_health.py`'s own `_client()` helper already established in Unit 6b). At the
+bottom of the file, the module-level `app = create_app(settings, lifespan=lambda app: _lifespan(app,
+settings))` wires the real thing for production only.
+
+`tests/unit/test_main.py` (new, 2 tests, green): (1) `create_app(settings)` with no lifespan still
+defaults `app.state.health.model_ready` to `False`, unchanged from Unit 6b -- a regression guard, not
+new behaviour; (2) a FAKE lifespan (sets a flag on `app.state`, no I/O) IS actually triggered when
+`TestClient` is used as a context manager, proving the passthrough wiring behaviourally rather than by
+asserting on FastAPI/Starlette's internal `lifespan_context` attribute (tried first, but Starlette
+wraps a provided lifespan in its own `merged_lifespan` closure -- an implementation detail a test
+should never couple to; switched to the behavioural form once that surfaced during RED/GREEN).
+
+### Judgment call: the `PgVectorUnitOfWorkFactory`-not-wired-into-`main.py` gap
+
+Per the CONTEXT's explicit instruction ("make a judgment call... your call, just don't leave it
+ambiguous"): **wired it in**, as part of `_lifespan`. Reasoning: (1) `main.py`'s own Unit 6b docstring
+already said outright "until Unit 8 wires a real container" -- this is not a NEW scope invention, it is
+closing a gap the codebase's own comments already attributed to this unit; (2) `PgVectorUnitOfWorkFactory`
+already existed, fully built and integration-tested, since Unit 5a/5b -- wiring it needed only
+`create_engine(settings.database_url)` (already needed anyway for the dimension-coherence check's
+connection) plus one `PgVectorUnitOfWorkFactory(engine, ef_search=..., lock_timeout_ms=...)`
+construction call, roughly 10 lines; (3) leaving `app.state.phrases` unset after Unit 8 would mean
+`/phrases/validate`/`/phrases`/`/phrases/matches` ALL 500 in a real deployment even after Unit 8's
+"embeddings" work ships -- a genuinely confusing, easy-to-miss half-finished state for whoever runs
+Unit 14 (`compose wiring`) next, worse than the small addition now. This was judged small and clearly
+in-scope, not substantial/uncertain -- the "defer explicitly" branch of the instruction was not taken.
+
+**One real mypy finding from doing this**: `PgVectorUnitOfWorkFactory`'s `__call__` returns
+`PgVectorUnitOfWork`, and `UnitOfWork.repo: PhraseRepository` vs. `PgVectorUnitOfWork.repo:
+PgVectorPhraseRepository` -- mypy treats a Protocol's mutable attribute as INVARIANT (readable AND
+writable through the Protocol type), so a concrete subtype-typed attribute never structurally
+satisfies the Protocol, even though `PgVectorPhraseRepository` fully implements `PhraseRepository` at
+runtime. This is a PRE-EXISTING structural fact of the Unit 5b code, never previously surfaced because
+no `src/`-tree call site (only test files, which `mypy src`'s `packages = ["app"]` config never checks)
+had ever assigned a `PgVectorUnitOfWorkFactory` to a `UnitOfWorkFactory`-typed parameter before this
+batch. Fixed with a narrow, documented `# type: ignore[arg-type]` at the one new call site in
+`main.py`, with a comment explaining the root cause -- consistent with this codebase's existing
+convention for structurally-sound-but-mypy-strict mismatches (e.g. `similarity/container.py`'s
+pre-existing `cast(EmbeddingProvider, ...)` on `CachingEmbeddingProvider`). `mypy src` -> `Success: no
+issues found in 41 source files` after the fix.
+
+### 8.3 completed: Dockerfile bake (NOT verified by building)
+
+`services/api/Dockerfile`: two new stages appended after the existing `migrate` stage (which is
+UNCHANGED, still torch-free).
+- `api-builder`: `ARG EMBEDDING_MODEL_REVISION` defaults to the verified SHA
+  (`e8f8c211226b894fcb81acc59f3b34ba3efd5f42`); a `RUN echo ... | grep -Eq '^[0-9a-f]{40}$' || exit 1`
+  fails the build fast on a non-40-hex value (task 8.0's literal requirement); installs the CPU-only
+  torch wheel from `https://download.pytorch.org/whl/cpu` FIRST, then `pip install .[embeddings]`
+  (pip then finds torch already satisfied and never reaches for the default index's CUDA wheel); bakes
+  the checkpoint via `snapshot_download(repo_id=EMBEDDING_MODEL, revision=EMBEDDING_MODEL_REVISION,
+  cache_dir='/opt/models')` -- `cache_dir`, not `local_dir`, chosen deliberately so the resulting
+  directory matches the real huggingface_hub cache LAYOUT (`models--org--name/snapshots/<sha>/...`)
+  that `SentenceTransformer(model_name, revision=sha)` expects to find when `SENTENCE_TRANSFORMERS_HOME`
+  points at it -- reasoned from documented `sentence-transformers`/`huggingface_hub` caching
+  conventions, explicitly flagged in the Dockerfile's own comment as UNCONFIRMED against a real build.
+- `api`: runtime stage, copies `site-packages` + `/opt/models` from `api-builder`, sets
+  `HF_HUB_OFFLINE=1`/`TRANSFORMERS_OFFLINE=1`/`SENTENCE_TRANSFORMERS_HOME=/opt/models`, `EXPOSE 8000`,
+  `CMD uvicorn app.main:app --host 0.0.0.0 --port 8000`.
+
+`services/api/pyproject.toml`: new `[project.optional-dependencies].embeddings = ["sentence-transformers>=3.0"]`
+(deliberately NOT in core `dependencies` -- keeps the `migrate` stage's plain `pip install .` torch-free,
+matching the existing stage's own comment). **A THIRD genuine gap discovered this batch**:
+`uvicorn` had never been declared as a dependency anywhere in `pyproject.toml`, even though the
+Dockerfile's `api` stage (and any real deployment) needs it to actually run `app.main:app` -- added
+`uvicorn[standard]>=0.30` to core `dependencies`.
+
+**NOT VERIFIED BY BUILDING**: no `docker` in this environment (confirmed absent, `docker --version` ->
+command not found). Every claim above is reasoned from design.md's literal text and documented
+sentence-transformers/huggingface_hub/pip conventions, not confirmed by an actual `docker build`. The
+Dockerfile's own comment block states this plainly, so a docker-capable session knows exactly what
+still needs first-time verification (including the `cache_dir` vs `local_dir` open question).
+
+### 8.4: still BLOCKED, unchanged from the original report
+
+No `docker` in this environment. `docker build`/image-size measurement/`pytest -m slow` real-model
+timing are all deferred to a docker-capable session, as originally reported. Not attempted, not
+fabricated.
+
+### Final verification (this batch, cumulative)
+
+- `cd services/api && .venv/bin/python -m pytest tests/unit tests/contract_suite tests/contract -m "not integration and not slow" -q`
+  -> **259 passed, 1 deselected** (confirmed baseline on the branch base `fix/pv-07-review-fixes`
+  before this unit's changes: **236 passed** -- re-measured directly via `git stash`, not carried over
+  from an earlier report. +23 new tests, exactly accounted for: 8 `test_bounded.py` + 5
+  `test_sentence_transformers.py` [+1 `slow` deselected] + 4 `test_container.py` + 4
+  `test_embedding_boot.py` + 2 `test_main.py` = 23; 236 + 23 = 259, matches exactly).
+- `ruff check src tests` -> `All checks passed!`
+- `mypy src` -> `Success: no issues found in 41 source files`.
+- `lint-imports` -> `Contracts: 5 kept, 0 broken.`
+- `docker build` / `pytest -m slow` -> **BLOCKED, not run** (no docker, no real model install) -- see
+  8.3/8.4 above.
+
+### Final measured diff (code only, `git diff --numstat` against `fix/pv-07-review-fixes`)
+
+| File | Ins/Del |
+|------|---------|
+| `services/api/Dockerfile` | 52 / 1 |
+| `services/api/pyproject.toml` | 12 / 0 |
+| `services/api/src/app/main.py` | 127 / 14 |
+| `services/api/src/app/modules/similarity/adapters/bounded.py` | 69 / 0 |
+| `services/api/src/app/modules/similarity/adapters/sentence_transformers.py` | 73 / 0 |
+| `services/api/src/app/modules/similarity/container.py` | 35 / 5 |
+| `services/api/src/app/platform/embedding_boot.py` | 96 / 0 |
+| `services/api/tests/unit/platform/test_embedding_boot.py` | 46 / 0 |
+| `services/api/tests/unit/similarity/test_bounded.py` | 150 / 0 |
+| `services/api/tests/unit/similarity/test_container.py` | 69 / 0 |
+| `services/api/tests/unit/similarity/test_sentence_transformers.py` | 102 / 0 |
+| `services/api/tests/unit/test_main.py` | 65 / 0 |
+| **Total (code only)** | **896 insertions / 20 deletions = 916 changed lines, 12 files** |
+
+(`openspec/` doc updates -- `tasks.md` and `apply-progress.md` -- excluded from this count per this
+file's own Notes-line convention, same as every prior `size:exception` unit this session.)
+
+**`size:exception`**: 916 changed lines, ~2.3x the 400-line cap. This is the SAME exception category as
+Units 6 (826), 6b (468), and 7 (566) -- all "brand-new subsystem from zero" work in this codebase's own
+established pattern, here compounded by the unit spanning FIVE genuinely separate concerns (a new
+adapter, new boot-orchestration wiring, a new Dockerfile stage, and two previously-undiscovered
+environment/dependency gaps fixed along the way) rather than one. Unlike those three units, this one
+was NOT trimmed down from a larger draft -- the CONTEXT's explicit instruction was to keep going and
+ship as-is, not to run another trim-and-report cycle, so no trim pass was attempted here. **User-approved
+per the CONTEXT's explicit Option A instruction** ("ship everything as ONE PR with `size:exception` for
+Unit 8... keep going... until Unit 8's actually-completable scope (8.0-8.3) is done") -- not a
+self-authorized exception; the mandatory stop-and-report step (the original STOP report above) was
+followed FIRST, and the user's follow-up message is the explicit sign-off this convention requires.
+
+### Status (Unit 8, final)
+
+8.0 verified and applied to the Dockerfile ARG (still not applied to the still-nonexistent
+`.env.example`, a standing, independently-blocked gap). 8.1 complete. 8.2 complete (adapter + wiring +
+dimension coherence + lifespan warmup, including the judgment-call `PgVectorUnitOfWorkFactory` wiring).
+8.3 complete as written file content, NOT verified by building. 8.4 BLOCKED, no docker, deferred to a
+future docker-capable session. 916 changed lines (code only), `size:exception` user-approved.
+
+**Commit**: `feat(embeddings): sentence-transformers adapter, bounded provider, cache wiring and image bake`
+**SHA**: `f8ff1aa7e7932c4b7a2b26bccd286b2fa9de6043` — **superseded**: rebuilt via `git reset --soft`
+to fold the "Unit 8 fix pass" section below into this commit (not a separate fixup commit), per
+instruction. New SHA: `97f0fffc98230c8bab1858557f447499f4558f9d`. The description above (task
+status, line counts, verify output) is the ORIGINAL pre-fix-pass state; see "Unit 8 fix pass" below
+for what changed and its own verification output.
+**Branch**: `feat/pv-08-embeddings-image`
+**Base**: `fix/pv-07-review-fixes` at `48bff7b` (Unit 7's 4-lens review fix-pass; PR #23 still open,
+unmerged, against `develop` as of this commit -- same authoring-ahead pattern used throughout this
+session). **Needs rebase + retarget from `fix/pv-07-review-fixes` to `develop` once PR #23 merges.**
+**Total commit diff**: 14 files changed, 1349 insertions / 40 deletions (includes the two `openspec/`
+doc files; code-only measurement above excludes them, per this repo's convention).
+
+## PR status (Unit 8)
+
+**Opened.** `gh auth status` confirmed an active, authenticated session (`Aaron-Shrike`); pushed the
+branch and opened the PR myself, per this batch's explicit delivery instructions.
+
+- `git push -u origin feat/pv-08-embeddings-image` -> pushed cleanly, no auth issues.
+- `gh pr create --repo Aaron-Shrike/todo-ia --base fix/pv-07-review-fixes --head
+  feat/pv-08-embeddings-image --title "feat(embeddings): sentence-transformers adapter, bounded
+  provider, cache wiring and image bake" --body-file ...` -> **PR #24**,
+  <https://github.com/Aaron-Shrike/todo-ia/pull/24>. Confirmed via `gh pr view 24 --json
+  baseRefName,headRefName,state,url,number`: `baseRefName: "fix/pv-07-review-fixes"`, `headRefName:
+  "feat/pv-08-embeddings-image"`, `state: "OPEN"` -- correct, matches the intended authoring-ahead
+  base. PR body carries a `size:exception` callout at the top (same convention as PR #19/#20/#21/#22),
+  a dependency diagram, a Branch policy note (base `fix/pv-07-review-fixes`, needs retarget to
+  `develop` once PR #23 merges, no CI expected), Start/End/Prior deps/Follow-ups/Out-of-scope
+  sections, and the exact Verification command output.
+
+## Unit 8 fix pass (4-lens review: risk + resilience + readability + reliability)
+
+A follow-up apply batch on PR #24 (still open, not yet merged) fixed 12 confirmed findings from an
+adversarial 4-lens review of Unit 8's shipped scope. Strict TDD followed for every finding with a
+production-code fix: a RED test was written and confirmed failing against the pre-fix code before the
+GREEN fix landed (see the TDD Cycle Evidence table below). Folded into the original commit via
+`git reset --soft` to `48bff7b` (the commit immediately before Unit 8's own commits) -- not a separate
+fixup commit -- per instruction; `openspec/` doc files were deliberately kept OUT of that reset's
+staged index (`git reset HEAD -- openspec/`) so this docs update stays its own commit, same convention
+as every prior unit.
+
+1. **[Resilience CRITICAL] Semaphore leak in `BoundedEmbeddingProvider.embed()` when
+   `executor.submit()` itself raises.** The semaphore was only released via `future.
+   add_done_callback`, attached AFTER `submit()` succeeded -- if `submit()` itself raised (e.g. the
+   executor was shut down, or thread creation failed under resource pressure), the already-acquired
+   permit leaked permanently. Fixed: `submit()` now runs inside a `try`/`except` that releases the
+   semaphore before re-raising. New test
+   `test_a_submit_failure_does_not_leak_the_semaphore_permit` shuts down a REAL `ThreadPoolExecutor`
+   before calling `embed()` (the design-suggested, deterministic way to make `submit()` raise), then
+   proves the permit was NOT leaked by swapping in a working executor and confirming a later `embed()`
+   call still succeeds instead of failing fast.
+2. **[Reliability CRITICAL, partially fixable] `main.py::_lifespan`'s boot sequencing had zero test
+   coverage.** `_lifespan` mixed the pure SEQUENCING decision (load the model -> check dimensions,
+   a mismatch short-circuiting everything after it -> warm up -> wire the UoW/container -> flip
+   health) with concrete I/O (real `create_engine`, real `PgVectorUnitOfWorkFactory`) in one function
+   body with lazy inline imports -- untestable even with fakes, since importing `app.main` at all
+   needs `sqlalchemy` installed (confirmed absent in this dev venv). Extracted the pure core to a NEW
+   module, `platform/boot_sequence.py::run_boot_sequence(*, load_model, check_dimensions, warmup,
+   build_container)` -- four injected callables, zero sqlalchemy/fastapi/torch dependency -- and
+   rewired `_lifespan` as a thin wrapper supplying the real I/O closures to it. New
+   `tests/unit/platform/test_boot_sequence.py` (6 tests, all fakes): the happy path calls every step
+   in the documented order; a `check_dimensions` failure short-circuits `warmup`/`build_container`
+   (neither is ever called); the SAME provider object `load_model` returns flows unchanged into every
+   later step (catches a "re-derived object" bug the order alone wouldn't); a failure in ANY step
+   (not just `check_dimensions`) propagates and stops the sequence (parametrized over
+   `load_model`/`warmup`/`build_container`). **Still NOT exercised end to end**: the real
+   sqlalchemy/postgres calls themselves remain genuinely untested here -- no docker/live Postgres in
+   this environment, exactly the pre-existing, already-disclosed gap this finding explicitly said
+   stays out of scope; only the SEQUENCING (previously untested at all) is now covered.
+3. **[Resilience WARNING] `/health` could 500 instead of 503 on a non-`OperationalError` DB failure.**
+   `platform/embedding_boot.py::check_database_reachable` only ever catches `OperationalError`; a
+   sibling connectivity failure (pool-exhaustion `TimeoutError`, a driver `InterfaceError`) would
+   propagate uncaught through `health.py::build_health_payload` (no `try`/`except` around the call),
+   straight to `main.py`'s generic `CatchAllMiddleware`, producing `500 INTERNAL_ERROR` instead of the
+   designed `503 NOT_READY` + per-component `details` (D15). Fixed at the call site: `build_
+   health_payload` now wraps `state.check_database()` in a `try`/`except Exception`, mapping ANY
+   failure to `database: "unavailable"`. New `tests/unit/platform/test_health.py` (3 tests): two fake
+   `check_database` callables raising different non-`OperationalError` exception types (one also
+   varies `model_ready`, proving the fix generalizes, not special-cased to one exception class) both
+   still yield `503 NOT_READY` with the correct `details`; a third is an approval test proving the
+   non-raising 200 path is unchanged.
+4. **[Risk WARNING] `EMBEDDING_MODEL` build ARG interpolated unsanitized into executed Python code.**
+   `EMBEDDING_MODEL_REVISION` was already regex-validated before use; `EMBEDDING_MODEL` was not,
+   despite being substituted directly into a Python string literal
+   (`snapshot_download(repo_id='$EMBEDDING_MODEL', ...)`) -- a build-arg-controlled string-injection
+   risk if a CI pipeline ever forwards a PR-controlled `--build-arg EMBEDDING_MODEL=...`. Fixed: same
+   defense-in-depth the revision already gets, a new `RUN` step validates `EMBEDDING_MODEL` against an
+   `^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$` allow-list (a Hugging Face Hub `org/model-name` shape) before
+   the `snapshot_download` `RUN`. Dockerfile-only change; not build-verified (no docker here, same
+   standing gap as the rest of Unit 8.3).
+5. **[Risk WARNING] Unpinned `torch`/`sentence-transformers` versions undermined the reproducibility
+   the revision-SHA pin was meant to guarantee.** `pip install --index-url .../whl/cpu torch` had no
+   version constraint at all; `pyproject.toml`'s `sentence-transformers>=3.0` was a floor only --
+   library behaviour could still drift on every rebuild despite the model-weight SHA being pinned.
+   Verified real current stable versions against PyPI's JSON API and the PyTorch CPU wheel index
+   (network was available this batch): `torch==2.14.0` (a `cp311`+`manylinux_2_28_x86_64` CPU wheel
+   confirmed present on `download.pytorch.org/whl/cpu`) and `sentence-transformers==6.1.0` (PyPI's
+   current stable release; its own `requires_dist` pins `torch>=2.2`, compatible with `2.14.0`). Both
+   pinned exactly in the Dockerfile and `pyproject.toml`'s `embeddings` extra respectively.
+6. **[Risk SUGGESTION] Validation inconsistency between the build-time and runtime revision-SHA
+   checks.** The Dockerfile only accepted lowercase hex (`^[0-9a-f]{40}$`); `Settings.
+   embedding_model_revision`'s pydantic pattern already accepted mixed case
+   (`^[0-9a-fA-F]{40}$`). Aligned: the Dockerfile's `grep -Eq` now uses the same mixed-case pattern, so
+   an uppercase-containing (but still valid) Hub SHA no longer fails only at the Docker layer.
+7. **[Readability WARNING] Dead code: `build_model_id` had zero production callers.**
+   `SentenceTransformersEmbedder.__init__` built the identical `f"{model_name}@{revision}"` string
+   inline instead of calling `similarity/container.py::build_model_id`, duplicating the format rule
+   design.md's D10 describes. Fixed: `SentenceTransformersEmbedder` now imports and calls
+   `build_model_id` (an adapter importing the composition root's `container.py` -- checked against
+   `.importlinter`'s contracts first: no existing contract forbids this edge, and `container.py`
+   itself does not import `sentence_transformers.py`, so no import cycle is introduced). Approval-style
+   fix: every existing `test_sentence_transformers.py`/`test_container.py` assertion on the
+   `model@revision` format still passes unchanged, proving the refactor preserved behaviour.
+8. **[Readability SUGGESTION] Magic model-revision SHA duplicated with no single source of truth.**
+   The SHA `e8f8c211226b894fcb81acc59f3b34ba3efd5f42` appears as a literal in both the Dockerfile and
+   `test_sentence_transformers.py`, with nothing keeping them in sync -- a Dockerfile `ARG` default
+   cannot literally `import` a Python constant, so a true single source of truth is not practical.
+   Added cross-referencing comments in BOTH files (each pointing at the other's exact location) as the
+   documented fallback the finding itself allowed.
+9. **[Readability SUGGESTION] Import-and-rename adds unnecessary indirection for a single call site.**
+   `main.py` imported `read_vector_column_dimensions as read_column_dimensions`, used exactly once.
+   Now imported (and called) under its original name, so grepping for `read_vector_column_dimensions`
+   finds its only call site directly.
+10. **[Reliability SUGGESTION] `similarity/container.py`'s wiring test never proved `timeout_seconds`/
+    `max_concurrency` were threaded correctly.** The existing tests only asserted `model_id`/
+    `dimensions` forwarding and cache hit/miss counts through a non-blocking `FakeEmbedder` -- a bug
+    that swapped the two keyword arguments in `build_embedding_provider` would have passed unnoticed.
+    Added `test_timeout_and_concurrency_are_threaded_to_the_bounded_layer_not_swapped`: with
+    `embedding_cache_size=0` (so the returned provider IS the `BoundedEmbeddingProvider` itself, not
+    cache-wrapped), asserts its `_timeout_seconds`/`_executor._max_workers`/`_semaphore._initial_value`
+    all match the distinct settings values passed in (`7.5`/`3`/`3`). Passed immediately -- confirms
+    the existing wiring was already correct; this closes a coverage gap, not a bug.
+11. **[Reliability SUGGESTION] `BoundedEmbeddingProvider`'s `ThreadPoolExecutor` was never explicitly
+    shut down.** Added `close()` (`self._executor.shutdown(wait=False, cancel_futures=True)`).
+    `CachingEmbeddingProvider` gained a matching `close()` that forwards to `self._inner.close()` via
+    `getattr` if the wrapped provider has one (a no-op for `FakeEmbedder` and other doubles with no
+    `close()`) -- needed because the fixed wiring order (ST -> bounded -> caching, outermost) means the
+    production provider `main.py` holds is usually the CACHE, not the bare bounded instance. `main.py`'s
+    `_lifespan` captures the concrete `BoundedEmbeddingProvider` in a closure variable (`bounded_
+    provider`) as `_load_model` constructs it, and the `finally` block now calls `bounded_provider.
+    close()` alongside the existing `engine.dispose()`. New tests: `test_close_shuts_down_the_
+    executor_so_a_later_embed_call_is_rejected` (bounded), `test_close_forwards_to_the_inner_
+    providers_close_when_it_has_one` + `test_close_is_a_no_op_when_the_inner_provider_has_no_close`
+    (caching, triangulated).
+12. **[Reliability SUGGESTION] Dimension-coherence tests covered only single-field mismatches.** The 3
+    existing parametrized cases each varied exactly one of `typmod`/`provider_dimensions`/
+    `configured_dimensions`. Added a 4th case, `(typmod=768, provider_dimensions=768,
+    configured_dimensions=384)` -- two fields agree with each other but disagree with the third --
+    exercising a boundary the single-field cases never reached. `check_dimension_coherence` needed no
+    production change; this closes a coverage gap.
+
+**Not fixed, genuinely environment-blocked (documented, not faked into false confidence)**:
+- `embedding_boot.py`'s actual SQL execution against real Postgres has zero test coverage -- no
+  docker/postgres available in this environment. Already disclosed; no action taken, per explicit
+  instruction.
+- The stubbed `SentenceTransformersEmbedder` tests cannot catch a `numpy.ndarray`-vs-`list[float]`
+  shape difference -- checked whether `numpy` happened to already be an installed transitive
+  dependency in this dev venv (`python -c "import numpy"`): **confirmed absent**
+  (`ModuleNotFoundError: No module named 'numpy'`), so the cheap-fake-array escape hatch the
+  instruction allowed does not apply here. Left as documented, no code change.
+- The timing-based "slot freed -> later call succeeds" test
+  (`test_releasing_the_event_frees_the_slot_for_a_later_call`) already synchronizes via a
+  `threading.Event`, not a raw `sleep`, but still relies on a `0.2s` wall-clock timeout margin for the
+  freed worker's done-callback to run before the next `embed()` call's own semaphore-acquire timeout
+  expires -- a genuine, if small, theoretical flake risk under extreme CI load. No cheap, obviously-
+  correct way to make it fully deterministic was found without materially restructuring the test (e.g.
+  a second `Event` the done-callback itself sets, which the test would then have to wait on before
+  calling `embed()` again -- a bigger change than this SUGGESTION-severity finding warrants). Left
+  as-is per explicit instruction not to over-engineer; the risk stays noted here.
+- `EMBEDDING_MODEL_REVISION` default drift between the Dockerfile and `Settings` (forward-looking
+  only, the `api` service is not wired into `docker-compose.yml` yet -- arrives in Unit 14). No code
+  change; a one-line comment for Unit 14's author was judged unnecessary noise beyond what's already
+  documented here and in tasks.md's Unit 14 section.
+
+**Verify (fix pass, docker/postgres unavailable in this environment -- integration/slow tests
+excluded)**:
+- `cd services/api && .venv/bin/python -m pytest tests/unit tests/contract_suite tests/contract -m
+  "not integration and not slow" -q` -> **274 passed, 1 deselected** (was 259 before this fix pass;
+  +15 net new: 2 bounded, 2 caching, 1 container, 1 embedding_boot parametrize case, 3 health (new
+  file), 6 boot_sequence (new file)).
+- `.venv/bin/ruff check .` -> `All checks passed!`
+- `.venv/bin/mypy src` -> `Success: no issues found in 42 source files` (was 41; `boot_sequence.py` is
+  new).
+- `.venv/bin/lint-imports` -> `Contracts: 5 kept, 0 broken.`
+- `docker build` / `pytest -m slow` -> still BLOCKED, not run (no docker in this environment) -- same
+  standing gap as the original Unit 8 batch, unchanged by this fix pass.
+
+**Files touched (fix pass only, on top of the original Unit 8 diff)**:
+
+| File | Ins/Del |
+|------|---------|
+| `services/api/Dockerfile` | 33 / 3 |
+| `services/api/pyproject.toml` | 6 / 1 |
+| `services/api/src/app/main.py` | 78 / 17 |
+| `services/api/src/app/modules/similarity/adapters/bounded.py` | 21 / 1 |
+| `services/api/src/app/modules/similarity/adapters/caching.py` | 13 / 0 |
+| `services/api/src/app/modules/similarity/adapters/sentence_transformers.py` | 5 / 1 |
+| `services/api/src/app/platform/boot_sequence.py` (new) | 44 / 0 |
+| `services/api/src/app/platform/health.py` | 15 / 1 |
+| `services/api/tests/unit/platform/test_boot_sequence.py` (new) | 149 / 0 |
+| `services/api/tests/unit/platform/test_embedding_boot.py` | 5 / 0 |
+| `services/api/tests/unit/platform/test_health.py` (new) | 70 / 0 |
+| `services/api/tests/unit/similarity/test_bounded.py` | 39 / 0 |
+| `services/api/tests/unit/similarity/test_caching.py` | 39 / 0 |
+| `services/api/tests/unit/similarity/test_container.py` | 24 / 0 |
+| `services/api/tests/unit/similarity/test_sentence_transformers.py` | 5 / 0 |
+
+### TDD Cycle Evidence (Unit 8 fix pass)
+
+| Finding | Test File | Layer | Safety Net | RED | GREEN | TRIANGULATE | REFACTOR |
+|---------|-----------|-------|------------|-----|-------|-------------|----------|
+| 1 (semaphore leak) | `tests/unit/similarity/test_bounded.py` | Unit | ✅ 8/8 | ✅ `RuntimeError` from a shut-down executor, permit leaked (2nd `embed()` timed out) | ✅ Passed after the `try`/`except`/`release()` fix | ➖ Single fault-injection scenario per the finding's scope | ➖ None needed |
+| 2 (boot sequencing) | `tests/unit/platform/test_boot_sequence.py` | Unit | N/A (new module) | ✅ `ModuleNotFoundError` (module did not exist) | ✅ Passed once `run_boot_sequence` was written | ✅ 4 cases: happy-path order, dimension-mismatch short-circuit, identity-flow invariant, any-step-failure propagation (parametrized x3) | ➖ None needed -- function is already minimal |
+| 3 (`/health` 500 vs 503) | `tests/unit/platform/test_health.py` | Unit | N/A (new file) | ✅ Uncaught custom exceptions propagated out of `build_health_payload` | ✅ Passed after the `try`/`except Exception` fix | ✅ 2 distinct exception types + a `model_ready` variation, plus an approval test for the unchanged 200 path | ➖ None needed |
+| 11 (executor `close()`) | `tests/unit/similarity/test_bounded.py`, `test_caching.py` | Unit | ✅ 8/8 (bounded), 8/8 (caching) | ✅ `AttributeError: no attribute 'close'` on both classes | ✅ Passed after adding `close()`/forwarding | ✅ caching: forwards-when-present + no-op-when-absent | ➖ None needed |
+
+Findings 4-10 and 12 were test-only coverage additions or Dockerfile/comment-only changes with no
+RED->GREEN production-behaviour cycle (approval-style additions proving existing correctness, or
+build-config changes not exercised by the Python test suite) -- each says so explicitly in its own
+numbered writeup above.
+
+### Test Summary (Unit 8 fix pass)
+- **Total tests added**: 15 (2 bounded, 2 caching, 1 container, 1 embedding_boot parametrize case, 3
+  health (new file), 6 boot_sequence (new file))
+- **Total tests passing at final commit**: 274 (259 prior + 15 new), 1 deselected (`slow`)
+- **Layers used**: Unit (15)
+- **Pure functions created**: 1 (`platform/boot_sequence.py::run_boot_sequence`)
+
+**Commit**: `feat(embeddings): sentence-transformers adapter, bounded provider, cache wiring and image bake`
+(fix pass folded in, not a separate commit)
+**SHA**: `97f0fffc98230c8bab1858557f447499f4558f9d`
+**Branch**: `feat/pv-08-embeddings-image`
+**Base**: unchanged, `fix/pv-07-review-fixes` at `48bff7b`.
+
 ## Remaining Tasks (as of the end of this batch)
 
-- [x] Unit 7: save + matches endpoints (tasks 7.1-7.3) -- done this batch, `size:exception` granted,
-  see above.
-- [ ] Unit 7b (`GET /phrases` + OpenAPI documentation): NOT started, needs Unit 7 merged first (the
-  OpenAPI snapshot should document the full `/phrases` surface). Fully specified in tasks.md and in
-  this section's 7.1/7.2 notes (the deleted code was working and green before removal).
-- [ ] Unit 8 (sentence-transformers adapter) needs Unit 2b (done) + Unit 7 (now shipped as PR #22,
-  <https://github.com/Aaron-Shrike/todo-ia/pull/22>, not yet merged into `develop` -- confirm it has
-  merged before starting Unit 8).
-- [ ] Unit 10 (web scaffold + generated types) needs `docs/openapi.json`, which now only exists after
-  Unit 7b, not Unit 7 -- note this dependency shift explicitly for whoever picks up Unit 10.
+- [x] Unit 7: save + matches endpoints (tasks 7.1-7.3) -- done, `size:exception` granted, merged as
+  PR #22.
+- [x] Unit 7 fix-pass (4-lens review findings) -- done, PR #23 opened against `develop`, **still open,
+  not yet merged** as of this batch.
+- [ ] Unit 7b (`GET /phrases` + OpenAPI documentation): NOT started, needs Unit 7 merged first (already
+  true) -- fully specified in `tasks.md`.
+- [x] Unit 8.0 (Hub SHA): verified (`e8f8c211226b894fcb81acc59f3b34ba3efd5f42`), applied to the
+  Dockerfile ARG default; NOT applied to `.env.example` (standing blocked-write gap -- exact line
+  recorded above in the original 8.0 section).
+- [x] Unit 8.1 (`BoundedEmbeddingProvider`): done, green, committed (superseded SHA `97f0fff`, fix
+  pass folded in -- see "Unit 8 fix pass" above).
+- [x] Unit 8.2 (sentence-transformers adapter + wiring + dimension coherence + lifespan warmup): done,
+  green, committed. Includes the judgment-call `PgVectorUnitOfWorkFactory` wiring.
+- [x] Unit 8.3 (Dockerfile bake): written as file content, committed; **NOT verified by building** --
+  no docker in this environment.
+- [x] Unit 8 fix pass (4-lens review: risk + resilience + readability + reliability) -- done, 12
+  confirmed findings fixed, folded into the same commit (`97f0fff`), PR #24 still open. See "Unit 8
+  fix pass" section above for the full per-finding writeup, TDD evidence, and the two genuinely
+  environment-blocked items left untouched.
+- [ ] Unit 8.4 (image build + real-model timing): **BLOCKED**, no docker in this environment, needs a
+  docker-capable session. Not silently skipped -- documented as deferred, same as Unit 4's typmod-reader
+  gap pattern.
+- [ ] Unit 9 (ES/EN calibration fixture) needs Unit 8 (now PR #24, not yet merged) -- confirm merge
+  before starting.
+- [ ] Unit 10 (web scaffold + generated types) needs Unit 7b's `docs/openapi.json` (not this unit).
+- [ ] Unit 14 (full compose wiring) needs Unit 8 (this PR) + Unit 13; will add the `api`/`web` compose
+  services that actually exercise the Dockerfile stages this batch wrote but could not build-verify.
