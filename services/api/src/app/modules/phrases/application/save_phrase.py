@@ -131,7 +131,8 @@ class SavePhrase:
             limit=self._default_page_size,
             cursor=None,
         )
-        matches_page = build_matches_page(page, self._policy, comparison=comparison)
+        total = uow.repo.count_matches(vector, max_distance=self._policy.max_distance())
+        matches_page = build_matches_page(page, self._policy, comparison=comparison, total=total)
         most_similar: MostSimilarView | None
         top_score: float | None
         if matches_page.matches:
@@ -149,4 +150,5 @@ class SavePhrase:
             matches=matches_page.matches,
             next_cursor=matches_page.next_cursor,
             has_more=matches_page.has_more,
+            total=matches_page.total,
         )

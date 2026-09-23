@@ -35,6 +35,7 @@ class MatchesPage:
     matches: list[MatchView]
     next_cursor: str | None
     has_more: bool
+    total: int
 
 
 @dataclass(frozen=True)
@@ -49,6 +50,7 @@ class VerdictView:
     matches: list[MatchView]
     next_cursor: str | None
     has_more: bool
+    total: int
 
 
 def normalize_and_check_length(text: str, *, max_length: int) -> tuple[str, str]:
@@ -64,12 +66,19 @@ def normalize_and_check_length(text: str, *, max_length: int) -> tuple[str, str]
 
 
 def build_matches_page(
-    page: Page[Match], policy: SimilarityPolicy, *, comparison: str
+    page: Page[Match], policy: SimilarityPolicy, *, comparison: str, total: int
 ) -> MatchesPage:
     """The tail rule: `find_matches`' widened SQL bound over-selects, so
     stop at the first row failing `policy.includes` (monotonic in distance)
     and force `has_more=False`/`next_cursor=None`, overriding the
-    repository's own `+1`-probe answer."""
+    repository's own `+1`-probe answer.
+
+    `total` (from `count_matches`, the UI's "10/46 coincidencias" counter)
+    is passed through as-is, NOT tail-rule-corrected: it uses the same
+    widened bound `find_matches` does, so it can overstate the true count by
+    at most the handful of rows the tail rule would trim at the threshold
+    boundary — the same class of accepted float-boundary imprecision as the
+    keyset tolerance grid elsewhere in this module tree, not a new one."""
     kept: list[Match] = []
     truncated = False
     for item in page.items:
@@ -86,4 +95,4 @@ def build_matches_page(
         if cursor is not None
         else None
     )
-    return MatchesPage(matches=views, next_cursor=next_cursor, has_more=has_more)
+    return MatchesPage(matches=views, next_cursor=next_cursor, has_more=has_more, total=total)

@@ -18,8 +18,6 @@ from app.modules.phrases.application.validate_phrase import ValidatePhrase
 from app.modules.phrases.contracts import UnitOfWorkFactory
 from app.modules.similarity.contracts import EmbeddingProvider, SimilarityPolicy
 
-_DEFAULT_PHRASES_LIST_LIMIT = 200  # mirrors `Settings.phrases_list_limit`'s default
-
 
 @dataclass(frozen=True)
 class PhrasesContainer:
@@ -39,7 +37,6 @@ def build_phrases_container(
     policy: SimilarityPolicy,
     phrase_max_length: int,
     matches_page_size: int,
-    phrases_list_limit: int = _DEFAULT_PHRASES_LIST_LIMIT,
 ) -> PhrasesContainer:
     return PhrasesContainer(
         validate_phrase=ValidatePhrase(
@@ -55,5 +52,5 @@ def build_phrases_container(
             phrase_max_length=phrase_max_length,
             default_page_size=matches_page_size,
         ),
-        list_phrases=ListPhrases(uow_factory, limit=phrases_list_limit),
+        list_phrases=ListPhrases(uow_factory),
     )

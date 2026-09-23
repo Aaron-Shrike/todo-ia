@@ -129,6 +129,7 @@ def test_empty_store_returns_a_null_verdict() -> None:
         "matches": [],
         "next_cursor": None,
         "has_more": False,
+        "total": 0,
     }
 
 

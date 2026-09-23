@@ -51,11 +51,13 @@ def _client(
     cache_capacity: int = 0,
     matches_page_size: int = 50,
     phrases_list_limit: int = 200,
+    phrases_page_size: int = 10,
 ) -> tuple[TestClient, EmbeddingProvider, UnitOfWorkFactory]:
     settings = Settings(
         database_url="postgresql+psycopg://test:test@localhost:5432/test",
         matches_page_size=matches_page_size,
         phrases_list_limit=phrases_list_limit,
+        phrases_page_size=phrases_page_size,
     )
     app = create_app(settings)
     inner = embedder if embedder is not None else FakeEmbedder({_QUERY_TEXT: PROBE, "hola": PROBE})
@@ -69,7 +71,6 @@ def _client(
         policy=SimilarityPolicy(threshold=settings.similarity_threshold),
         phrase_max_length=settings.phrase_max_length,
         matches_page_size=settings.matches_page_size,
-        phrases_list_limit=settings.phrases_list_limit,
     )
     return TestClient(app, raise_server_exceptions=False), inner, factory
 
@@ -125,7 +126,7 @@ def test_matches_response_has_no_verdict_fields() -> None:
     assert cursor is not None
     response = client.post("/phrases/matches", json={"text": _QUERY_TEXT, "cursor": cursor})
     assert response.status_code == 200
-    assert set(response.json()["data"]) == {"matches", "next_cursor", "has_more"}
+    assert set(response.json()["data"]) == {"matches", "next_cursor", "has_more", "total"}
 
 
 @pytest.mark.parametrize(
@@ -345,7 +346,9 @@ def test_list_phrases_empty_store() -> None:
     client, _, _ = _client()
     response = client.get("/phrases")
     assert response.status_code == 200
-    assert response.json() == {"data": {"items": []}}
+    assert response.json() == {
+        "data": {"items": [], "total": 0, "next_cursor": None, "has_more": False}
+    }
 
 
 def test_list_phrases_newest_first_with_metadata() -> None:
@@ -353,7 +356,11 @@ def test_list_phrases_newest_first_with_metadata() -> None:
     _seed(factory, ("a", 0.05), ("b", 0.10))  # ids 1, 2 -- both `unique`, null metadata
     response = client.get("/phrases")
     assert response.status_code == 200
-    items = response.json()["data"]["items"]
+    data = response.json()["data"]
+    assert data["total"] == 2
+    assert data["has_more"] is False
+    assert data["next_cursor"] is None
+    items = data["items"]
     assert [item["text"] for item in items] == ["b", "a"]  # newest (highest id) first
     for item in items:
         assert set(item) == {"id", "text", "created_at", "validation"}
@@ -368,11 +375,59 @@ def test_list_phrases_newest_first_with_metadata() -> None:
         assert item["validation"]["most_similar_phrase_id"] is None
 
 
-def test_list_phrases_hard_cap() -> None:
-    client, _, factory = _client(phrases_list_limit=2)
+def test_list_phrases_default_page_size() -> None:
+    client, _, factory = _client(phrases_page_size=2)
     _seed(factory, *[(f"p{i}", 0.05 + i * 0.001) for i in range(5)])
-    response = client.get("/phrases")
+    response = client.get("/phrases")  # no `limit` -- uses phrases_page_size
     assert response.status_code == 200
-    items = response.json()["data"]["items"]
-    assert len(items) == 2
-    assert [item["text"] for item in items] == ["p4", "p3"]  # newest first, capped
+    data = response.json()["data"]
+    assert [item["text"] for item in data["items"]] == ["p4", "p3"]  # newest first
+    assert data["total"] == 5
+    assert data["has_more"] is True
+    assert data["next_cursor"] is not None
+
+
+def test_list_phrases_pagination_walk() -> None:
+    client, _, factory = _client()
+    _seed(factory, *[(f"p{i}", 0.05 + i * 0.001) for i in range(5)])  # ids 1..5
+
+    collected: list[str] = []
+    cursor: str | None = None
+    for _ in range(10):  # generous bound, real loop exit is `has_more is False`
+        params = {"limit": 2} | ({"cursor": cursor} if cursor is not None else {})
+        response = client.get("/phrases", params=params)
+        assert response.status_code == 200
+        data = response.json()["data"]
+        assert data["total"] == 5
+        collected.extend(item["text"] for item in data["items"])
+        if not data["has_more"]:
+            assert data["next_cursor"] is None
+            break
+        cursor = data["next_cursor"]
+    else:
+        pytest.fail("pagination walk did not terminate")
+
+    assert collected == ["p4", "p3", "p2", "p1", "p0"]  # newest first, no repeats, none skipped
+
+
+def test_list_phrases_limit_bounds_are_422() -> None:
+    client, _, _ = _client()
+    assert client.get("/phrases", params={"limit": 0}).status_code == 422
+    assert client.get("/phrases", params={"limit": -1}).status_code == 422
+    assert client.get("/phrases", params={"limit": 201}).status_code == 422  # > phrases_list_limit
+
+
+def test_list_phrases_malformed_cursor_is_400() -> None:
+    client, _, _ = _client()
+    response = client.get("/phrases", params={"cursor": "not-a-cursor"})
+    assert response.status_code == 400
+    assert response.json()["error"]["code"] == "INVALID_CURSOR"
+
+
+def test_list_phrases_matches_cursor_rejected_as_400() -> None:
+    """A `POST /phrases/matches` cursor decodes to a different key set --
+    must not be silently accepted by the unrelated list endpoint."""
+    client, _, _ = _client()
+    response = client.get("/phrases", params={"cursor": _VALID_CURSOR})
+    assert response.status_code == 400
+    assert response.json()["error"]["code"] == "INVALID_CURSOR"

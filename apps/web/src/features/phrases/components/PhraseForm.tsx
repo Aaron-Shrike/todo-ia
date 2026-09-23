@@ -7,6 +7,7 @@ import type { components } from "@/types/api";
 import { copy } from "@/i18n/copy.es";
 import { copyForErrorCode } from "@/i18n/errorCopy";
 
+import { MATCHES_PAGE_SIZE } from "../constants";
 import {
   initialState,
   phraseMachineReducer,
@@ -54,6 +55,7 @@ function toDuplicateDetails(data: {
   matches: ValidateData["matches"];
   next_cursor: string | null;
   has_more: boolean;
+  total: number;
 }): DuplicateDetails {
   return {
     threshold: data.threshold,
@@ -62,6 +64,7 @@ function toDuplicateDetails(data: {
     matches: data.matches,
     nextCursor: data.next_cursor,
     hasMore: data.has_more,
+    total: data.total,
   };
 }
 
@@ -79,6 +82,7 @@ function detailsFromApiError(details: Record<string, unknown> | null | undefined
     matches: ValidateData["matches"];
     next_cursor: string | null;
     has_more: boolean;
+    total: number;
   };
   return toDuplicateDetails(shaped);
 }
@@ -132,7 +136,7 @@ export function PhraseForm({ client, maxLength = ENV_MAX_LENGTH, onSaved }: Phra
     let cancelled = false;
 
     if (state.status === "validating") {
-      client.validatePhrase({ text: submittedText.current }).then(
+      client.validatePhrase({ text: submittedText.current, limit: MATCHES_PAGE_SIZE }).then(
         (data) => {
           if (cancelled) return;
           if (data.is_duplicate) {

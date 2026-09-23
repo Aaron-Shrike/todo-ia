@@ -26,14 +26,15 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from math import floor
-from typing import TYPE_CHECKING, cast
+from typing import TYPE_CHECKING, Any, cast
 
-from sqlalchemy import Connection, Engine, text
+from sqlalchemy import Connection, Engine, Row, text
 from sqlalchemy.exc import IntegrityError, OperationalError
 
 from app.modules.phrases.contracts import (
     DuplicateTextConflict,
     Isolation,
+    ListCursor,
     LockTimeout,
     Match,
     MatchCursor,
@@ -41,6 +42,7 @@ from app.modules.phrases.contracts import (
     NewPhrase,
     Page,
     Phrase,
+    PhraseListPage,
     PhraseRepository,
     ValidationStatus,
 )
@@ -80,6 +82,15 @@ def build_find_matches_query(*, has_cursor: bool) -> str:
     return _BASE_SELECT + predicate + _ORDER_LIMIT
 
 
+# `count_matches`: same widened `max_distance` bound as `find_matches`
+# (no cursor, no ordering, no bucket needed) -- the UI's "10/46
+# coincidencias" counter reads this, independent of any page.
+_COUNT_MATCHES_QUERY = """
+SELECT count(*) FROM phrases
+WHERE embedding <=> CAST(:q AS vector) <= :max_distance
+"""
+
+
 # `find_nearest`: the documented k-NN-subquery fallback (5b.0's VERIFY).
 FIND_NEAREST_QUERY = """
 SELECT id, text, distance FROM (
@@ -117,6 +128,38 @@ ORDER BY created_at DESC, id DESC
 LIMIT :limit
 """
 
+# `list_page` (real pagination for `GET /phrases`, see `contracts.py`'s
+# `PhraseListPage`): same `(created_at, id) DESC` ordering and index as
+# `list_recent` above, but keyset-continued from an opaque cursor instead of
+# always starting at the top. Row-constructor comparison
+# `(created_at, id) < (:cursor_created_at, :cursor_id)` is exactly "strictly
+# after the cursor in DESC order" -- Postgres compares row constructors
+# lexicographically, so this is equivalent to `find_matches`'s
+# bucket-then-id OR chain without needing one.
+_LIST_BASE_SELECT = """
+SELECT id, text, normalized_text, embedding::text AS embedding, similarity_score,
+       most_similar_phrase_id, validation_status, validated_at, created_at
+FROM phrases
+"""
+
+_LIST_CURSOR_PREDICATE = """
+WHERE (created_at, id) < (:cursor_created_at, :cursor_id)
+"""
+
+_LIST_ORDER_LIMIT = """
+ORDER BY created_at DESC, id DESC
+LIMIT :limit + 1
+"""
+
+
+def build_list_page_query(*, has_cursor: bool) -> str:
+    """Exposed so a plan/EXPLAIN test runs the real query, not a copy."""
+    predicate = _LIST_CURSOR_PREDICATE if has_cursor else ""
+    return _LIST_BASE_SELECT + predicate + _LIST_ORDER_LIMIT
+
+
+COUNT_ALL_QUERY = "SELECT count(*) FROM phrases"
+
 
 def serialize_vector(vector: Vector) -> str:
     """`[c0,c1,...]` text literal pgvector's input parser accepts."""
@@ -129,6 +172,22 @@ def deserialize_vector(raw: str) -> Vector:
     `list_recent` to turn a queried row's `embedding` column back into a
     `Vector` for the `Phrase` dataclass."""
     return tuple(float(component) for component in raw.strip("[]").split(","))
+
+
+def _row_to_phrase(row: Row[Any]) -> Phrase:
+    """Shared by `list_recent` and `list_page` — both query the same column
+    set (`LIST_RECENT_QUERY` / `build_list_page_query`)."""
+    return Phrase(
+        id=row.id,
+        text=row.text,
+        normalized_text=row.normalized_text,
+        embedding=deserialize_vector(row.embedding),
+        similarity_score=row.similarity_score,
+        most_similar_phrase_id=row.most_similar_phrase_id,
+        validation_status=ValidationStatus(row.validation_status),
+        validated_at=row.validated_at,
+        created_at=row.created_at,
+    )
 
 
 def _bucket(distance: float) -> int:
@@ -195,6 +254,14 @@ class PgVectorPhraseRepository:
         )
         return Page(items=items, next_cursor=next_cursor, has_more=has_more)
 
+    def count_matches(self, q: Vector, max_distance: float) -> int:
+        self._connection.execute(text("SELECT set_config('enable_indexscan', 'off', true)"))
+        total = self._connection.execute(
+            text(_COUNT_MATCHES_QUERY), {"q": serialize_vector(q), "max_distance": max_distance}
+        ).scalar_one()
+        self._mark_statement()
+        return total
+
     def add(self, phrase: NewPhrase) -> Phrase:
         if self._read_only:
             raise RuntimeError("cannot write inside a read-only UnitOfWork")
@@ -223,20 +290,32 @@ class PgVectorPhraseRepository:
     def list_recent(self, limit: int) -> list[Phrase]:
         rows = self._connection.execute(text(LIST_RECENT_QUERY), {"limit": limit}).fetchall()
         self._mark_statement()
-        return [
-            Phrase(
-                id=row.id,
-                text=row.text,
-                normalized_text=row.normalized_text,
-                embedding=deserialize_vector(row.embedding),
-                similarity_score=row.similarity_score,
-                most_similar_phrase_id=row.most_similar_phrase_id,
-                validation_status=ValidationStatus(row.validation_status),
-                validated_at=row.validated_at,
-                created_at=row.created_at,
-            )
-            for row in rows
-        ]
+        return [_row_to_phrase(row) for row in rows]
+
+    def list_page(self, limit: int, cursor: ListCursor | None) -> PhraseListPage:
+        params: dict[str, object] = {"limit": limit}
+        if cursor is not None:
+            params["cursor_created_at"] = cursor.created_at
+            params["cursor_id"] = cursor.id
+        query = build_list_page_query(has_cursor=cursor is not None)
+        rows = self._connection.execute(text(query), params).fetchall()
+        self._mark_statement()
+
+        has_more = len(rows) > limit
+        page_rows = rows[:limit]
+        items = [_row_to_phrase(row) for row in page_rows]
+        next_cursor = (
+            ListCursor(created_at=items[-1].created_at, id=items[-1].id)
+            if has_more and items
+            else None
+        )
+        total = self.count_all()
+        return PhraseListPage(items=items, total=total, next_cursor=next_cursor, has_more=has_more)
+
+    def count_all(self) -> int:
+        total = self._connection.execute(text(COUNT_ALL_QUERY)).scalar_one()
+        self._mark_statement()
+        return total
 
     def find_nearest(self, q: Vector) -> Neighbor | None:
         # Unfiltered top-1, HNSW; explicit `on` in case an earlier statement

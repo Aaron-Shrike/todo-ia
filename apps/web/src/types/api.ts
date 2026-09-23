@@ -109,6 +109,8 @@ export interface components {
             matches: components["schemas"]["_ScoredPhrase"][];
             /** Next Cursor */
             next_cursor: string | null;
+            /** Total */
+            total: number;
         };
         /** _MatchesRequest */
         _MatchesRequest: {
@@ -128,8 +130,14 @@ export interface components {
         };
         /** _PhraseListData */
         _PhraseListData: {
+            /** Has More */
+            has_more: boolean;
             /** Items */
             items: components["schemas"]["_PhraseOut"][];
+            /** Next Cursor */
+            next_cursor: string | null;
+            /** Total */
+            total: number;
         };
         /** _PhraseListResponse */
         _PhraseListResponse: {
@@ -192,6 +200,8 @@ export interface components {
             score: number | null;
             /** Threshold */
             threshold: number;
+            /** Total */
+            total: number;
         };
         /** _ValidateRequest */
         _ValidateRequest: {
@@ -249,7 +259,10 @@ export interface operations {
     };
     list_phrases_phrases_get: {
         parameters: {
-            query?: never;
+            query?: {
+                limit?: number | null;
+                cursor?: string | null;
+            };
             header?: never;
             path?: never;
             cookie?: never;
@@ -263,6 +276,24 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["_PhraseListResponse"];
+                };
+            };
+            /** @description Error envelope; `error.code` = `INVALID_CURSOR`. */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Error envelope; `error.code` = `VALIDATION_ERROR`. */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
                 };
             };
         };

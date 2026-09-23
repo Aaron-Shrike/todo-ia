@@ -62,7 +62,7 @@ describe("createApiClient", () => {
   });
 
   describe("listPhrases", () => {
-    it("sends a GET request with no body and unwraps the items array", async () => {
+    it("sends a GET request with no body and unwraps the page envelope", async () => {
       const items = [
         {
           id: "1",
@@ -76,18 +76,32 @@ describe("createApiClient", () => {
           },
         },
       ];
+      const pageData = { items, total: 1, next_cursor: null, has_more: false };
       const fetchImpl = vi.fn<typeof fetch>(async () =>
-        fakeResponse({ status: 200, body: { data: { items } } }),
+        fakeResponse({ status: 200, body: { data: pageData } }),
       );
       const client = createApiClient({ baseUrl: "http://api.test", fetchImpl });
 
       const result = await client.listPhrases();
 
-      expect(result).toEqual({ items });
+      expect(result).toEqual(pageData);
       const [url, init = {}] = fetchImpl.mock.calls[0];
       expect(url).toBe("http://api.test/phrases");
       expect(init.method).toBe("GET");
       expect(init.body).toBeUndefined();
+    });
+
+    it("encodes limit and cursor as a query string", async () => {
+      const pageData = { items: [], total: 0, next_cursor: null, has_more: false };
+      const fetchImpl = vi.fn<typeof fetch>(async () =>
+        fakeResponse({ status: 200, body: { data: pageData } }),
+      );
+      const client = createApiClient({ baseUrl: "http://api.test", fetchImpl });
+
+      await client.listPhrases({ limit: 10, cursor: "opaque-cursor" });
+
+      const [url] = fetchImpl.mock.calls[0];
+      expect(url).toBe("http://api.test/phrases?limit=10&cursor=opaque-cursor");
     });
   });
 

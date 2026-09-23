@@ -109,12 +109,12 @@ A phrase MUST be flagged as a duplicate if and only if its best score (clamped t
 
 ### Requirement: Validation result shape
 
-Validation MUST return: `is_duplicate` (bool), `threshold` (number), `score` (best score over ALL stored phrases, or null if the store is empty), `most_similar` (`{id, text, score}` of the best-scoring stored phrase, or null if the store is empty), and page 1 of `matches` with `next_cursor` and `has_more`. `score` and `most_similar` MUST report the best stored phrase even when it is below the threshold (so `is_duplicate` false with a non-null score is valid). When matches exist, `most_similar` MUST equal the first element of `matches`. These verdict fields are returned ONLY by validate; `POST /phrases/matches` returns `matches`, `next_cursor` and `has_more` only.
+Validation MUST return: `is_duplicate` (bool), `threshold` (number), `score` (best score over ALL stored phrases, or null if the store is empty), `most_similar` (`{id, text, score}` of the best-scoring stored phrase, or null if the store is empty), and page 1 of `matches` with `next_cursor`, `has_more` and `total` (the full count of phrases meeting the threshold, independent of pagination — the UI's "10/46 coincidencias" counter; `0` when the store is empty or nothing meets the threshold). `score` and `most_similar` MUST report the best stored phrase even when it is below the threshold (so `is_duplicate` false with a non-null score is valid). When matches exist, `most_similar` MUST equal the first element of `matches`. These verdict fields are returned ONLY by validate; `POST /phrases/matches` returns `matches`, `next_cursor`, `has_more` and `total` only.
 
 #### Scenario: Empty store
 - GIVEN no stored phrases
 - WHEN a valid phrase is validated
-- THEN `is_duplicate` false, `score` null, `most_similar` null, `matches` `[]`, `has_more` false, `next_cursor` null
+- THEN `is_duplicate` false, `score` null, `most_similar` null, `matches` `[]`, `has_more` false, `next_cursor` null, `total` 0
 
 #### Scenario: Best below threshold
 - GIVEN stored phrases scoring 0.55 and 0.40 against the input (threshold 0.80)

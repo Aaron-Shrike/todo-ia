@@ -158,7 +158,7 @@ The database MUST guarantee that no two rows with `validation_status = 'unique'`
 
 ### Requirement: List phrases
 
-The system MUST list saved phrases newest first (`created_at desc, id desc`) with their validation metadata (see api-contract), returning at most `PHRASES_LIST_LIMIT` (default 200) newest items; the list is otherwise unpaginated and older phrases are not reachable through the API in this change (documented limitation). Search, filtering and alternative sorting are out of scope.
+The system MUST list saved phrases newest first (`created_at desc, id desc`) with their validation metadata (see api-contract), keyset-paginated by `limit`/`cursor` (default page size `PHRASES_PAGE_SIZE`, bounded by `PHRASES_LIST_LIMIT`) so the full store is reachable through repeated pages, not just the newest `PHRASES_LIST_LIMIT` items. Search, filtering and alternative sorting are out of scope.
 
 #### Scenario: Newest first
 - GIVEN phrases saved in order A, B, C
@@ -168,12 +168,17 @@ The system MUST list saved phrases newest first (`created_at desc, id desc`) wit
 #### Scenario: Empty list
 - GIVEN no phrases
 - WHEN the list is requested
-- THEN `items` is `[]` with status 200
+- THEN `items` is `[]`, `total` is `0`, with status 200
 
 #### Scenario: Metadata exposed
 - GIVEN a `duplicate_confirmed` phrase
 - WHEN the list is requested
 - THEN its item includes `validation.status`, `validation.score`, `validation.most_similar_phrase_id`, `validation.validated_at`
+
+#### Scenario: Full store reachable via pagination
+- GIVEN more phrases stored than `PHRASES_LIST_LIMIT`
+- WHEN the client follows `next_cursor` across repeated requests until `has_more` is false
+- THEN every stored phrase is eventually returned exactly once, newest first
 
 ### Requirement: Migrations
 

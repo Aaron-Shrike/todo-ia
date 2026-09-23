@@ -73,6 +73,7 @@ const BASE_DETAILS: DuplicateDetails = {
   matches: [{ id: "7", text: "Comprar leche", score: 0.9312 }],
   nextCursor: "cursor-1",
   hasMore: true,
+  total: 2,
 };
 
 const SINGLE_PAGE_DETAILS: DuplicateDetails = {
@@ -108,7 +109,7 @@ function renderAlert(overrides: RenderOverrides = {}) {
 }
 
 function fakePage(overrides: Partial<MatchesData>): MatchesData {
-  return { matches: [], next_cursor: null, has_more: false, ...overrides };
+  return { matches: [], next_cursor: null, has_more: false, total: 0, ...overrides };
 }
 
 describe("DuplicateAlert", () => {
@@ -178,6 +179,7 @@ describe("DuplicateAlert", () => {
     expect(dialog_.client.listMatches).toHaveBeenCalledWith({
       text: "Comprar leche",
       cursor: "cursor-1",
+      limit: 10,
     });
     await waitFor(() => expect(dialog).toHaveTextContent(copy.duplicate.loadingMore));
 
@@ -275,6 +277,7 @@ describe("DuplicateAlert", () => {
     expect(client.listMatches).toHaveBeenNthCalledWith(2, {
       text: "Comprar leche",
       cursor: "cursor-1",
+      limit: 10,
     });
   });
 
@@ -432,5 +435,38 @@ describe("DuplicateAlert", () => {
 
     expect(dialog).toHaveTextContent("Ir a comprar leche");
     expect(screen.getAllByRole("listitem")).toHaveLength(2);
+  });
+
+  describe("counter", () => {
+    it("shows {loaded}/{total} next to the match list", () => {
+      renderAlert({ details: { ...BASE_DETAILS, total: 46 } });
+      expect(screen.getByText("1/46")).toBeInTheDocument();
+    });
+
+    it("grows as more pages load on scroll", async () => {
+      const client = createFakeClient({
+        listMatches: vi.fn(async () =>
+          fakePage({
+            matches: [{ id: "9", text: "Ir a comprar leche", score: 0.85 }],
+            has_more: false,
+            total: 46,
+          }),
+        ),
+      });
+      renderAlert({ client, details: { ...BASE_DETAILS, total: 46 } });
+      const dialog = screen.getByRole("alertdialog");
+      expect(dialog).toHaveTextContent("1/46");
+
+      await act(async () => {
+        latestObserver().trigger();
+      });
+
+      await waitFor(() => expect(dialog).toHaveTextContent("2/46"));
+    });
+
+    it("is absent when there are no matches", () => {
+      renderAlert({ details: { ...BASE_DETAILS, matches: [], total: 0 } });
+      expect(screen.queryByText(/\/\d/)).not.toBeInTheDocument();
+    });
   });
 });

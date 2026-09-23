@@ -16,7 +16,7 @@ Capability: `duplicate-confirmation` (new). Server-side re-validation on save, t
 #### Scenario: Query count on save
 - GIVEN a repository that counts similarity queries, a unique text T and a warm cache
 - WHEN `POST /phrases` is called for T (201) and then again for T without confirmation (now an exact duplicate, 409)
-- THEN the call that returns 201 ran exactly 1 similarity query (the EXACT nearest-neighbour lookup) plus the `INSERT`, and the call that returns 409 ran exactly 2 similarity queries (the EXACT nearest-neighbour lookup plus the first match page for the 409 `details`, both exact scans) and no `INSERT`; neither call ran an approximate (HNSW) nearest-neighbour query (0 such queries); at most one embedding was computed across both calls
+- THEN the call that returns 201 ran exactly 1 similarity query (the EXACT nearest-neighbour lookup) plus the `INSERT`, and the call that returns 409 ran exactly 3 similarity queries (the EXACT nearest-neighbour lookup, the first match page, and the exact-scan count backing the 409 `details.total` counter, all exact scans) and no `INSERT`; neither call ran an approximate (HNSW) nearest-neighbour query (0 such queries); at most one embedding was computed across both calls
 
 #### Scenario: Save does not use the approximate read
 - GIVEN a repository spy whose approximate nearest-neighbour method returns a wrong (or no) neighbour, and a stored phrase that is a duplicate of T
@@ -79,12 +79,12 @@ Capability: `duplicate-confirmation` (new). Server-side re-validation on save, t
 
 ### Requirement: 409 payload
 
-The 409 response MUST use the error envelope with `code: DUPLICATE_CONFIRMATION_REQUIRED` and `details` containing the same fields as a validate response (`threshold`, `score`, `most_similar`, `matches` first page, `next_cursor`, `has_more`), so the client can render the alert without a second call.
+The 409 response MUST use the error envelope with `code: DUPLICATE_CONFIRMATION_REQUIRED` and `details` containing the same fields as a validate response (`threshold`, `score`, `most_similar`, `matches` first page, `next_cursor`, `has_more`, `total`), so the client can render the alert without a second call.
 
 #### Scenario: Payload completeness
 - GIVEN 3 matches above threshold
 - WHEN a save is rejected with 409
-- THEN `details.most_similar` is the best phrase, `details.matches` has 3 items ordered by score desc, `details.has_more` is false
+- THEN `details.most_similar` is the best phrase, `details.matches` has 3 items ordered by score desc, `details.has_more` is false, `details.total` is 3
 
 #### Scenario: Large match set on 409
 - GIVEN 120 matches and page size 50

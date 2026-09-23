@@ -231,6 +231,13 @@
   margin-top: var(--space-3);
 }
 
+.listCounter {
+  font-family: var(--font-mono);
+  font-size: 0.8rem;
+  color: var(--color-muted-foreground);
+  margin: 0 0 var(--space-2);
+}
+
 .emptyState {
   color: var(--color-muted-foreground);
   font-size: 0.95rem;

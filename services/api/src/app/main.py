@@ -234,6 +234,8 @@ def create_app(
         build_phrases_router(
             phrase_max_length=settings.phrase_max_length,
             matches_page_size=settings.matches_page_size,
+            phrases_list_limit=settings.phrases_list_limit,
+            phrases_page_size=settings.phrases_page_size,
         )
     )
     app.include_router(health_router)
@@ -353,7 +355,6 @@ async def _lifespan(app: FastAPI, settings: Settings) -> AsyncIterator[None]:
             policy=SimilarityPolicy(threshold=settings.similarity_threshold),
             phrase_max_length=settings.phrase_max_length,
             matches_page_size=settings.matches_page_size,
-            phrases_list_limit=settings.phrases_list_limit,
         )
 
         def _cache_snapshot() -> dict[str, int] | None:

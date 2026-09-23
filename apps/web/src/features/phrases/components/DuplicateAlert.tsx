@@ -3,9 +3,10 @@
 import type { PhraseApiClient } from "@/lib/api/client";
 import { copy } from "@/i18n/copy.es";
 
+import { matchesCounterLabel } from "../counterLabel";
+import { useMatchesInfiniteScroll } from "../hooks/useMatchesInfiniteScroll";
 import type { DuplicateDetails } from "../machine";
 import { scoreLabel } from "../scoreLabel";
-import { useMatchesInfiniteScroll } from "../hooks/useMatchesInfiniteScroll";
 import styles from "./phrases.module.css";
 
 export interface DuplicateAlertProps {
@@ -36,13 +37,14 @@ export function DuplicateAlert({
   onCancel,
   onInvalidCursor,
 }: DuplicateAlertProps) {
-  const { matches, hasMore, isLoadingMore, loadError, retry, sentinelRef } =
+  const { matches, total, hasMore, isLoadingMore, loadError, retry, sentinelRef, rootRef } =
     useMatchesInfiniteScroll({
       client,
       text,
       initialMatches: details.matches,
       initialCursor: details.nextCursor,
       initialHasMore: details.hasMore,
+      initialTotal: details.total,
       disabled,
       onInvalidCursor,
     });
@@ -61,16 +63,19 @@ export function DuplicateAlert({
       )}
 
       <h3 className={styles.matchesTitle}>{copy.duplicate.matchesTitle}</h3>
-      <ul className={styles.matchesList}>
+      {matches.length > 0 && (
+        <p className={styles.listCounter}>{matchesCounterLabel(matches.length, total)}</p>
+      )}
+      <ul className={styles.matchesList} ref={rootRef}>
         {matches.map((match) => (
           <li key={match.id} className={styles.matchItem}>
             <span>{match.text}</span>
             <span className={styles.matchScore}>{scoreLabel(match.score)}</span>
           </li>
         ))}
+        {hasMore && <li ref={sentinelRef} data-testid="matches-sentinel" aria-hidden="true" />}
       </ul>
 
-      {hasMore && <div ref={sentinelRef} data-testid="matches-sentinel" />}
       {isLoadingMore && <p className={styles.loadingMore}>{copy.duplicate.loadingMore}</p>}
       {loadError && (
         <div className={styles.errorBox}>

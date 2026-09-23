@@ -43,6 +43,7 @@ const UNIQUE_RESULT: ValidateData = {
   matches: [],
   next_cursor: null,
   has_more: false,
+  total: 0,
 };
 
 const DUPLICATE_RESULT: ValidateData = {
@@ -53,6 +54,7 @@ const DUPLICATE_RESULT: ValidateData = {
   matches: [{ id: "7", text: "Comprar leche", score: 0.9312 }],
   next_cursor: null,
   has_more: false,
+  total: 1,
 };
 
 function fakePhrase(status: "unique" | "duplicate_confirmed" = "unique"): PhraseOut {

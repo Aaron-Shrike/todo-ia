@@ -1,22 +1,31 @@
 "use client";
 
-import { forwardRef, useImperativeHandle, useState } from "react";
+import {
+  forwardRef,
+  useEffect,
+  useImperativeHandle,
+  useRef,
+  useState,
+} from "react";
 
 import type { PhraseApiClient } from "@/lib/api/client";
 import type { components } from "@/types/api";
 import { copy } from "@/i18n/copy.es";
 
+import { counterLabel } from "../counterLabel";
 import { scoreLabel } from "../scoreLabel";
 import styles from "./phrases.module.css";
 
 type PhraseOut = components["schemas"]["_PhraseOut"];
+type PhraseListData = components["schemas"]["_PhraseListData"];
 
 export interface PhraseListHandle {
   /**
    * Browser-side `GET /phrases` refetch (design.md: "no `router.refresh()`,
    * no reload"). Never rejects — a failure only flips the list's own
    * non-blocking error state, so a caller (e.g. `PhraseWorkspace`'s
-   * `onSaved`) never needs a `.catch()`.
+   * `onSaved`) never needs a `.catch()`. Always re-fetches page 1, discarding
+   * any pages loaded via scroll — the same reset a fresh mount would see.
    */
   refresh: () => Promise<void>;
 }
@@ -29,8 +38,11 @@ export interface PhraseListProps {
    * (`app/page.tsx`) failed — rendered as the exact same load-error state a
    * later refresh failure produces, with no separate loading flash on
    * mount (design.md: "no client-side loading flash on first load").
+   * Otherwise the first page, exactly as `GET /phrases` returned it — this
+   * component continues paging from its `next_cursor`, never re-requesting
+   * page 1 on mount.
    */
-  initialItems: PhraseOut[] | null;
+  initialPage: PhraseListData | null;
 }
 
 type ListStatus = "idle" | "loading" | "error";
@@ -62,27 +74,48 @@ function badgeClassName(status: string): string {
   return status === "duplicate_confirmed" ? styles.badgeConfirmed : styles.badgeUnique;
 }
 
+/** Appends `incoming` after `existing`, skipping any id already present (same "no duplicate items" rule `DuplicateAlert`'s match list follows). */
+function appendDeduped(existing: PhraseOut[], incoming: PhraseOut[]): PhraseOut[] {
+  const seen = new Set(existing.map((item) => item.id));
+  const appended = incoming.filter((item) => !seen.has(item.id));
+  return appended.length === 0 ? existing : [...existing, ...appended];
+}
+
 /**
  * phrase-ui spec, "Saved phrase list with status badge": renders `GET
- * /phrases` (newest first, per the API) with a status badge per item and
- * its own `list.loadError` + Reintentar state, entirely separate from
- * `PhraseForm`'s state machine — that separation is what guarantees a list
- * refresh failure after a save can never move the machine to `error` (the
- * phrase IS saved). `PhraseWorkspace` is what wires the two together
- * without letting either leak into the other.
+ * /phrases` (newest first, per the API) with a status badge per item, its
+ * own `list.loadError` + Reintentar state, and infinite scroll over
+ * whatever the store holds beyond the first page — same
+ * IntersectionObserver-sentinel pattern as `DuplicateAlert`'s match list
+ * (`useMatchesInfiniteScroll`), inlined here since this list has no
+ * text/threshold session to reset, just a cursor to walk.
  */
 export const PhraseList = forwardRef<PhraseListHandle, PhraseListProps>(
-  function PhraseList({ client, initialItems }, ref) {
-    const [items, setItems] = useState<PhraseOut[]>(initialItems ?? []);
+  function PhraseList({ client, initialPage }, ref) {
+    const [items, setItems] = useState<PhraseOut[]>(initialPage?.items ?? []);
+    const [total, setTotal] = useState(initialPage?.total ?? 0);
+    const [cursor, setCursor] = useState<string | null>(initialPage?.next_cursor ?? null);
+    const [hasMore, setHasMore] = useState(initialPage?.has_more ?? false);
     const [status, setStatus] = useState<ListStatus>(
-      initialItems === null ? "error" : "idle",
+      initialPage === null ? "error" : "idle",
     );
+    const [isLoadingMore, setIsLoadingMore] = useState(false);
+    const [loadMoreError, setLoadMoreError] = useState(false);
+
+    // Ref, not state: two intersection callbacks firing synchronously in the
+    // same tick must not both pass the "already loading" guard before either
+    // re-render could observe it (same reasoning as `useMatchesInfiniteScroll`).
+    const inFlightMore = useRef(false);
 
     async function refresh() {
       setStatus("loading");
       try {
-        const data = await client.listPhrases();
-        setItems(data.items);
+        const page = await client.listPhrases();
+        setItems(page.items);
+        setTotal(page.total);
+        setCursor(page.next_cursor);
+        setHasMore(page.has_more);
+        setLoadMoreError(false);
         setStatus("idle");
       } catch {
         // Loaded items remain untouched (phrase-ui spec, "Refresh fails
@@ -93,6 +126,47 @@ export const PhraseList = forwardRef<PhraseListHandle, PhraseListProps>(
     }
 
     useImperativeHandle(ref, () => ({ refresh }));
+
+    function loadMore() {
+      if (inFlightMore.current || !hasMore || cursor === null) return;
+      inFlightMore.current = true;
+      setIsLoadingMore(true);
+      setLoadMoreError(false);
+      client.listPhrases({ cursor }).then(
+        (page) => {
+          inFlightMore.current = false;
+          setIsLoadingMore(false);
+          setItems((prev) => appendDeduped(prev, page.items));
+          setTotal(page.total);
+          setCursor(page.next_cursor);
+          setHasMore(page.has_more);
+        },
+        () => {
+          inFlightMore.current = false;
+          setIsLoadingMore(false);
+          setLoadMoreError(true);
+        },
+      );
+    }
+
+    // Kept current on every render so the IntersectionObserver callback
+    // (created once per sentinel node) always calls the latest closure
+    // instead of one capturing a stale `cursor`/`hasMore`.
+    const loadMoreRef = useRef(loadMore);
+    loadMoreRef.current = loadMore;
+
+    const [sentinelNode, setSentinelNode] = useState<Element | null>(null);
+
+    useEffect(() => {
+      if (!sentinelNode || typeof IntersectionObserver === "undefined") return;
+      const observer = new IntersectionObserver((entries) => {
+        if (entries.some((entry) => entry.isIntersecting)) {
+          loadMoreRef.current();
+        }
+      });
+      observer.observe(sentinelNode);
+      return () => observer.disconnect();
+    }, [sentinelNode]);
 
     return (
       <section className={styles.listSection} aria-busy={status === "loading"}>
@@ -118,21 +192,41 @@ export const PhraseList = forwardRef<PhraseListHandle, PhraseListProps>(
           // hay frases guardadas." while the refetch was still in flight.
           status === "idle" && <p className={styles.emptyState}>{copy.list.empty}</p>
         ) : (
-          <ul className={styles.list}>
-            {items.map((item) => (
-              <li key={item.id} className={styles.listItem}>
-                <span className={styles.listItemText}>{item.text}</span>
-                <span className={styles.listItemMeta}>
-                  {item.validation.score !== null && (
-                    <span className={styles.score}>{scoreLabel(item.validation.score)}</span>
-                  )}
-                  <span className={`${styles.badge} ${badgeClassName(item.validation.status)}`}>
-                    {badgeLabel(item.validation.status)}
+          <>
+            <p className={styles.listCounter}>{counterLabel(items.length, total)}</p>
+            <ul className={styles.list}>
+              {items.map((item) => (
+                <li key={item.id} className={styles.listItem}>
+                  <span className={styles.listItemText}>{item.text}</span>
+                  <span className={styles.listItemMeta}>
+                    {item.validation.score !== null && (
+                      <span className={styles.score}>{scoreLabel(item.validation.score)}</span>
+                    )}
+                    <span className={`${styles.badge} ${badgeClassName(item.validation.status)}`}>
+                      {badgeLabel(item.validation.status)}
+                    </span>
                   </span>
-                </span>
-              </li>
-            ))}
-          </ul>
+                </li>
+              ))}
+            </ul>
+
+            {hasMore && (
+              <div ref={setSentinelNode} data-testid="phrase-list-sentinel" />
+            )}
+            {isLoadingMore && <p className={styles.loadingMore}>{copy.list.loadingMore}</p>}
+            {loadMoreError && (
+              <div className={styles.errorBox}>
+                <p>{copy.list.loadMoreError}</p>
+                <button
+                  type="button"
+                  className={`${styles.button} ${styles.buttonGhost}`}
+                  onClick={loadMore}
+                >
+                  {copy.button.retry}
+                </button>
+              </div>
+            )}
+          </>
         )}
       </section>
     );

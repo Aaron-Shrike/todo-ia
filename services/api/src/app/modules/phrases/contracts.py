@@ -36,6 +36,7 @@ from app.modules.similarity.contracts import Vector
 __all__ = [
     "DuplicateTextConflict",
     "Isolation",
+    "ListCursor",
     "LockTimeout",
     "Match",
     "MatchCursor",
@@ -43,6 +44,7 @@ __all__ = [
     "NewPhrase",
     "Page",
     "Phrase",
+    "PhraseListPage",
     "PhraseRepository",
     "UnitOfWork",
     "UnitOfWorkFactory",
@@ -145,6 +147,29 @@ class Page(Generic[_T]):
     has_more: bool
 
 
+@dataclass(frozen=True)
+class ListCursor:
+    """Keyset position `list_page` continues from — `(created_at, id)` DESC,
+    the same ordering `phrases_created_at_id_idx` already serves. Distinct
+    from `MatchCursor`: unrelated resource, no text/threshold binding."""
+
+    created_at: datetime
+    id: int
+
+
+@dataclass(frozen=True)
+class PhraseListPage:
+    """One page of `list_page` (newest first). `total` is the full row
+    count regardless of pagination — what the UI's "10/60" counter reads —
+    recomputed on every call rather than cached, since it changes as
+    phrases are saved."""
+
+    items: list[Phrase]
+    total: int
+    next_cursor: ListCursor | None
+    has_more: bool
+
+
 class DuplicateTextConflict(Exception):
     """`add` unique-violation on `normalized_text` among `unique` rows
     (ADR-006, the technical decision record adopting the partial unique
@@ -188,6 +213,18 @@ class PhraseRepository(Protocol):
 
     def list_recent(self, limit: int) -> list[Phrase]: ...  # newest first, no cursor
 
+    def list_page(self, limit: int, cursor: ListCursor | None) -> PhraseListPage:
+        """Newest-first, keyset-paginated (`(created_at, id)` DESC) —
+        `GET /phrases`'s real pagination, used alongside `total`'s own
+        `count_all`. `limit + 1` rows are considered internally to decide
+        `has_more`, same convention as `find_matches`."""
+        ...
+
+    def count_all(self) -> int:
+        """Total stored phrase count, independent of any page — what
+        `list_page`'s `total` field reports."""
+        ...
+
     def find_nearest(self, q: Vector) -> Neighbor | None:
         """Unfiltered top-1, `(distance asc, id asc)`. `None` only if
         empty. Validate endpoint only -- MUST NOT be called by `SavePhrase`
@@ -211,4 +248,11 @@ class PhraseRepository(Protocol):
         `(bucket, id)` (D16). Returns RAW distances; the application
         clamps/rounds, applies `includes`, and applies the tail rule.
         `limit + 1` rows are considered internally to decide `has_more`."""
+        ...
+
+    def count_matches(self, q: Vector, max_distance: float) -> int:
+        """Total count of stored phrases within `max_distance` (the SAME
+        widened bound `find_matches` filters on) — what the UI's
+        "10/46 coincidencias" counter reads. EXACT scan, same as
+        `find_matches`; counted independently of any page/cursor."""
         ...
