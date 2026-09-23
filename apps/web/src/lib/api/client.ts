@@ -115,7 +115,13 @@ async function request<T>(
 export function createApiClient(config: ApiClientConfig = {}): PhraseApiClient {
   const resolved: Required<ApiClientConfig> = {
     baseUrl: config.baseUrl ?? DEFAULT_BASE_URL,
-    fetchImpl: config.fetchImpl ?? fetch,
+    // Bound to `globalThis`: the Fetch spec requires `fetch` to be invoked
+    // with `this` set to `Window` (or the worker scope); storing the bare
+    // function reference and calling it later as `config.fetchImpl(...)`
+    // invokes it with `this === config`, which throws "TypeError: Failed to
+    // execute 'fetch' on 'Window': Illegal invocation" before any request is
+    // ever dispatched.
+    fetchImpl: config.fetchImpl ?? fetch.bind(globalThis),
   };
 
   return {

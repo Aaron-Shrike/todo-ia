@@ -243,6 +243,38 @@ describe("createApiClient", () => {
     });
   });
 
+  describe("default fetchImpl binding", () => {
+    // Regression test for a real production bug: `fetchImpl: config.fetchImpl
+    // ?? fetch` stored a *bare* reference to `fetch`. The Fetch spec requires
+    // `fetch` to be invoked with `this === Window` (or the worker scope);
+    // calling the bare reference later as `config.fetchImpl(...)` invokes it
+    // with `this === config`, which real browsers reject with `TypeError:
+    // Failed to execute 'fetch' on 'Window': Illegal invocation` — before any
+    // request is ever dispatched, so `Validar`/`Guardar` failed instantly
+    // with the generic network-error copy and zero network activity. Node's
+    // own fetch (used by this jsdom-based suite) does not enforce that
+    // receiver check, so this test asserts the binding directly rather than
+    // reproducing the browser-only symptom; the real symptom was verified
+    // end-to-end in a real browser.
+    it("binds the default fetchImpl to globalThis instead of an unbound reference", async () => {
+      let capturedThis: unknown;
+      const spy = vi
+        .spyOn(globalThis, "fetch")
+        .mockImplementation(function (this: unknown) {
+          capturedThis = this;
+          return Promise.resolve(
+            fakeResponse({ status: 200, body: { data: { items: [] } } }),
+          );
+        });
+
+      const client = createApiClient({ baseUrl: "http://api.test" }); // no fetchImpl injected
+      await client.listPhrases();
+
+      expect(capturedThis).toBe(globalThis);
+      spy.mockRestore();
+    });
+  });
+
   describe("network failure", () => {
     it("normalizes a rejected fetch to a NETWORK_ERROR ApiError", async () => {
       const fetchImpl = vi.fn(async () => {
