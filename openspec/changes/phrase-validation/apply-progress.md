@@ -6416,6 +6416,59 @@ ci.yml` only fires against `main`, per this session's branch-strategy note).
 **Not pushed, no PR opened** -- per the CONTEXT's explicit instruction ("Do NOT push or open a PR.
 Implement, verify with real Docker, commit locally only. Report the commit SHA when done.").
 
+### Follow-up: CI integration job wired (fresh-context review finding)
+
+A fresh-context review of this unit's diff found one real gap: `.github/workflows/ci.yml` only ran
+`pytest -m "not integration and not slow" -q`, so Finding 2 (the `read_vector_column_dimensions` SQL
+bind-param bug, `:table::regclass` never binding) and Finding 3 (the `FakeEmbedder` `KeyError:
+'first'` broken test fixture) -- both fixed by this exact unit -- had **zero automated regression
+protection**: either fix could be silently reverted and CI would stay green, since the only tests that
+exercise them are `integration`-marked and CI never ran that marker.
+
+**What was added**: a new `backend-integration` job in `.github/workflows/ci.yml` (separate from
+`backend`, since it needs a different runtime dependency -- a live Postgres). Uses a GitHub Actions
+`services:` block with the same `pgvector/pgvector:pg16` image `docker-compose.yml`'s `db` service
+uses, gated on a `pg_isready` health check (`options: --health-cmd ...`) so job steps only start once
+Postgres is accepting connections -- **not** the full `docker compose up --build` stack, which would
+build the heavy torch + baked embedding-model image on every CI run; integration tests only need a
+live Postgres + pgvector (`FakeEmbedder`/in-memory adapters cover everything embedding-related).
+Service containers don't run compose's `infra/db/init.sql` init script, so `phrases_test` (the DB
+every `tests/integration/*` fixture actually connects to, derived from `DATABASE_URL` via
+`base.rpartition("/")[0] + "/phrases_test"`) is created with a small inline Python step using
+`psycopg` (already a core dependency, so no new tool/package needed) instead of relying on a `psql`
+client binary being present on the runner image. An explicit `alembic upgrade head` step runs next as
+a fail-fast schema sanity check (mirroring the local `migrate` compose service's job, applied to
+`phrases_test` since that's the DB integration tests use) -- redundant with, but harmless alongside,
+every integration test module's own `command.downgrade(base); command.upgrade(head)` autouse fixture
+(confirmed idempotent per `test_schema.py`'s own docstring). Also updated the workflow's top comment,
+which previously said integration/slow suites were "wired once their infrastructure lands" -- no
+longer accurate for integration.
+
+**Local verification** (real Docker, since GitHub Actions itself can't be triggered from this
+session -- closest available proxy for "would this CI job actually pass"): started a
+`pgvector/pgvector:pg16` container matching the service-container config exactly (`POSTGRES_USER`/
+`POSTGRES_PASSWORD`/`POSTGRES_DB=todo_ia`, mapped to a free host port), ran the job's literal step
+sequence against it -- create `phrases_test` via the same inline `psycopg` script, `alembic upgrade
+head`, `pytest -m integration -q` -- and got **41 passed**, identical to Unit 14's own original
+integration count above. Container removed afterward (`docker rm -f`, confirmed empty via `docker ps
+-a --filter name=...`). Also re-ran the full non-integration suite (`pytest tests/unit
+tests/contract_suite tests/contract -m "not integration and not slow" -q`) to confirm nothing else
+broke: **287 passed, 1 deselected**, matching Unit 14's original count -- no regression.
+
+**Deviation from `tasks.md`'s literal 14.1/14.2 text**: this CI job was not named in either task, and
+is recorded as a related follow-up in `tasks.md`'s Unit 14 section rather than a renumbered task, per
+the explicit instruction that prompted it.
+
+**Risk / not independently verifiable**: GitHub Actions' `services:` block and its `--health-cmd`
+option cannot be exercised for real outside GitHub's own runners from this session -- the local Docker
+run above is the closest available proxy (same image, same env vars, same step sequence) but does not
+prove GitHub's specific service-container networking (`localhost` port-mapping into the job) behaves
+identically. This is a standard, widely-used GitHub Actions pattern, not a novel one, which lowers the
+risk it behaves differently in practice.
+
+**Commit**: `ci: run integration tests against a live pgvector service container` (follow-up to
+`feat(infra): full compose wiring and healthchecks`, same branch, not pushed).
+
 ## Remaining Tasks (as of the end of this batch)
 
 - [x] Unit 14 (14.1, 14.2): done, verified with real Docker end to end, committed locally on
