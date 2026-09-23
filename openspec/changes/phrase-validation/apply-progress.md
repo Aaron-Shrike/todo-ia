@@ -3260,6 +3260,93 @@ opened the PR myself, per the CONTEXT's explicit delivery instructions for this 
   Start/End/Prior deps/Follow-ups (mentioning Unit 7b's deferred scope)/Out-of-scope sections, and
   the exact Verification command output.
 
+### Unit 7 fix pass (4-lens review findings)
+
+A 4-lens review (risk + resilience + readability + reliability) of the shipped Unit 7 diff surfaced 6
+confirmed findings. **By the time this fix pass started, PR #22 had already been merged into
+`develop`** (merge commit `05406fc`, `Merge pull request #22 from Aaron-Shrike/
+feat/pv-07-save-list-matches`) -- discovered only after an initial attempt to fold the fixes into the
+original commit via `git reset --soft` + force-push to `feat/pv-07-save-list-matches` (the technique
+used for every earlier fix pass this session, all of which ran BEFORE their PR merged). That approach
+does not apply post-merge: force-pushing a branch whose PR is already `MERGED` does not reopen or
+amend the merge, so the rewritten history would have been silently orphaned, invisible to `develop`.
+Caught via `gh pr view 22` showing `state: MERGED` and `git fetch origin develop` showing `05406fc`
+already ahead of `ea0a2c4`. Remediated: `feat/pv-07-save-list-matches` was restored (force-pushed
+back) to exactly the tree that was actually merged (`c98d1fd`, no orphaned rewrite left behind), and
+this fix pass instead ships as a NEW branch, `fix/pv-07-review-fixes`, cut from `origin/develop`'s
+tip (`05406fc`) with a single new commit, opened as a NEW PR against `develop` -- the correct
+mechanism for a genuinely POST-merge fix, distinct from every prior fix pass in this session (all of
+which landed pre-merge). Net diff: 4 files, +124/-12 (136 changed lines), well inside budget.
+
+1. **[Resilience WARNING] No provider-down/DB-down tests for `POST /phrases/matches`.** Added
+   `test_matches_provider_failure_returns_503_or_504` (parametrized `EmbeddingUnavailable`/
+   `EmbeddingTimeout`, mirrors `test_save_provider_failure_never_persists`) and
+   `test_matches_database_unreachable_is_500` (mirrors `test_save_database_unreachable_is_500_and_
+   persists_nothing`) to `tests/contract/test_phrases_endpoints.py`, reusing the exact `FailingEmbedder`/
+   broken-`uow_factory` doubles already established for `/phrases`. Both pass against the EXISTING
+   production code unchanged -- `ListMatches.__call__` already embeds before touching the repository
+   and lets exceptions propagate to the same global `ERROR_REGISTRY`/generic-exception handlers
+   `SavePhrase` relies on -- so this is a coverage-only, approval-test-style addition (no new RED->GREEN
+   production change), confirmed correct via a temporary spot-check.
+2. **[Readability WARNING] `**vars(...)` duplicated 5x.** Added `_scored_phrase(view: MatchView |
+   MostSimilarView) -> _ScoredPhrase` (explicit `id=`/`text=`/`score=` mapping) to `router.py` and
+   replaced every `_ScoredPhrase(**vars(...))` call site with it (5 sites: `_verdict_details`'s two,
+   `validate_phrase`'s two, `list_matches`'s one). A field rename/add now fails at `mypy` time, not
+   silently at runtime. Spot-checked: `mypy src` stays green after the change.
+3. **[Risk + Resilience, both SUGGESTION] Bare `assert result.phrase is not None`.** Replaced with an
+   explicit `if result.phrase is None: raise RuntimeError(...)` in `save_phrase`, with a comment
+   documenting the invariant (`SaveResult` sets exactly one of `phrase`/`conflict`) and why a bare
+   `assert` is unsafe (stripped under `python -O`).
+4. **[Readability SUGGESTION] Hardcoded Postgres DSN duplicated in `test_endpoints_pgvector.py`.**
+   Investigated hoisting to a shared `_DEFAULT_DEV_DATABASE_URL` module constant as literally suggested
+   -- this breaks `ruff`'s E402 check: the module-level `os.environ.setdefault(...)` call must run
+   BEFORE the `app.main` import (fail-fast `Settings()`-at-import design), and a plain `NAME = "..."`
+   assignment placed before that import block is NOT one of pycodestyle/ruff's E402 exemptions
+   (confirmed by direct testing: bare expression-statement calls like `os.environ.setdefault(...)` ARE
+   exempt, plain assignments are NOT), so it would force an E402 suppression comment onto every
+   subsequent import in the file. Applied a cleaner fix instead: `_database_url()`'s own fallback
+   literal was actually unreachable dead code (the module-level `setdefault` already guarantees
+   `DATABASE_URL` is set by the time any fixture calls it), so it now reads
+   `os.environ["DATABASE_URL"]` unconditionally -- the literal exists exactly once in the file now,
+   with a comment explaining both the E402 constraint and the dead-code removal.
+5. **[Reliability WARNING] Undocumented cross-reference between two independent `DATABASE_URL` env
+   mechanisms.** Added a comment to `test_endpoints_pgvector.py` pointing at `tests/contract/
+   conftest.py`'s placeholder mechanism (and vice versa), explaining the collection-order dependency and
+   why it is currently safe. No behavior change, documentation only.
+6. **[Reliability SUGGESTION] No drift guard between the router's inline 409 dict and
+   `error_envelope`.** Added `test_save_409_envelope_matches_error_envelope_shape` to
+   `test_phrases_endpoints.py`: builds `error_envelope(code, message, details)` from the REAL response's
+   own fields and asserts the key sets match at both the outer and `error` nesting levels. Spot-checked
+   for real failure sensitivity: temporarily dropped the `message` key from `save_phrase`'s inline dict
+   and confirmed this test fails with a clear `KeyError`/mismatch before reverting.
+
+**Verify (fix pass, docker/postgres unavailable in this environment -- integration tests excluded)**:
+- `pytest tests/unit tests/contract_suite tests/contract -m "not integration and not slow" -q` -> 236
+  passed (was 232 before this fix pass; +4 net: 2 matches-resilience-test functions -- one
+  parametrized over 2 cases -- plus 1 drift-guard test).
+- `ruff check .` -> `All checks passed!`
+- `mypy src` -> `Success: no issues found in 38 source files`.
+- `lint-imports` -> `Contracts: 5 kept, 0 broken.`
+
+**Not touched, per explicit out-of-scope instruction**: Unit 6's `main.py`/`platform/errors.py` logging
+gap, the concurrency test's non-genuine-race-condition limitation (already disclosed in
+verify-report.md), CI not running integration tests (approved architecture decision), and "nothing
+persisted" assertions reaching into repository internals (tracked for Unit 7b).
+
+**Files touched (fix pass only)**:
+
+| File | Ins/Del |
+|------|---------|
+| `services/api/src/app/modules/phrases/api/router.py` | 25 / 10 |
+| `services/api/tests/contract/conftest.py` | 12 / 0 |
+| `services/api/tests/contract/test_phrases_endpoints.py` | 58 / 0 |
+| `services/api/tests/integration/test_endpoints_pgvector.py` | 29 / 3 |
+
+**Commit**: `fix(api): resolve Unit 7 4-lens review findings`
+**Branch**: `fix/pv-07-review-fixes`
+**Base**: `develop` at `05406fc` (Unit 7/PR #22 already merged)
+**PR**: opened against `develop` (see "PR status" below once recorded).
+
 ## Remaining Tasks (as of the end of this batch)
 
 - [x] Unit 7: save + matches endpoints (tasks 7.1-7.3) -- done this batch, `size:exception` granted,
