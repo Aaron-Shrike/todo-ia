@@ -111,6 +111,19 @@ class CachingEmbeddingProvider:
         with self._lock:
             self._store.clear()
 
+    def close(self) -> None:
+        """Reliability suggestion #11: forwards to `self._inner.close()` if
+        the wrapped provider has one -- `BoundedEmbeddingProvider` is the
+        one adapter in the stack that owns a resource (a `ThreadPool
+        Executor`) needing explicit shutdown; a plain inner with no
+        `close()` (e.g. `FakeEmbedder` in tests) is a no-op here. Duck-typed
+        via `getattr` rather than a `close()` member on `similarity.
+        contracts.EmbeddingProvider`'s published Protocol, which every
+        OTHER adapter would then need to implement for no reason."""
+        close = getattr(self._inner, "close", None)
+        if callable(close):
+            close()
+
     @property
     def stats(self) -> CacheStats:
         with self._lock:
