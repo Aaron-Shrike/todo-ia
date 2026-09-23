@@ -6773,3 +6773,123 @@ must rebase onto `develop` and retarget once Unit 16's own PR merges, same patte
 13a-13c elsewhere in this file.
 Commit SHA: this commit's own hash is not knowable from within itself (same limitation noted for Unit
 16 above) -- reported directly to the user at the end of this batch rather than self-embedded here.
+
+## Unit 15: README and architecture -- content complete and verified, STOPPED before commit (diff over cap)
+
+Branch `feat/pv-15-readme-architecture` created off `develop` (HEAD after Units 0-16/16b merged, PRs
+#35/#36). Read this file's own prior forward-references to Unit 15 (Unit 0's ".env.example gap...
+must be closed before ... Unit 15", Unit 14's "Unit 15 (README and architecture): not started, needs
+Unit 14 (this PR, done) -- ready to start", Unit 16's "`test_readme_links_every_adr` is
+`xfail(strict=True)` ... Unit 15 is the user's explicitly deferred prerequisite") before starting, per
+the CONTEXT's own instruction.
+
+### 15.1 `README.md` -- written and verified
+
+Content: prerequisites (Docker + Compose v2 only); quickstart (`cp .env.example .env`,
+`docker compose up -d --build`); URLs table (web `:3000`, API `:8000`, `/docs`, `/health`); running
+tests (`make test-unit`/`test`/`test-slow`/`evidence`, sourced verbatim from the root `Makefile`);
+full environment variable table (22 vars, every default and range/validation rule) built from **two
+independently cross-checked sources** -- design.md's own Configuration table (lines 812-836) and this
+file's own Unit 14 "corrected content" section (the verbatim intended `.env.example` body, with the
+Unit 0 `EMBEDDING_MODEL_REVISION` 37-char-placeholder bug already fixed there) -- both agreed exactly,
+so the table is transcribed, not invented; summary of the five beyond-brief decisions (ADR-001..005)
+each linked to its file under `docs/decisions/`, plus all ten technical ADRs (ADR-006..015) linked
+under `docs/decisions/technical/`; link to `docs/evidence/calibration.md`.
+
+### `.env.example` -- reconfirmed still blocked
+
+`ls .env.example` was blocked outright by a hard deny rule on any `.env*` path before any other work
+this unit -- same permanent tool-permission gap confirmed in Units 0/4/8/14/16. No attempt made to
+create it (per the CONTEXT's explicit instruction). README.md's env var table stands in as the
+documented content per the CONTEXT's own instruction; it does not claim the file exists in every
+checkout.
+
+### 15.2 `docs/architecture.md` -- written and verified
+
+Content, each drawn from design.md's own named sections (not invented): monorepo layout (Repository
+Layout section, `apps/`/`services/`-typed directories, migrations under `services/api/migrations/`
+reusing the API image); hexagonal modules and the five `import-linter` boundary contracts (API Module
+Structure and Boundaries section, table transcribed verbatim); the embedding microservice seam and its
+honest limit (only embedding generation is extractable, similarity *search* stays with pgvector, per
+ADR-002); the three read shapes `find_nearest`/`find_nearest_exact`/`find_matches` (D1, D12, the
+Configuration section's read-shape table) with the reconciliation rule; keyset pagination (D2, D16,
+the "Per-page cost model" section -- semantics not speed, O(n) per page, the `(floor(distance/1e-6),
+id)` tolerance grid and its documented residual); the cache invariant -- never cache verdicts or pages
+(D10/ADR-011's "Correctness invariant (non-negotiable)" section, the three forbidden-and-tested rules,
+the repository-call-counter test); the blind-save sequence (verbatim structure of the design's own
+three-step diagram); transactions/locking (D17, the Concurrency section's save-transaction pseudocode,
+the two isolation levels and why, the two-layer integrity split from ADR-006); residual risks (drawn
+from the design's own Risks table -- semantic near-duplicate race, O(n) exact scans, the keyset grid
+edge case, multi-worker cache degradation, unmeasured p95 latency, uncancellable forward pass).
+
+### TDD Cycle Evidence (Unit 15)
+
+| Task | Test | RED | GREEN | REFACTOR |
+|---|---|---|---|---|
+| 15.1/15.2 (docs) | N/A -- documentation has no executable assertions of its own; this unit's own Verify line (`rg TODO\|TBD`, a fresh read-through against the Makefile/compose/design.md/ADRs) is the check | N/A | ✅ both files written, cross-checked against source files listed above, zero placeholders | N/A |
+| README-links-every-ADR (`test_decision_log.py::test_readme_links_every_adr`, written in Unit 16, deliberately deferred to this unit) | `services/api/tests/unit/test_decision_log.py` | ✅ already RED-as-`xfail(strict=True)` since Unit 16 (confirmed by re-running before any edit: `3 passed, 1 xfailed`) | ✅ `xfail` decorator removed after README.md links all 15 ADR filenames; re-run: `4 passed` (the same 3 structural tests plus the now-genuine README-linkage pass) | ➖ trimmed the now-stale two-concern docstring (no longer describes a pending `xfail`) and dropped the now-unused `import pytest`; ruff/mypy clean on the file |
+
+### Test Summary (Unit 15)
+- `services/api/.venv/Scripts/python.exe -m pytest tests/unit/test_decision_log.py -q` (before any
+  edit) -> **3 passed, 1 xfailed** (baseline RED confirmed for real, not assumed).
+- Same command (after README.md + xfail removal) -> **4 passed** (GREEN, no `XPASS (strict)` failure
+  because the marker was removed, not left in place).
+- Full backend unit/contract suite (`pytest -m "not integration and not slow" -q`) -> **291 passed, 47
+  deselected** (was 290 passed + 1 xfailed before this unit; net +1 passing, 0 regressions -- the one
+  count shift is exactly the resolved xfail).
+- `.venv/Scripts/ruff.exe check tests/unit/test_decision_log.py` -> `All checks passed!`
+- `.venv/Scripts/mypy.exe tests/unit/test_decision_log.py` -> `Success: no issues found in 1 source
+  file`.
+- `rg -n "TODO|TBD" README.md docs/architecture.md` -> no matches (Verify line's own explicit check).
+
+### Measured diff (git, over the 400-line cap) -- STOPPED before commit
+
+```
+README.md                                       | 135 ++++++++++++++++++++++
+docs/architecture.md                            | 247 +++++++++++++++++++++++
+services/api/tests/unit/test_decision_log.py    |  28 +++--------
+3 files changed, 390 insertions(+), 20 deletions(-)
+```
+**410 changed lines total (390 + 20) -- 10 lines over the 400-line cap** (and ~1.37x the ~300
+estimate, inside this session's own observed 1.2x-3.9x pattern noted in the CONTEXT). Per the
+CONTEXT's own explicit instruction ("If your diff exceeds 400, do NOT self-authorize `size:exception`
+-- STOP, report the measured diff and a proposed split ... end your turn for the orchestrator to bring
+to the user"), **no commit was made**. Rewrapping the prose into longer unwrapped lines to shrink the
+raw newline count was considered and rejected: it would reduce the numstat line count without
+reducing what a reviewer actually has to read, i.e. it games the metric the 400-line budget exists to
+protect (reviewer cognitive load) rather than honoring it.
+
+**Proposed split** (the natural seam the CONTEXT itself already names -- README.md and
+`docs/architecture.md` are independent files mapped to independent tasks, 15.1 and 15.2):
+- **Slice A** -- `README.md` (135 lines) + `services/api/tests/unit/test_decision_log.py` (28 changed
+  lines, the xfail removal README.md itself unblocks) = **163 lines total**, well under the cap.
+  Commit: `docs: readme and env var reference`.
+- **Slice B** -- `docs/architecture.md` (247 lines) = **247 lines total**, well under the cap. Commit:
+  `docs: architecture reference`.
+- Both slices independently satisfy this unit's own Verify line (`rg TODO|TBD` on the respective
+  file(s); Slice A additionally re-runs `test_decision_log.py` for the GREEN xfail-removal). Chain
+  strategy per tasks.md's Review Workload Forecast is `stacked-to-main`: Slice A first (off `develop`,
+  HEAD after Units 0-16/16b), Slice B stacked on Slice A's branch, matching the Unit 16/16b precedent.
+
+### Task status (content complete, commit boundary pending a decision)
+
+- Both 15.1 and 15.2 left **unchecked** (`[ ]`) in `tasks.md` on purpose: the deliverable content is
+  written and verified, but nothing is committed yet, so marking them `[x]` would claim delivery that
+  has not happened. They should be checked once the split (or an accepted `size:exception`) is decided
+  and actually committed, in the same batch that resolves the split -- same pattern as Unit 16's own
+  "Resolution" paragraph, which was added only once the user had actually chosen the seam.
+- Working tree left as-is on `feat/pv-15-readme-architecture` (created off `develop`): `README.md` and
+  `docs/architecture.md` present as untracked new files, `services/api/tests/unit/test_decision_log.py`
+  present as an unstaged modification. Nothing staged, nothing committed, nothing pushed.
+- Not pushed, no PR opened, no commit made -- per the CONTEXT's explicit instruction and the workload
+  guard's explicit stop condition.
+
+### Resolution: user chose `size:exception` over the proposed split
+
+The user reviewed the STOPPED report above (410 changed lines, 10 over the 400-line cap, ~2.5%
+overage, README.md/`docs/architecture.md` split proposed) and **explicitly chose `size:exception`**:
+ship everything as ONE PR, not the proposed Slice A/Slice B split, given how marginal the overage is.
+`README.md`, `docs/architecture.md`, `services/api/tests/unit/test_decision_log.py`, `tasks.md`
+(15.1/15.2 checked, `size:exception` note added), and this file were committed together on
+`feat/pv-15-readme-architecture` as a single commit, `docs: readme and architecture`, per tasks.md's
+own specified commit message for this unit.

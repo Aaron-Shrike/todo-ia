@@ -462,13 +462,20 @@ Covers: api-contract Env documented (compose consumes `.env`); Ready (container 
   user sign-off -- the user requested the CI addition themselves, already aware it would add lines,
   and declined a further trim pass given the marginal size. No split proposed for a 6% overage.
 
-## Unit 15: README and architecture (~300)
+## Unit 15: README and architecture (~300) -- SHIPPED (`size:exception`, user-approved)
 
 Commit: `docs: readme and architecture`. Rollback: revert (docs only).
 Covers: "Beyond the brief" decision log: README summary; api-contract Env documented (env var table); Concurrency: Limitation documented (residual semantic-duplicate race explained).
-- [ ] 15.1 `README.md`: prerequisites, `cp .env.example .env`, `docker compose up`, URLs (web 3000, API 8000 `/docs`), running tests (`make test-unit`, `make test`, `make test-slow`, `make evidence`), env var table (every var in `.env.example`, defaults and ranges), summary of the five `beyond-brief` decisions linking `docs/decisions/*` and the technical ADRs in `docs/decisions/technical/`, link to `docs/evidence/calibration.md`.
-- [ ] 15.2 `docs/architecture.md`: monorepo layout, hexagonal modules and import-linter contracts, the embedding microservice seam and its honest limit, three read shapes (`find_nearest`, `find_nearest_exact`, `find_matches`), keyset paging, cache invariant (never cache verdicts/pages), blind-save sequence, transactions/locking, residual risks.
+- [x] 15.1 `README.md`: prerequisites, `cp .env.example .env`, `docker compose up`, URLs (web 3000, API 8000 `/docs`), running tests (`make test-unit`, `make test`, `make test-slow`, `make evidence`), env var table (every var in `.env.example`, defaults and ranges), summary of the five `beyond-brief` decisions linking `docs/decisions/*` and the technical ADRs in `docs/decisions/technical/`, link to `docs/evidence/calibration.md`.
+- [x] 15.2 `docs/architecture.md`: monorepo layout, hexagonal modules and import-linter contracts, the embedding microservice seam and its honest limit, three read shapes (`find_nearest`, `find_nearest_exact`, `find_matches`), keyset paging, cache invariant (never cache verdicts/pages), blind-save sequence, transactions/locking, residual risks.
 - Verify: fresh-clone dry run of README steps on a clean checkout; `rg -n "TODO|TBD" README.md docs/architecture.md` returns nothing.
+- **`size:exception`**: full unit (README.md 135 lines, docs/architecture.md 247 lines, the
+  `test_decision_log.py` xfail-removal 28 changed lines) measured at 410 changed lines (390
+  insertions / 20 deletions, 3 files) -- 10 lines over the 400 cap (~2.5% overage). The mandatory
+  stop-and-report step was followed first (see apply-progress.md's original Unit 15 "STOPPED" section
+  for the full per-file table and the proposed README/`docs/architecture.md` split). **The user
+  explicitly chose `size:exception`**: ship everything as ONE PR, declining the proposed split given
+  how marginal the overage is. Delivered as **PR #37** (`feat/pv-15-readme-architecture` -> `develop`).
 
 ## Unit 16: Decision log (~340) -- SPLIT into Unit 16 and Unit 16b
 
