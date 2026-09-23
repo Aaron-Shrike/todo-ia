@@ -31,3 +31,16 @@ PROBE: Vector = _pad([1.0, 0.0])
 def vector_at_distance(distance: float) -> list[float]:
     angle = math.acos(1.0 - distance)
     return _pad([math.cos(angle), math.sin(angle)])
+
+
+# Unit 14 addition: a standard basis vector (cosine similarity exactly 0
+# between any two distinct indices, safely under any realistic
+# `SIMILARITY_THRESHOLD`), for tests that save several DIFFERENT phrases in
+# the same run and need every pairwise score to be unambiguously "not a
+# duplicate" -- `vector_at_distance` alone cannot guarantee that for more
+# than one non-PROBE vector at a time, since every vector it returns lives
+# in the same 2D plane as PROBE.
+def orthogonal_vector(index: int) -> Vector:
+    vector = [0.0] * _DIMENSIONS
+    vector[index] = 1.0
+    return vector
