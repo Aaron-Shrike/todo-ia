@@ -4434,3 +4434,469 @@ Folded into Unit 7b's commit via `git reset --soft 5641442` + re-commit (same me
 fold-in precedent). **New SHA: `686d7a64592ba9611f9acc93892ebc310d8da316`.** Force-pushed with
 `--force-with-lease` to `feat/pv-07b-list-openapi`; PR #26 updates automatically. Ready for
 `sdd-verify`.
+
+
+---
+
+## Unit 10: Web scaffold, API client, generated types -- SHIPPED (`size:exception`, user-approved)
+
+**Resolution**: the user explicitly accepted the 518-hand-written-line overrun (2130 total changed
+lines; 1171 from `apps/web/package-lock.json` and 441 from the generated `apps/web/src/types/api.ts`
+excluded per this file's own Notes convention) as `size:exception` for a **single PR**, not the
+proposed 10a (163 lines) / 10b (355 lines) split -- the same pattern already used for Units 6, 6b, 7
+and 8 this session. No further code changes were needed: both tasks were already complete and verified
+at STOP time (commit `d4701cd`); only delivery (push + PR) was withheld pending this decision. The
+original STOP report is preserved below unedited, followed by the delivery steps taken after approval.
+
+**Branch/commit**: `feat/pv-10-web-scaffold`, originally cut from `feat/pv-07b-list-openapi`
+(authoring-ahead, per this run's explicit branch-base instruction — PR #26 was still noted as "open but
+not yet merged to `develop`" at instruction time). Verified mid-batch via `git fetch origin` +
+`git merge-base --is-ancestor feat/pv-07b-list-openapi origin/develop` that PR #26 **had in fact already
+merged** (`5f417cc`, `git diff feat/pv-07b-list-openapi origin/develop --stat` empty — identical trees),
+so this branch was rebased with `git rebase --onto origin/develop feat/pv-07b-list-openapi
+feat/pv-10-web-scaffold` before finishing this report — no lingering authoring-ahead retarget debt.
+Commit `d4701cd` (`feat(web): scaffold, api client and generated types`, SHA changed by the rebase) —
+**committed locally, NOT pushed, no PR opened.** This is deliberate: see "Review budget" below.
+
+**Both tasks 10.1 and 10.2 are fully implemented and verified** (all four Verify-line commands pass,
+output captured below). What is missing is the delivery step (push + PR), which this batch withheld
+per its own explicit instruction: "If this unit's diff exceeds 400 lines, STOP and report back with a
+split proposal — do not self-authorize an exception."
+
+### Review budget — measured, over budget
+
+`git diff --cached --numstat` (at commit time) / `git show --numstat d4701cd`:
+
+| File | + | − | Generated? |
+| --- | --- | --- | --- |
+| `.gitignore` | 2 | 0 | no |
+| `Makefile` | 16 | 1 | no (the `types` target rewrite, task 10.2) |
+| `apps/web/.dockerignore` | 5 | 0 | no |
+| `apps/web/Dockerfile` | 42 | 0 | no |
+| `apps/web/next.config.mjs` | 26 | 0 | no |
+| `apps/web/package-lock.json` | 1068 | 103 | **yes — `npm install` output** |
+| `apps/web/package.json` | 15 | 2 | no |
+| `apps/web/public/.gitkeep` | 0 | 0 | no |
+| `apps/web/src/app/layout.tsx` | 15 | 0 | no |
+| `apps/web/src/app/page.tsx` | 15 | 0 | no |
+| `apps/web/src/lib/api/client.test.ts` | 161 | 0 | no |
+| `apps/web/src/lib/api/client.ts` | 124 | 0 | no |
+| `apps/web/src/lib/api/errors.ts` | 53 | 0 | no |
+| `apps/web/src/types/api.ts` | 441 | 0 | **yes — `openapi-typescript` output** |
+| `apps/web/tsconfig.json` | 41 | 0 | no |
+| **Total** | **2024** | **106** | **2130 changed lines** |
+
+Excluding the two generated files (`package-lock.json`: 1171, `types/api.ts`: 441) per this file's own
+Notes convention ("Generated files ... are excluded from the count only if the reviewer agrees"):
+**2130 − 1171 − 441 = 518 hand-written changed lines.** Still **118 over the 400 cap**, unlike every
+prior over-budget unit in this session (5b, 6, 6b, 7, 8), which all had a genuine trim-then-still-over
+story; this one has a clean, pre-existing task-boundary seam instead (see below), so a real split is
+proposed rather than jumping straight to a `size:exception` ask.
+
+### Proposed split — at the existing 10.1 / 10.2 task boundary
+
+| Slice | Files | Hand-written lines | Covers |
+| --- | --- | --- | --- |
+| **10a** (scaffold) | `.gitignore`, `.dockerignore`, `Dockerfile`, `next.config.mjs`, `package.json` (next/react deps + scripts only), `tsconfig.json`, `app/layout.tsx`, `app/page.tsx`, `public/.gitkeep` | **163** | task 10.1 verbatim |
+| **10b** (client + types) | `Makefile` (`types` target), `apps/web/src/lib/api/client.ts`, `client.test.ts`, `errors.ts`, plus the `package.json` devDependency delta for `vite`/`typecheck` script | **355** | task 10.2 verbatim |
+
+Both slices are comfortably under 400 even before any lockfile/generated-file exclusion argument is
+needed. `10b` would still carry `package-lock.json`'s and `types/api.ts`'s generated deltas (whichever
+of the two slices runs `npm install`/`make types` last), which is why the table above states the
+hand-written count only, consistent with how this file has reported every prior unit's budget.
+
+**If the maintainer prefers not to split**: 518 hand-written lines is in the same range this session
+already granted `size:exception` for repeatedly (Unit 6: 826, Unit 6b: 468, Unit 7: 566, Unit 8: 916),
+and this unit's own stated reason for existing as one commit (`Commit: feat(web): scaffold, api client
+and generated types`) treats 10.1+10.2 as one deliverable. Either resolution is reasonable; this batch
+did not pick one, per its own instruction not to self-authorize.
+
+**Action needed before delivery**: confirm split (this batch will then `git reset --soft` the local
+commit and re-commit as two, cutting `feat/pv-10b-*` from `feat/pv-10a-*`) or confirm
+`size:exception` for the current single commit, then push and open the PR(s).
+
+### Task 10.1 — Next.js + TypeScript scaffold
+
+Implemented in `apps/web/`, extending Unit 0's existing scaffold (package.json with vitest/typescript/
+prettier/eslint devDependencies untouched in shape, only added to) rather than recreating it:
+
+- `apps/web/src/app/layout.tsx` — root Server Component layout, `<html lang="es">`, Spanish
+  `metadata.title`/`description` (the eventual `copy.es.ts` `title` value, "Lista de frases", hardcoded
+  here since the copy module itself is Unit 13's scope).
+- `apps/web/src/app/page.tsx` — placeholder Server Component (explicitly NOT the real
+  `force-dynamic`/`GET /phrases` first paint from design.md's "First paint and list refresh", which is
+  Unit 13's scope per the Dependency table: "13 ... force-dynamic first paint").
+- `apps/web/next.config.mjs` — `output: "standalone"` (lean Docker runtime stage, see Dockerfile below);
+  `turbopack.root` pinned explicitly (see Genuine finding #2 below).
+- `apps/web/tsconfig.json` — standard Next.js App Router config (`src/*` → `@/*` path alias, `strict:
+  true`, `moduleResolution: "bundler"`). `next build` appended `jsx: "react-jsx"` and an extra `include`
+  entry (`.next/dev/types/**/*.ts`) automatically on first build — left as Next.js produced them,
+  per this batch's own instruction not to revert tool-made changes that look correct.
+- `apps/web/next-env.d.ts` — created locally (needed for `tsc`/`next build` to run), added to
+  `.gitignore` (Next.js's own upstream convention — the file is regenerated by `next dev`/`next build`
+  and should never be hand-edited or committed).
+- `apps/web/Dockerfile` — three-stage build (`deps` / `builder` / `runner`) matching
+  `services/api/Dockerfile`'s documentation style. `NEXT_PUBLIC_API_URL` and
+  `NEXT_PUBLIC_PHRASE_MAX_LENGTH` are declared as `ARG`s **and** re-exported as `ENV` in the `builder`
+  stage specifically because Next.js inlines `NEXT_PUBLIC_*` vars into the client bundle at `next build`
+  time (design.md D5) — an `ARG` alone would not reach the bundler. Runtime stage copies only
+  `.next/standalone` + `.next/static` + `public/` (hence `apps/web/public/.gitkeep`, needed only so the
+  `COPY --from=builder /app/public ./public` line has a source directory to copy — without it, an empty
+  `public/` would fail the build's `COPY`). **NOT verified by building**: no `docker` in this
+  environment (confirmed: `docker --version` → `command not found`, same as every prior unit's Docker
+  work this session).
+- `apps/web/.dockerignore` — excludes `node_modules`, `.next`, `coverage`, test files from the build
+  context.
+- `apps/web/package.json` — added `next`, `react`, `react-dom` (dependencies) and `@types/node`,
+  `@types/react`, `@types/react-dom`, `vite` (devDependencies, see Genuine finding #1); scripts `dev`,
+  `build`, `start`, `typecheck` added, `test` kept as-is (Unit 0's `vitest run`).
+
+### Task 10.2 — Typed API client, generated types, `make types` drift guard
+
+- `apps/web/src/types/api.ts` — generated via `make types` (Makefile's `types` target, rewritten — see
+  Genuine finding #2) from `docs/openapi.json` (Unit 7b's snapshot). Regenerated twice in this batch to
+  confirm determinism: byte-identical both times (`diff` empty), satisfying the drift-guard's actual
+  requirement.
+- `apps/web/src/lib/api/errors.ts` — `ErrorCode` union (hand-maintained against the api-contract spec's
+  error registry table, since the generated `ErrorDetail.code` field types as a plain `string` — see
+  the file's own doc comment for why openapi-typescript cannot produce a literal union here) plus
+  `NETWORK_ERROR` (client-only) and the `ApiError` class (`code`, `status`, `message`, `details`).
+- `apps/web/src/lib/api/client.ts` — `createApiClient({baseUrl?, fetchImpl?})` returning
+  `{validatePhrase, listMatches, savePhrase, listPhrases}`, each a thin, typed wrapper (using the
+  generated `components["schemas"]` types) around a shared `request<T>()` helper that: (1) calls
+  `fetchImpl`, catching a rejection (network failure — phrase-ui spec's "Network failure" scenario) into
+  `ApiError{code:"NETWORK_ERROR", status:0}`; (2) parses the JSON body; (3) on a non-2xx response, builds
+  `ApiError` from the `{error:{code,message,details}}` envelope (api-contract spec's Response envelopes
+  requirement), falling back to `INTERNAL_ERROR` only if the body itself is unparseable (defensive —
+  not expected against a real backend, since `platform/errors.py` always emits the envelope); (4) on a
+  2xx response, unwraps and returns `data`. A browser-facing singleton `export const apiClient =
+  createApiClient()` reads `NEXT_PUBLIC_API_URL` at construction (design.md D5: "Browser → API
+  directly").
+- `apps/web/src/lib/api/client.test.ts` — hand-rolled fake fetch (`vi.fn<typeof fetch>`, no MSW, per
+  design.md's testing-strategy note "MSW rejected: extra dep for no gain at this size"), 5 tests:
+  - `validatePhrase` unwraps `data` and posts the exact JSON body + `Content-Type: application/json`
+    header to `/phrases/validate` (asserts the literal `url`/`init.method`/`init.body`/header values
+    from `fetchImpl.mock.calls[0]` — a real assertion on what the client actually sent, not a smoke
+    test).
+  - `listPhrases` sends a bodyless `GET /phrases` and unwraps `{items}`.
+  - a 422 `VALIDATION_ERROR` envelope on `validatePhrase` → `ApiError{code,status,message,details}`
+    matches exactly.
+  - **Triangulation**: a 409 `DUPLICATE_CONFIRMATION_REQUIRED` envelope on `savePhrase` (different
+    endpoint, different status, different `details` shape — the full validate-shaped 409 payload) →
+    proves the envelope-to-`ApiError` mapping is generic, not hardcoded to the first case's shape.
+  - a rejected `fetchImpl` (simulated `TypeError: Failed to fetch`, the real shape a browser throws) →
+    `ApiError{code:"NETWORK_ERROR", status:0}`.
+
+#### TDD Cycle Evidence
+
+| Task | Test File | Layer | Safety Net | RED | GREEN | TRIANGULATE | REFACTOR |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| 10.1 | n/a | n/a | N/A (new) | N/A — structural scaffold (config/layout files, no branching logic); `npx vitest run`/`tsc --noEmit`/`npm run build` are the acceptance check, not a unit test. Triangulation skipped: purely structural, single possible output. | ✅ `npm run build` succeeds cleanly (no warnings after Genuine finding #2's fix) | ➖ N/A | ➖ N/A |
+| 10.2 (`client.ts`) | `client.test.ts` | Unit | N/A (new) | ✅ Written first — `npx vitest run src/lib/api/client.test.ts` failed with `Cannot find module './client'` before `client.ts` existed (captured below) | ✅ 5/5 passed after implementing `client.ts` | ✅ 5 cases: success-unwrap ×2 (POST body assertions, GET no-body), 2 distinct error-envelope shapes (422 and 409, different endpoints/status/details), 1 network-failure case | ✅ shared `request<T>()` helper extracted once triangulation showed the 4 endpoint methods were identical modulo path/method/body — no per-endpoint duplication in the final file |
+| 10.2 (`types/api.ts`) | n/a | n/a | N/A (new) | N/A — generated output, zero hand-written logic | ✅ regenerated twice, byte-identical (`diff` empty) | Triangulation skipped: purely structural, single possible output (spec's own exception clause) | ➖ N/A |
+
+**RED capture** (`client.ts` did not exist yet):
+```
+FAIL  src/lib/api/client.test.ts [ src/lib/api/client.test.ts ]
+Error: Cannot find module './client' imported from .../src/lib/api/client.test.ts
+```
+
+**GREEN capture**:
+```
+Test Files  1 passed (1)
+     Tests  5 passed (5)
+```
+
+**Test Summary**
+- Total tests written: 5 (`client.test.ts`) + 1 pre-existing (`smoke.test.ts`, unchanged) = 6
+- Total tests passing: 6/6
+- Layers used: Unit (6), Integration (0), E2E (0)
+- Approval tests: none — no refactoring of existing behaviour, only new code
+- Pure functions created: `request<T>()` (only impure at its two I/O boundaries — `fetchImpl` and
+  `response.json()` — the envelope-unwrap/error-mapping logic itself is a pure transform of the parsed
+  body)
+
+### Genuine environment findings (investigated, not assumed — same discipline as Units 7b/8/9)
+
+**Finding #1 — `typescript@7` (native/Go-port preview) cannot run `openapi-typescript` at all; this is
+not a version-range mismatch.** `npm install` first failed with `ERESOLVE`: `openapi-typescript@7.13.0`
+declares `peerDependencies: {"typescript": "^5.x"}`, and this project pins `typescript@^7.0.2` (Unit 0).
+Initial hypothesis (WRONG, corrected after verification): that this was a stale peer-range that
+`legacy-peer-deps=true` or an `overrides` entry could safely paper over. Verification:
+- With `legacy-peer-deps=true` alone: install succeeds, but `make types` crashes:
+  `TypeError: Cannot read properties of undefined (reading 'createKeywordTypeNode')` inside
+  `openapi-typescript`'s `ts.factory.createKeywordTypeNode(...)` call.
+- `node -e "console.log(Object.keys(require('typescript')))"` → `['version', 'versionMajorMinor']`
+  **only**. Reading `node_modules/typescript/package.json`'s `"exports"` map directly confirms this is
+  deliberate: `"."` maps to `./lib/version.cjs`; the classic Compiler API (`ts.factory`, `ts.SyntaxKind`,
+  `ts.createSourceFile`, …) is not exported at all from the package's main entry in this 7.0.2 preview —
+  replaced by a new, unrelated `./unstable/ast/*` subpath API. Any tool built against the classic
+  Compiler API (openapi-typescript, and by extension most TS codegen tooling) cannot function against
+  this package as installed, **regardless of the declared semver range** — it is a removed API surface,
+  not a compatible-but-unstated version.
+- Attempted fix via npm `overrides` (`{"openapi-typescript": {"typescript": "^5.6.3"}}`) to force a
+  nested `typescript@5.x` copy under `node_modules/openapi-typescript/node_modules/`: **did not work**.
+  `npm ls typescript --all` after `--force` install still showed a single deduped, `invalid`-flagged
+  `typescript@7.0.2` — npm's arborist refuses to duplicate a package name that is *also* a direct
+  root-level devDependency, even when an override targets a specific dependency subtree. Reverted this
+  approach (removed `overrides` and the `openapi-typescript` devDependency from `package.json`; removed
+  the `.npmrc` `legacy-peer-deps=true` workaround, no longer needed once `openapi-typescript` is not a
+  local devDependency at all).
+- **Actual fix**: run `openapi-typescript` through an **isolated** `npx --package=typescript@5.6.3
+  --package=openapi-typescript@7.13.0 openapi-typescript ...` invocation instead of the workspace's own
+  `npx openapi-typescript`. `npx --package` builds a separate temp install containing only the named
+  packages, so Node's module resolution for `openapi-typescript`'s `import ts from "typescript"` finds
+  the temp-installed `typescript@5.6.3`, never the workspace's `typescript@7.0.2`. Verified: `make types`
+  now succeeds (`✨ openapi-typescript 7.13.0` / `🚀 docs/openapi.json → apps/web/src/types/api.ts
+  [58ms]`), and the workspace's own `typescript@7.0.2` remains untouched for `tsc`/`next build`/`vitest`
+  (confirmed clean `npx tsc --noEmit` and `npm run build` after the change). The Makefile's `types`
+  target and its comment record this reasoning in full for the next reader.
+- **Consequence**: `openapi-typescript` is intentionally **not** a devDependency of `apps/web` any more
+  (it cannot run against that package's own `typescript`); it is pinned only in the Makefile's isolated
+  `npx --package` invocation. This is a deliberate deviation from the literal task wording ("generated
+  ... by `openapi-typescript`" is still true — it *is* the tool used — but not as a local devDependency)
+  and is called out here rather than left silent.
+
+**Finding #2 — Next.js 16 dropped two things I initially got wrong on the first pass, both self-caught
+and fixed before this report, not left in the diff:**
+1. `next.config.mjs`'s `eslint.ignoreDuringBuilds` key (my first draft, meant to stop `next build` from
+   trying to interactively bootstrap ESLint since no ruleset exists yet per `openspec/config.yaml`) is
+   **no longer a recognized config key in Next.js 16** — confirmed by `npm run build`'s own warning
+   (`Unrecognized key(s) in object: 'eslint'`). Next 16 removed the built-in lint-during-build step
+   entirely (linting during `next build` is gone; `next lint` itself is deprecated). Removed the key;
+   `next build` needs no ESLint-related config at all now, so there was nothing to replace it with.
+2. `npm run build`'s first run warned `Next.js ignored package-lock.json in /Users/macos because it is
+   outside the current Git repository` — traced to an unrelated `~/package-lock.json` in the reviewer's
+   home directory (confirmed via `ls -la /Users/macos/package-lock.json`, dated well before this
+   session). Not a project bug, but pinned `turbopack.root` to `apps/web` explicitly anyway (one line,
+   Next's own suggested fix) rather than leaving a noisy, environment-dependent warning in CI logs.
+   `npm run build` is now warning-free.
+
+### Verify — all four commands pass
+
+```
+$ cd apps/web && npx vitest run
+ Test Files  2 passed (2)
+      Tests  6 passed (6)
+
+$ npx tsc --noEmit
+(no output — clean)
+
+$ npm run build
+▲ Next.js 16.3.6 (Turbopack)
+✓ Compiled successfully in 3.7s
+  Running TypeScript ...
+  Finished TypeScript in ...ms
+✓ Generating static pages using 4 workers (3/3)
+Route (app)
+┌ ○ /
+└ ○ /_not-found
+
+$ cd /Users/macos/Code/Projects/todo-ia && make types
+npx --yes --package=typescript@5.6.3 --package=openapi-typescript@7.13.0 \
+    openapi-typescript docs/openapi.json -o apps/web/src/types/api.ts
+✨ openapi-typescript 7.13.0
+🚀 docs/openapi.json → apps/web/src/types/api.ts [55.6ms]
+$ diff apps/web/src/types/api.ts <previous-run-copy>
+(empty — deterministic regeneration, drift guard satisfied)
+```
+
+Backend safety net re-run to confirm zero regression from this frontend-only unit:
+`cd services/api && .venv/bin/python -m pytest tests/unit tests/contract_suite tests/contract -m "not
+integration and not slow" -q` → **286 passed, 1 deselected** — identical to Unit 7b's baseline.
+
+**Pre-existing, unrelated gap re-confirmed (not this unit's to fix)**: `make test-unit` at the repo root
+still fails to even *collect* `tests/integration/*.py` (`ModuleNotFoundError: No module named
+'sqlalchemy'`) because that target's bare `pytest -m "not integration and not slow" -q` does not exclude
+`tests/integration/` by **path**, only by marker, and collection happens before marker filtering. This
+was already flagged as a known gap in Unit 7b's fix-pass section (which documented that the *correct*
+safety-net command explicitly lists `tests/unit tests/contract_suite tests/contract` as paths, precisely
+to avoid this). Re-confirmed reproducing here, unrelated to any Unit 10 change (services/api was not
+touched), and out of this frontend unit's scope to fix — noted for whoever eventually revisits
+`Makefile`'s `test-unit` target.
+
+### Deviations from design/tasks.md
+
+- `openapi-typescript` is not a devDependency of `apps/web`; it runs only via the Makefile's isolated
+  `npx --package` invocation (Finding #1). The generated file and its content are unaffected; only
+  *where the tool is pinned* differs from the implicit assumption that it would be a local package.
+  `typescript@5.6.3` is likewise pinned only in that same Makefile line, not in `apps/web/package.json`.
+- `app/page.tsx` is a placeholder per the task's own literal wording, not yet the `force-dynamic`
+  `GET /phrases` Server Component design.md describes — that is explicitly Unit 13's scope (confirmed
+  against the Dependency table).
+- No PR opened; local commit only. See "Review budget" above.
+
+### Status
+
+**Both tasks 10.1 and 10.2 are code-complete and verified.** tasks.md checkboxes deliberately left
+unchecked pending the split-vs-exception decision (see "Review budget" above) — marking them `[x]`
+before a PR exists would misrepresent delivery state. **Blocked on: a human/orchestrator decision
+between (a) splitting into `feat/pv-10a-web-scaffold` (163 lines) → `feat/pv-10b-api-client` (355 lines)
+as two stacked PRs against `develop`, or (b) an explicit `size:exception` for the current single
+`feat/pv-10-web-scaffold` commit (518 hand-written lines).** The branch is already correctly based on
+`develop` (confirmed and rebased mid-batch, see "Branch/commit" above) — no retarget debt remains
+either way. Ready for a follow-up `sdd-apply` batch once the decision is made — no `sdd-verify` yet,
+this unit is not delivered, nothing pushed.
+
+### Delivery (post-STOP, `size:exception` approved)
+
+The user reviewed this report and chose `size:exception` for a single PR over the 10a/10b split (see
+the "Resolution" note at the top of this Unit 10 section). No further code changes were made — the
+commits above (`d4701cd`, `9851e93`) were pushed as-is:
+
+- Re-confirmed before pushing: `git fetch origin` + `git merge-base --is-ancestor origin/develop HEAD`
+  → still true, branch unchanged since the rebase, no new `develop` commits to reconcile.
+- `git push -u origin feat/pv-10-web-scaffold` → pushed cleanly, new remote branch.
+- `gh pr create --base develop --head feat/pv-10-web-scaffold` → **PR #27**
+  (`https://github.com/Aaron-Shrike/todo-ia/pull/27`), state `OPEN`. PR body carries the full review
+  budget table, the split proposal that was available but declined, the two genuine environment
+  findings, the dependency diagram, changes table and test plan — same structure as PRs #20-#26.
+- `tasks.md` updated in the same commit set as this file (`9851e93` already covers the tasks.md STOP
+  note; a follow-up edit replaced it with the resolution note and marked 10.1/10.2 `[x]` — folded into
+  a new commit on this branch, part of the pushed history).
+
+**Status: DONE.** Both tasks complete, verified, delivered as PR #27. Ready for `sdd-verify` once PR
+#27 merges to `develop` (or for review while open, per this session's established pattern of reporting
+apply-progress ahead of merge).
+
+### Fix pass — 4-lens review (risk + resilience + readability + reliability), 8 findings, all fixed
+
+A 4-lens review of PR #27 converged on 8 confirmed findings (2 of them independently reproduced by two
+lenses each). All 8 were fixed in this fix pass; nothing was deferred except the two explicitly
+out-of-scope items noted at the end. Verification commands (backend safety net, frontend suite,
+`tsc --noEmit`, `npm run build`, `make types` drift guard) all re-run clean after the fixes — see the
+"Verification" list at the end of this section for the exact output.
+
+1. **[BLOCKER, converged 2x] `apps/web/Dockerfile` COPYs a non-existent `.npmrc`.** Confirmed by direct
+   `fd`/`rg` search: no `.npmrc` was ever committed anywhere in the repo, so `docker build`'s `deps`
+   stage would fail outright on `COPY .npmrc package.json package-lock.json ./`. Confirmed the
+   comment's own justification ("openapi-typescript@7's peerDependencies still pin typescript: ^5.x")
+   no longer applies: `openapi-typescript` is not a dependency of `apps/web/package.json` at all — it
+   runs only through the Makefile's isolated `npx --package=typescript@5.6.3
+   --package=openapi-typescript@7.13.0` invocation (Finding #1 from the original Unit 10 report, above).
+   Verified with a clean-room `npm ci` (copied `package.json`/`package-lock.json` to a scratch dir) —
+   succeeds with zero `ERESOLVE` errors, no `legacy-peer-deps` needed. **Fix**: `apps/web/Dockerfile` —
+   dropped `.npmrc` from the `COPY` line and replaced the stale justification comment with one
+   describing the actual (already-isolated) dependency graph.
+
+2. **[CRITICAL, converged 2x] `client.ts`'s success path had no defensive handling.** Reproduced exactly
+   as described: a 2xx response whose body fails `.json()` parsing set `body = undefined` via the shared
+   catch, then `(body as DataEnvelope<T>).data` threw a raw, uncaught `TypeError` — contradicting the
+   file's own documented guarantee ("a client bug can never surface as an unhandled rejection with no
+   code at all"). A 2xx body with no `data` key silently resolved to `undefined` with no error signal.
+   **Fix (strict TDD, RED then GREEN)**: added two failing tests first in `client.test.ts`
+   (`malformed success body handling` describe block) — confirmed RED (`TypeError` instance vs. expected
+   `ApiError`, and `undefined` vs. expected rejection) against the unmodified `client.ts`, with the other
+   8 tests in the same run (including the new Finding #7 tests, which exercise pre-existing behaviour)
+   passing unchanged. Then added a guard in `client.ts`'s `request<T>()` mirroring the error path's own
+   defensiveness: `body === null || typeof body !== "object" || !("data" in body)` throws a normalized
+   `ApiError{code: FALLBACK_ERROR_CODE, status: response.status}`. Confirmed GREEN: all 10 tests passing.
+
+3. **[BLOCKER, resilience] No CI guard against `test.only`/`describe.only`.** No `eslint-plugin-vitest`
+   is wired (no ESLint ruleset exists yet in `apps/web` at all — confirmed, `fd` found zero eslint
+   config files), so introducing a minimal ESLint setup just for one rule was judged heavier than
+   needed for this fix. **Fix**: added a grep-based CI step to `.github/workflows/ci.yml`'s frontend job
+   — `grep -rEn "\b(describe|it|test)\.only\(" src --include="*.test.ts" --include="*.test.tsx"` fails
+   the build if any match is found. Verified the pattern against this repo's current test files (zero
+   matches, guard passes) and against a scratch fixture containing `it.only(...)` (one match, guard
+   would fail the build) — both confirmed locally with the same grep invocation used in CI.
+
+4. **[CRITICAL/WARNING, converged 2x] `make types`'s drift guard was not wired into CI; CI never ran
+   `typecheck`/`build` for the frontend.** Confirmed: the frontend CI job only ran `npm ci && npm test`;
+   `package.json`'s `typecheck` script was never invoked anywhere; `next build` never ran in CI (and
+   would have caught Finding #1's Dockerfile bug too, transitively, since both problems trace to the
+   same "never actually build" gap). **Fix**: extended `.github/workflows/ci.yml`'s frontend job with
+   three new steps, in order: `npm run typecheck`, `npm run build`, then a drift-guard step
+   (`working-directory: .` override to reach the root `Makefile`) running `make types` followed by
+   `git diff --exit-code -- apps/web/src/types/api.ts`. Backend job untouched. Verified locally:
+   `cd apps/web && npx tsc --noEmit` (clean), `npm run build` (clean, no warnings), and
+   `make types && git diff --exit-code -- apps/web/src/types/api.ts` from repo root (zero drift).
+
+5. **[WARNING, risk] Docker runner stage ran as root.** Confirmed: no `USER` instruction anywhere in
+   the three-stage Dockerfile. **Fix**: added `addgroup --system --gid 1001 nodejs` +
+   `adduser --system --uid 1001 nextjs` and `USER nextjs` before `CMD` in the `runner` stage, matching
+   the official Next.js standalone-output Dockerfile example; added `--chown=nextjs:nodejs` to all three
+   `COPY --from=builder` lines in that stage so the copied files are owned by the non-root user. Not
+   buildable in this environment (no `docker`, same constraint as every prior unit's Docker work this
+   session) — verified by careful reading only.
+
+6. **[WARNING, readability] `ErrorEnvelopeBody` hand-rolled a second copy of the generated
+   `ErrorEnvelope`/`ErrorDetail` schema shape.** Confirmed: `apps/web/src/types/api.ts` already defines
+   `components["schemas"]["ErrorDetail"]` (`code: string`, `message: string`,
+   `details?: {...} | null`) and `ErrorEnvelope` (`error: ErrorDetail`), and `client.ts`'s
+   `ErrorEnvelopeBody` re-declared a looser copy by hand with no comment (unlike `errors.ts`'s
+   `ErrorCode` union, which does explain itself). **Fix**: `ErrorEnvelopeBody` is now
+   `{ error?: Partial<Schemas["ErrorDetail"]> }`, derived from the generated schema; `Partial` is kept
+   deliberately since `body` is `unknown` at that point and a malformed/non-conforming payload must
+   still reach the fallback-error-code logic rather than throw early. A future backend envelope-shape
+   change that regenerates `api.ts` now produces a compiler error here instead of a silent mismatch.
+
+7. **[WARNING, reliability] Coverage gaps: `listMatches` untested, `savePhrase` error-path only,
+   `FALLBACK_ERROR_CODE`'s trigger condition never exercised.** Confirmed by reading `client.test.ts`:
+   `listMatches` had zero tests; `savePhrase` only had the 409 triangulation test, no 2xx case; the
+   missing-`code`-field fallback path was never hit by any existing test (both existing error tests
+   supplied a `code`). **Fix**: added three tests — a `listMatches` happy-path test (mirrors the
+   `validatePhrase`/`listPhrases` pattern: asserts the unwrapped `data`, the exact URL/method/body sent),
+   a `savePhrase` happy-path (201) test (same assertion style), and an error-envelope-missing-`code`
+   test asserting `ApiError.code` falls back to `FALLBACK_ERROR_CODE` (`"INTERNAL_ERROR"`) while
+   `message`/`status` still come through from the envelope. All pass.
+
+8. **[WARNING, readability, cheap] The `ErrorCode` cast accepts any server string with no runtime
+   check.** Verified: currently matches the backend's actual emitted codes (confirmed against
+   `errors.ts`'s union and the backend's error-code registry, unchanged by this fix pass), but nothing
+   structurally enforces it. **Fix**: added a comment at the cast site in `client.ts` documenting this
+   as an assumed invariant — `ErrorCode` (errors.ts) must be kept in sync by hand with the backend's
+   actual emitted codes (`platform/errors.py`, `main.py`, `router.py`, `health.py`). No behavior change.
+
+**Explicitly out of scope, not touched (per the fix-pass instruction)**:
+- The isolated-npx `types` target's lack of integrity/checksum pinning (resilience SUGGESTION) — low
+  severity, latent since nothing automated invokes `make types` outside a human running it manually
+  (now also CI, per Finding #4's fix, but still an `npx --yes --package=...` pin-by-version, not
+  pin-by-checksum; noted here for whoever picks this up, no code change made).
+- Unit 11+ scope (state machine, phrase form, error-copy mapping) — untouched.
+
+**TDD Cycle Evidence (fix pass, Finding #2 only — the only finding with new test assertions requiring
+RED-then-GREEN under `strict_tdd: true`)**:
+
+| Task | Test File | Layer | Safety Net | RED | GREEN | TRIANGULATE | REFACTOR |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| Finding #2 | `client.test.ts` | Unit | ✅ 8/8 (pre-existing 5 + Finding #7's 3, all written/passing before this guard existed) | ✅ Written first — 2 new tests failed against unmodified `client.ts` (`TypeError` instance vs. expected `ApiError`; `undefined` vs. expected rejection) | ✅ 10/10 passed after adding the `request<T>()` guard | ✅ 2 cases: unparseable-JSON body, valid-JSON-but-no-`data`-key body (two distinct failure modes reaching the same guard) | ➖ None needed (guard is a single boolean condition, already minimal) |
+
+Findings #7's 3 new tests (`listMatches` happy path, `savePhrase` happy path, missing-`code` fallback)
+exercise **pre-existing, unmodified** behavior — they were RED only in the trivial sense of not existing
+yet, not RED against a bug; confirmed passing immediately against the unmodified `client.ts` in the same
+run that proved Finding #2's 2 tests were genuinely RED. No production code changed for Finding #7.
+
+**Files changed**: `apps/web/Dockerfile`, `apps/web/src/lib/api/client.ts`, `apps/web/src/lib/api/client.test.ts`,
+`.github/workflows/ci.yml`. `openspec/changes/phrase-validation/tasks.md` (Unit 10 fix-pass note, this
+file) — docs-only, kept in a separate commit per this session's convention.
+
+**Verification — all commands re-run clean after the fixes**:
+```
+$ cd services/api && .venv/bin/python -m pytest tests/unit tests/contract_suite tests/contract -m "not integration and not slow" -q
+286 passed, 1 deselected
+
+$ cd apps/web && npx vitest run
+Test Files  2 passed (2)
+     Tests  11 passed (11)
+
+$ npx tsc --noEmit
+(no output — clean)
+
+$ npm run build
+✓ Compiled successfully
+✓ Generating static pages using 4 workers (3/3)
+
+$ cd /Users/macos/Code/Projects/todo-ia && make types && git diff --exit-code -- apps/web/src/types/api.ts
+✨ openapi-typescript 7.13.0
+🚀 docs/openapi.json → apps/web/src/types/api.ts
+(git diff: no output — zero drift)
+```
+
+Docker build itself remains unverified in this environment (no `docker` available, same constraint as
+every prior unit's Docker work this session) — findings 1 and 5 were fixed by careful reading of the
+Dockerfile changes, not by an actual build.
+
+**Status: DONE.** All 8 confirmed findings fixed, folded into the Unit 10 commit(s) via
+`git reset --soft` + re-commit (not a separate fixup commit), force-pushed with `--force-with-lease` to
+`feat/pv-10-web-scaffold`. PR #27 updates automatically. Ready for `sdd-verify`.

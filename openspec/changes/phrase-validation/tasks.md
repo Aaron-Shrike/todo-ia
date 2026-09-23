@@ -287,13 +287,24 @@ Covers: Cross-language calibration x3 (Paraphrase pairs flagged, Unrelated pairs
 - [ ] 9.2 `make evidence` writes the score table to `docs/evidence/calibration.md` (the brief's Hugging Face evidence deliverable). VERIFY (unmeasured): score cased pairs with and without casefolding and record both margins plus the cased-variant cosine (design estimate ~0.98); decision rule: if the margin around 0.80 is poor, change the `SIMILARITY_THRESHOLD` DEFAULT (and `.env.example`, spec, ADR-003 note) as a recorded spec change, never bend the fixture.
 - Verify: `make evidence` then `git diff --stat docs/evidence/calibration.md`.
 
-## Unit 10: Web scaffold, API client, generated types (~300)
+## Unit 10: Web scaffold, API client, generated types (~300) -- SHIPPED (`size:exception`, user-approved)
 
-Commit: `feat(web): scaffold, api client and generated types`. Rollback: revert (web track only).
+**Resolution**: this unit stopped mid-batch to report a review-budget risk (both 10.1 and 10.2 complete
+and verified, measured at 518 hand-written lines excluding `apps/web/package-lock.json` and the
+generated `apps/web/src/types/api.ts`, ~30% over the 400 cap) and proposed a clean split at the existing
+10.1/10.2 task boundary (163 / 355 lines, both individually under budget). **The user explicitly chose
+`size:exception`**: ship everything as ONE PR rather than the 10a/10b split, the same pattern already
+used for Units 6, 6b, 7 and 8 this session. No further code changes were needed -- the implementation
+committed during the STOP (`d4701cd` `feat(web): scaffold, api client and generated types`) was already
+complete; only delivery (push + PR) was withheld pending this decision, now resolved.
+
+Commit: `feat(web): scaffold, api client and generated types`. Rollback: revert (web track only). **`size:exception`**: 518 hand-written changed lines (excluding `apps/web/package-lock.json`, 1171 lines, and the generated `apps/web/src/types/api.ts`, 441 lines -- both per this file's own Notes convention), ~30% over the 400 cap, no split seam applied (a clean 10.1/10.2 split was proposed and available but the user preferred one PR). Accepted by explicit user sign-off after the mandatory stop-and-report step; see apply-progress.md's Unit 10 section for the full review-budget table, the split proposal, and two genuine environment findings (TypeScript 7 vs `openapi-typescript` incompatibility, Next.js 16 config changes) discovered and fixed along the way.
 Covers: Spanish copy table: English code, Spanish UI (identifier/comment language); Client-side input checks: Server-enforced limit (client passes server errors through); Error handling: Network failure (client normalization).
-- [ ] 10.1 Scaffold Next.js + TypeScript in `apps/web/` (`app/layout.tsx`, `app/page.tsx` placeholder, `next.config.mjs`, `tsconfig.json`, `Dockerfile`, build args `NEXT_PUBLIC_API_URL`, `NEXT_PUBLIC_PHRASE_MAX_LENGTH`).
-- [ ] 10.2 RED then GREEN `apps/web/src/lib/api/client.ts` (typed; `fetch` wrapper; envelope-to-`ApiError{code,status,details}`; network failures to a `NETWORK_ERROR` code) with `client.test.ts` using a hand-rolled fake fetch (no MSW); `apps/web/src/types/api.ts` generated from `docs/openapi.json` by `openapi-typescript`; `make types` drift guard (fail on diff).
-- Verify: `cd apps/web && npx vitest run && npx tsc --noEmit && npm run build`; `make types && git diff --exit-code`.
+- [x] 10.1 Scaffold Next.js + TypeScript in `apps/web/` (`app/layout.tsx`, `app/page.tsx` placeholder, `next.config.mjs`, `tsconfig.json`, `Dockerfile`, build args `NEXT_PUBLIC_API_URL`, `NEXT_PUBLIC_PHRASE_MAX_LENGTH`).
+- [x] 10.2 RED then GREEN `apps/web/src/lib/api/client.ts` (typed; `fetch` wrapper; envelope-to-`ApiError{code,status,details}`; network failures to a `NETWORK_ERROR` code) with `client.test.ts` using a hand-rolled fake fetch (no MSW); `apps/web/src/types/api.ts` generated from `docs/openapi.json` by `openapi-typescript`; `make types` drift guard (fail on diff).
+- Verify: `cd apps/web && npx vitest run && npx tsc --noEmit && npm run build`; `make types && git diff --exit-code`. All four commands pass -- see apply-progress.md for full output.
+
+**Fix pass** (4-lens review, 8 findings, all fixed, folded into the existing commit(s) -- see apply-progress.md's Unit 10 section for the full report): Dockerfile's non-existent `.npmrc` COPY (docker build was broken outright), `client.ts` success-path defensive envelope validation (malformed/shape-drifted 2xx body no longer throws a raw `TypeError` or silently returns `undefined`), CI guard against `.only(` focused tests, CI now runs `typecheck`/`build`/`make types` drift check for the frontend job, Dockerfile runner stage now runs as a non-root user, `ErrorEnvelopeBody` now derived from the generated schema instead of hand-rolled, added `listMatches`/`savePhrase` happy-path tests and a `FALLBACK_ERROR_CODE`-trigger test, documented the `ErrorCode` cast's unenforced invariant.
 
 ## Unit 11: Validation state machine and phrase form (~360)
 

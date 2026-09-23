@@ -25,8 +25,23 @@ evidence:
 	cd services/api && .venv/bin/python -m pytest tests/slow/test_calibration.py -q
 
 # Regenerates apps/web/src/types/api.ts from docs/openapi.json (Unit 10+).
+#
+# Runs openapi-typescript through an ISOLATED `npx --package` install (its own
+# typescript@5.6.3, resolved only inside that temp install) instead of
+# `apps/web`'s own toolchain. Verified in Unit 10: openapi-typescript's
+# codegen imports the classic `ts.factory` Compiler API, which typescript@7's
+# npm package (pinned in apps/web for tsc/vitest since Unit 0) does NOT
+# export any more — `require('typescript')` there resolves to
+# `./lib/version.cjs`, exposing only `{version, versionMajorMinor}` — so
+# running it against the workspace's own typescript@7 crashes with
+# `TypeError: Cannot read properties of undefined (reading
+# 'createKeywordTypeNode')`. No override/alias in apps/web/package.json can
+# fix this because it is not a version-range mismatch, it is a removed API
+# surface; isolating the two toolchains is the actual fix. See
+# apply-progress.md's Unit 10 section for the full investigation.
 types:
-	cd apps/web && npx openapi-typescript ../../docs/openapi.json -o src/types/api.ts
+	npx --yes --package=typescript@5.6.3 --package=openapi-typescript@7.13.0 \
+		openapi-typescript docs/openapi.json -o apps/web/src/types/api.ts
 
 # Static checks: ruff, mypy, import-linter boundary contracts.
 lint:
