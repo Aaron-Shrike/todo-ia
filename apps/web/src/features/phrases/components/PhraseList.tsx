@@ -7,6 +7,7 @@ import type { components } from "@/types/api";
 import { copy } from "@/i18n/copy.es";
 
 import { scoreLabel } from "../scoreLabel";
+import styles from "./phrases.module.css";
 
 type PhraseOut = components["schemas"]["_PhraseOut"];
 
@@ -57,6 +58,10 @@ function badgeLabel(status: string): string {
   return copy.badge.unique;
 }
 
+function badgeClassName(status: string): string {
+  return status === "duplicate_confirmed" ? styles.badgeConfirmed : styles.badgeUnique;
+}
+
 /**
  * phrase-ui spec, "Saved phrase list with status badge": renders `GET
  * /phrases` (newest first, per the API) with a status badge per item and
@@ -90,11 +95,15 @@ export const PhraseList = forwardRef<PhraseListHandle, PhraseListProps>(
     useImperativeHandle(ref, () => ({ refresh }));
 
     return (
-      <section aria-busy={status === "loading"}>
+      <section className={styles.listSection} aria-busy={status === "loading"}>
         {status === "error" && (
-          <div>
+          <div className={styles.errorBox}>
             <p>{copy.list.loadError}</p>
-            <button type="button" onClick={() => void refresh()}>
+            <button
+              type="button"
+              className={`${styles.button} ${styles.buttonGhost}`}
+              onClick={() => void refresh()}
+            >
               {copy.button.retry}
             </button>
           </div>
@@ -107,15 +116,20 @@ export const PhraseList = forwardRef<PhraseListHandle, PhraseListProps>(
           // (`aria-busy` / the load-error block). Previously this only
           // excluded `error`, so a Reintentar click briefly showed "Aún no
           // hay frases guardadas." while the refetch was still in flight.
-          status === "idle" && <p>{copy.list.empty}</p>
+          status === "idle" && <p className={styles.emptyState}>{copy.list.empty}</p>
         ) : (
-          <ul>
+          <ul className={styles.list}>
             {items.map((item) => (
-              <li key={item.id}>
-                {item.text} — {badgeLabel(item.validation.status)}
-                {item.validation.score !== null && (
-                  <> ({scoreLabel(item.validation.score)})</>
-                )}
+              <li key={item.id} className={styles.listItem}>
+                <span className={styles.listItemText}>{item.text}</span>
+                <span className={styles.listItemMeta}>
+                  {item.validation.score !== null && (
+                    <span className={styles.score}>{scoreLabel(item.validation.score)}</span>
+                  )}
+                  <span className={`${styles.badge} ${badgeClassName(item.validation.status)}`}>
+                    {badgeLabel(item.validation.status)}
+                  </span>
+                </span>
               </li>
             ))}
           </ul>

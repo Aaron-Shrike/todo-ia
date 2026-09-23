@@ -1,4 +1,4 @@
-.PHONY: up test test-unit test-slow evidence types lint
+.PHONY: up test test-unit test-slow evidence types lint seed
 
 # Bring up the full stack (db, migrate, api, web). Compose wiring lands in Unit 4/14.
 up:
@@ -42,6 +42,16 @@ evidence:
 types:
 	npx --yes --package=typescript@5.6.3 --package=openapi-typescript@7.13.0 \
 		openapi-typescript docs/openapi.json -o apps/web/src/types/api.ts
+
+# Seeds the `phrases` table with generated Peruvian-themed phrases, straight
+# into Postgres (bypasses the app's per-request duplicate-detection path for
+# throughput — see scripts/seed_phrases.py's module docstring). Requires the
+# `api` container up (has the real embedding model baked in) and `faker`
+# installed there (`docker compose exec api pip install faker`, once per
+# container lifetime — not baked into the image, see pyproject.toml's `seed`
+# extra). Usage: `make seed N=1000`.
+seed:
+	docker compose exec api python scripts/seed_phrases.py --count $(N)
 
 # Static checks: ruff, mypy, import-linter boundary contracts.
 lint:

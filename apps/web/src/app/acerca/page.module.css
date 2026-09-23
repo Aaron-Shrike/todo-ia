@@ -1,0 +1,242 @@
+.page {
+  min-height: 100vh;
+}
+
+.hero {
+  max-width: var(--max-width);
+  margin: 0 auto;
+  padding: var(--space-6) var(--space-3) var(--space-5);
+  text-align: center;
+}
+
+.eyebrow {
+  display: inline-block;
+  font-family: var(--font-mono);
+  font-size: 0.8rem;
+  color: var(--color-accent);
+  background: color-mix(in srgb, var(--color-accent) 14%, transparent);
+  border: 1px solid color-mix(in srgb, var(--color-accent) 35%, transparent);
+  border-radius: 999px;
+  padding: 0.3rem 0.9rem;
+  margin-bottom: var(--space-3);
+}
+
+.heroTitle {
+  font-size: clamp(2.2rem, 5vw, 3.5rem);
+  font-weight: 700;
+  letter-spacing: -0.03em;
+  margin-bottom: var(--space-2);
+}
+
+.heroLead {
+  max-width: 46rem;
+  margin: 0 auto var(--space-4);
+  font-size: 1.15rem;
+  line-height: 1.6;
+  color: var(--color-muted-foreground);
+}
+
+.heroActions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: var(--space-2);
+}
+
+.button {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.5rem;
+  min-height: 44px;
+  padding: 0.75rem 1.4rem;
+  border-radius: var(--radius);
+  font-size: 1rem;
+  font-weight: 600;
+  text-decoration: none;
+  border: 1px solid transparent;
+  cursor: pointer;
+  transition:
+    transform 150ms ease,
+    background 200ms ease,
+    border-color 200ms ease;
+}
+
+.button:hover {
+  transform: translateY(-1px);
+}
+
+.buttonPrimary {
+  background: var(--color-accent);
+  color: var(--color-on-accent);
+}
+
+.buttonPrimary:hover {
+  background: color-mix(in srgb, var(--color-accent) 88%, white 12%);
+}
+
+.buttonGhost {
+  background: transparent;
+  color: var(--color-foreground);
+  border-color: var(--color-border);
+}
+
+.buttonGhost:hover {
+  border-color: var(--color-muted-foreground);
+}
+
+.section {
+  max-width: var(--max-width);
+  margin: 0 auto;
+  padding: var(--space-5) var(--space-3);
+}
+
+.sectionHead {
+  max-width: 42rem;
+  margin: 0 auto var(--space-4);
+  text-align: center;
+}
+
+.sectionTitle {
+  font-size: clamp(1.6rem, 3vw, 2.1rem);
+  font-weight: 700;
+  letter-spacing: -0.02em;
+  margin-bottom: var(--space-1);
+}
+
+.sectionLead {
+  color: var(--color-muted-foreground);
+  font-size: 1.05rem;
+  line-height: 1.6;
+}
+
+.grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(15.5rem, 1fr));
+  gap: var(--space-2);
+}
+
+.card {
+  background: var(--color-card);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius);
+  padding: var(--space-3);
+}
+
+.cardIcon {
+  width: 2.5rem;
+  height: 2.5rem;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 0.6rem;
+  background: color-mix(in srgb, var(--color-accent) 16%, transparent);
+  color: var(--color-accent);
+  margin-bottom: var(--space-2);
+}
+
+.cardIcon svg {
+  width: 1.4rem;
+  height: 1.4rem;
+}
+
+.cardTitle {
+  font-size: 1.05rem;
+  font-weight: 600;
+  margin-bottom: 0.4rem;
+}
+
+.cardText {
+  color: var(--color-muted-foreground);
+  font-size: 0.95rem;
+  line-height: 1.55;
+  margin: 0;
+}
+
+.flow {
+  counter-reset: step;
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(12rem, 1fr));
+  gap: var(--space-3);
+}
+
+.flowStep {
+  position: relative;
+  padding-top: var(--space-4);
+}
+
+.flowNumber {
+  counter-increment: step;
+  font-family: var(--font-mono);
+  font-size: 0.85rem;
+  color: var(--color-accent);
+}
+
+.flowNumber::before {
+  content: counter(step, decimal-leading-zero);
+}
+
+.flowTitle {
+  font-size: 1.05rem;
+  font-weight: 600;
+  margin: 0.3rem 0 0.4rem;
+}
+
+.flowText {
+  color: var(--color-muted-foreground);
+  font-size: 0.95rem;
+  line-height: 1.55;
+  margin: 0;
+}
+
+.stackRow {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+  justify-content: center;
+}
+
+.stackItem {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.5rem;
+  background: var(--color-muted);
+  border: 1px solid var(--color-border);
+  border-radius: 999px;
+  padding: 0.5rem 1rem;
+  font-family: var(--font-mono);
+  font-size: 0.85rem;
+}
+
+.stackItem svg {
+  width: 1rem;
+  height: 1rem;
+  color: var(--color-accent);
+}
+
+.risk {
+  border-left: 3px solid var(--color-accent);
+  background: var(--color-card);
+  border-radius: 0 var(--radius) var(--radius) 0;
+  padding: var(--space-2) var(--space-3);
+  margin-bottom: var(--space-2);
+}
+
+.risk:last-child {
+  margin-bottom: 0;
+}
+
+.riskTitle {
+  font-weight: 600;
+  margin-bottom: 0.25rem;
+}
+
+.riskText {
+  color: var(--color-muted-foreground);
+  font-size: 0.95rem;
+  line-height: 1.55;
+  margin: 0;
+}
+

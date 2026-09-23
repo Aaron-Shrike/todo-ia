@@ -38,6 +38,11 @@ dev = [
 embeddings = [
   "sentence-transformers==6.1.0",
 ]
+# Only for `scripts/seed_phrases.py` (a maintenance script, not shipped
+# application code) — never installed in the runtime `api`/`migrate` images.
+seed = [
+  "faker>=30.0",
+]
 
 [build-system]
 requires = ["hatchling"]

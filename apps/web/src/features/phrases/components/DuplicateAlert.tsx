@@ -6,6 +6,7 @@ import { copy } from "@/i18n/copy.es";
 import type { DuplicateDetails } from "../machine";
 import { scoreLabel } from "../scoreLabel";
 import { useMatchesInfiniteScroll } from "../hooks/useMatchesInfiniteScroll";
+import styles from "./phrases.module.css";
 
 export interface DuplicateAlertProps {
   client: Pick<PhraseApiClient, "listMatches">;
@@ -47,41 +48,58 @@ export function DuplicateAlert({
     });
 
   return (
-    <div role="alertdialog" aria-labelledby="duplicate-alert-title">
-      <h2 id="duplicate-alert-title">{copy.duplicate.title}</h2>
+    <div className={styles.alert} role="alertdialog" aria-labelledby="duplicate-alert-title">
+      <h2 id="duplicate-alert-title" className={styles.alertTitle}>
+        {copy.duplicate.title}
+      </h2>
 
       {details.mostSimilar && (
-        <p>
-          {copy.duplicate.mostSimilar}: {details.mostSimilar.text}
+        <p className={styles.mostSimilar}>
+          {copy.duplicate.mostSimilar}: <strong>{details.mostSimilar.text}</strong>
           {details.score !== null && <> ({scoreLabel(details.score)})</>}
         </p>
       )}
 
-      <h3>{copy.duplicate.matchesTitle}</h3>
-      <ul>
+      <h3 className={styles.matchesTitle}>{copy.duplicate.matchesTitle}</h3>
+      <ul className={styles.matchesList}>
         {matches.map((match) => (
-          <li key={match.id}>
-            {match.text} — {scoreLabel(match.score)}
+          <li key={match.id} className={styles.matchItem}>
+            <span>{match.text}</span>
+            <span className={styles.matchScore}>{scoreLabel(match.score)}</span>
           </li>
         ))}
       </ul>
 
       {hasMore && <div ref={sentinelRef} data-testid="matches-sentinel" />}
-      {isLoadingMore && <p>{copy.duplicate.loadingMore}</p>}
+      {isLoadingMore && <p className={styles.loadingMore}>{copy.duplicate.loadingMore}</p>}
       {loadError && (
-        <div>
+        <div className={styles.errorBox}>
           <p>{copy.duplicate.loadMoreError}</p>
-          <button type="button" onClick={retry}>
+          <button
+            type="button"
+            className={`${styles.button} ${styles.buttonGhost}`}
+            onClick={retry}
+          >
             {copy.button.retry}
           </button>
         </div>
       )}
 
-      <div>
-        <button type="button" onClick={onConfirm} disabled={disabled}>
+      <div className={styles.alertActions}>
+        <button
+          type="button"
+          className={`${styles.button} ${styles.buttonPrimary}`}
+          onClick={onConfirm}
+          disabled={disabled}
+        >
           {copy.button.confirm}
         </button>
-        <button type="button" onClick={onCancel} disabled={disabled}>
+        <button
+          type="button"
+          className={`${styles.button} ${styles.buttonGhost}`}
+          onClick={onCancel}
+          disabled={disabled}
+        >
           {copy.button.cancel}
         </button>
       </div>
