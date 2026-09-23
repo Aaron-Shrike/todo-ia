@@ -20,6 +20,7 @@ dev = [
   "ruff>=0.6",
   "mypy>=1.11",
   "import-linter>=2.1",
+  "pyyaml>=6.0",
 ]
 # NOT in core `dependencies`: a plain `pip install .` (the `migrate`
 # Dockerfile stage, design.md: "No torch/model weights") must stay
