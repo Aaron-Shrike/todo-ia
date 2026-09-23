@@ -6085,7 +6085,13 @@ into the phrase workspace` is now `e7acfbf`, was `8a66eb1`). Re-verified at the 
 ### Status (Unit 13 fix pass — complete, 13b and 13c both updated locally, not yet pushed)
 
 Both bugs fixed with TDD (RED confirmed, then GREEN), landed as one commit on `feat/pv-13b-list-badges`
-(`a0e4a88`), and `feat/pv-13c-page-wiring` rebased forward onto it (new tip `8a95272`) with a clean
-rebase and full green re-verification (vitest/tsc/build). `feat/pv-13a-copy-module` is unaffected
-(untouched by this fix). Nothing pushed. Orchestrator's push order is unchanged from above — 13a,
-then 13b (now `a0e4a88`), then 13c (now `8a95272`).
+(`a0e4a88`), and `feat/pv-13c-page-wiring` rebased forward onto it, then carrying its own docs
+follow-up commit (final tip `6acc6fe`) with a clean rebase and full green re-verification
+(164/164 vitest, tsc clean, build clean). `feat/pv-13a-copy-module` is unaffected (untouched by this
+fix, tip `f59a0ca`).
+
+**Delivered**: all three branches pushed and opened as PRs in dependency order —
+**PR #30** (`feat/pv-13a-copy-module` -> `develop`), **PR #31** (`feat/pv-13b-list-badges` -> #30,
+authoring-ahead), **PR #32** (`feat/pv-13c-page-wiring` -> #31, authoring-ahead). #31 and #32 will be
+retargeted to `develop` as their respective bases merge, per this session's established
+authoring-ahead pattern (same as Units 2b/2c and 3b/3c/3d).
