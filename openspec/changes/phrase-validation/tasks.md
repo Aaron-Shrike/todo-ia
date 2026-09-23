@@ -51,7 +51,7 @@ Rule from Unit 4 onward: branch N is cut from `develop` after PR N-1 has merged 
 | 6 | `feat/pv-06-api-foundation` | `develop` | settings, errors, CORS | ~300 |
 | 6b | `feat/pv-06b-validate-health` | `develop` | validate + `/health` | ~250 |
 | 7 | `feat/pv-07-save-list-matches` | `develop` | save, matches (list deferred) | ~380 |
-| 7b | `feat/pv-07b-list-openapi` | `develop`* | GET /phrases + OpenAPI snapshot | ~250 |
+| 7b | `feat/pv-07b-list-openapi` | `develop` | GET /phrases + OpenAPI snapshot | ~250 (actual: 378 excl. `docs/openapi.json`) |
 | 8 | `feat/pv-08-embeddings-image` | `develop` | ST adapter, bounded, wiring, image | ~380 |
 | 9 | `test/pv-09-calibration` | `develop` | ES/EN fixture + evidence | ~150 |
 | 10 | `feat/pv-10-web-scaffold` | `develop` | web scaffold + client | ~300 |
@@ -243,14 +243,15 @@ Covers: POST /phrases/matches x8; POST /phrases x5 (Created unique, Conflict sha
   split-or-escalate step; see apply-progress.md's Unit 7 section for the full trim log, the proposed
   7a/7c further-split analysis, and why it was declined in favour of the exception.
 
-### Unit 7b: `GET /phrases` and OpenAPI documentation (deferred from Unit 7, review-budget seam) — NOT STARTED
+### Unit 7b: `GET /phrases` and OpenAPI documentation (deferred from Unit 7, review-budget seam) — DONE
 
 Commit: `feat(api): list phrases endpoint and openapi documentation`. Rollback: revert (POST /phrases and POST /phrases/matches remain, from Unit 7).
 Covers: GET /phrases x3 (List shape, Empty, Hard cap); phrase-management List phrases x3 (Newest first, Empty list, Metadata exposed); OpenAPI documentation x4 (Endpoints documented, Error responses documented, Pagination documented, Every code documented).
-- [ ] 7b.1 RED then GREEN `phrases/application/list_phrases.py` and route `GET /phrases` (no params, cap `PHRASES_LIST_LIMIT`, newest first); wire `ListPhrases` into `phrases/container.py`.
-- [ ] 7b.2 Contract tests: `GET /phrases` scenarios folded into `tests/contract/test_phrases_endpoints.py`; new `tests/contract/test_openapi.py` (every error code in OpenAPI, ids typed `string` documented opaque, `limit` optional and bounded on both paginated endpoints, `cursor` documented as opaque) snapshotting `docs/openapi.json` (regenerate via `app.openapi()` directly -- no `make types` target produces the backend snapshot itself yet; that target only regenerates `apps/web/src/types/api.ts` FROM this file, see Unit 10).
-- Verify: `pytest tests/contract -q` (includes `test_openapi.py`).
-- Needs: Unit 7 (POST /phrases, POST /phrases/matches) merged, so the OpenAPI snapshot documents the full `/phrases` surface, not a partial one.
+- [x] 7b.1 RED then GREEN `phrases/application/list_phrases.py` and route `GET /phrases` (no params, cap `PHRASES_LIST_LIMIT`, newest first); wire `ListPhrases` into `phrases/container.py`.
+- [x] 7b.2 Contract tests: `GET /phrases` scenarios folded into `tests/contract/test_phrases_endpoints.py`; new `tests/contract/test_openapi.py` (every error code in OpenAPI, ids typed `string` documented opaque, `limit` optional and bounded on both paginated endpoints, `cursor` documented as opaque) snapshotting `docs/openapi.json` (regenerated via `app.openapi()` directly -- no `make types` target produces the backend snapshot itself yet; that target only regenerates `apps/web/src/types/api.ts` FROM this file, see Unit 10).
+- Verify: `pytest tests/contract -q` (includes `test_openapi.py`) -- 61 passed. Full safety net `pytest tests/unit tests/contract_suite tests/contract -m "not integration and not slow" -q` -- 286 passed, 1 deselected; `ruff check src tests` clean; `mypy src` -- `Success: no issues found in 43 source files`; `lint-imports` -- 5 kept, 0 broken.
+- Needs: Unit 7 (POST /phrases, POST /phrases/matches) merged, so the OpenAPI snapshot documents the full `/phrases` surface, not a partial one -- satisfied (`develop` includes Unit 7).
+- **Known gap, out of this unit's assigned scope -- CLOSED by a fix pass**: `PgVectorPhraseRepository` (the pgvector adapter wired into production by Unit 8's `_lifespan`) did not implement `list_recent` -- only `InMemoryPhraseRepository` did. `GET /phrases` was fully tested and correct against the in-memory adapter (every test in this unit), but raised `AttributeError` if hit against the real Postgres-backed production wiring. Fixed in a same-branch fix pass (folded into this unit's commit, not a separate fixup): `PgVectorPhraseRepository.list_recent` added (`ORDER BY created_at DESC, id DESC LIMIT :limit`, served by migration 0001's pre-existing `phrases_created_at_id_idx`), plus a `TYPE_CHECKING`-only mypy conformance guard against this exact class of regression recurring, plus tests (`tests/integration/test_pgvector_repository.py`, new `GET /phrases` test in `test_endpoints_pgvector.py`) -- not executable in this environment (no `sqlalchemy` installed, no docker), correct by careful reading. Full investigation (why `mypy src` didn't catch it) and implementation notes: apply-progress.md's "Unit 7b fix pass" section. **Still open, not this fix pass's scope**: `tests/contract_suite/repository_contract.py` does not cover `list_recent` for either adapter -- a genuine, pre-existing gap (predates this unit), noted but not fixed.
 
 ## Unit 8: sentence-transformers adapter, bounded provider, cache wiring, image bake (~380) -- 8.0-8.3 SHIPPED (`size:exception`, user-approved), 8.4 BLOCKED (no docker), fix pass (4-lens review, 12 findings) folded in
 

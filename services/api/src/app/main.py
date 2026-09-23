@@ -353,6 +353,7 @@ async def _lifespan(app: FastAPI, settings: Settings) -> AsyncIterator[None]:
             policy=SimilarityPolicy(threshold=settings.similarity_threshold),
             phrase_max_length=settings.phrase_max_length,
             matches_page_size=settings.matches_page_size,
+            phrases_list_limit=settings.phrases_list_limit,
         )
 
         def _cache_snapshot() -> dict[str, int] | None:
