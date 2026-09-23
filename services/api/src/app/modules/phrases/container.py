@@ -1,10 +1,10 @@
 """Composition root for `phrases` use cases (tasks.md 6b.1, extended 7.1
-with `list_matches`/`save_phrase`; `list_phrases` deferred to Unit 7b -- see
-tasks.md's Unit 7 seam note). Wires each use case from already-constructed
-ports; never decides which concrete adapter backs `embedder`/`uow_factory`
--- that stays `main.py`'s (production) or a test's (fake) call, keeping
-`phrases/api/` adapter-agnostic (import-linter's
-`composition-root-owns-adapters` contract).
+with `list_matches`/`save_phrase`, extended 7b.1 with `list_phrases`).
+Wires each use case from already-constructed ports; never decides which
+concrete adapter backs `embedder`/`uow_factory` -- that stays `main.py`'s
+(production) or a test's (fake) call, keeping `phrases/api/`
+adapter-agnostic (import-linter's `composition-root-owns-adapters`
+contract).
 """
 
 from __future__ import annotations
@@ -12,10 +12,13 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from app.modules.phrases.application.list_matches import ListMatches
+from app.modules.phrases.application.list_phrases import ListPhrases
 from app.modules.phrases.application.save_phrase import SavePhrase
 from app.modules.phrases.application.validate_phrase import ValidatePhrase
 from app.modules.phrases.contracts import UnitOfWorkFactory
 from app.modules.similarity.contracts import EmbeddingProvider, SimilarityPolicy
+
+_DEFAULT_PHRASES_LIST_LIMIT = 200  # mirrors `Settings.phrases_list_limit`'s default
 
 
 @dataclass(frozen=True)
@@ -26,6 +29,7 @@ class PhrasesContainer:
     validate_phrase: ValidatePhrase
     list_matches: ListMatches
     save_phrase: SavePhrase
+    list_phrases: ListPhrases
 
 
 def build_phrases_container(
@@ -35,6 +39,7 @@ def build_phrases_container(
     policy: SimilarityPolicy,
     phrase_max_length: int,
     matches_page_size: int,
+    phrases_list_limit: int = _DEFAULT_PHRASES_LIST_LIMIT,
 ) -> PhrasesContainer:
     return PhrasesContainer(
         validate_phrase=ValidatePhrase(
@@ -50,4 +55,5 @@ def build_phrases_container(
             phrase_max_length=phrase_max_length,
             default_page_size=matches_page_size,
         ),
+        list_phrases=ListPhrases(uow_factory, limit=phrases_list_limit),
     )

@@ -1,13 +1,14 @@
-"""Shared pydantic base types for the phrases API layer (Unit 6). Endpoint
-request/response models are built in Unit 6b/7 on top of these so the id
-serialization rule and the two paginated endpoints' bounds cannot drift.
+"""Shared pydantic base types for the phrases API layer (Unit 6, extended
+7b.2 with the OpenAPI error-response helpers). Endpoint request/response
+models are built in Unit 6b/7/7b on top of these so the id serialization
+rule and the two paginated endpoints' bounds cannot drift.
 """
 
 from __future__ import annotations
 
 from typing import Annotated, Any
 
-from pydantic import AfterValidator, Field, PlainSerializer
+from pydantic import AfterValidator, BaseModel, Field, PlainSerializer
 from pydantic_core import PydanticCustomError
 
 PhraseId = Annotated[int, PlainSerializer(str, return_type=str, when_used="json")]
@@ -51,3 +52,35 @@ def raw_phrase_text(max_length: int) -> Any:
         return value
 
     return Annotated[str, Field(strict=True), AfterValidator(_check_raw_cap)]
+
+
+class ErrorDetail(BaseModel):
+    """Mirrors `platform.errors.error_envelope`'s inner `"error"` object --
+    a SEPARATE pydantic model (not imported from `platform.errors`, which
+    is framework-free by design), used only to describe the shape in the
+    generated OpenAPI document (tasks.md 7b.2)."""
+
+    code: str
+    message: str
+    details: dict[str, object] | None = None
+
+
+class ErrorEnvelope(BaseModel):
+    """`{"error": {code, message, details?}}` -- design.md's error envelope."""
+
+    error: ErrorDetail
+
+
+def error_responses(*pairs: tuple[int, str]) -> dict[int | str, dict[str, Any]]:
+    """One `responses=` dict entry per `(status_code, code)` pair, for a
+    route decorator's `responses=` kwarg. The `code` string is embedded
+    LITERALLY in each response's `description` (not just its schema) so the
+    api-contract spec's "Every code documented" scenario -- every code in
+    `ERROR_REGISTRY` appears in the OpenAPI document -- can be asserted by a
+    plain text search over the generated document, with no per-status
+    schema needed (every error response shares the one `ErrorEnvelope`
+    shape)."""
+    return {
+        status: {"model": ErrorEnvelope, "description": f"Error envelope; `error.code` = `{code}`."}
+        for status, code in pairs
+    }

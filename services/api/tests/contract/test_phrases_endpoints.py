@@ -1,9 +1,9 @@
-"""Contract tests for `POST /phrases` and `POST /phrases/matches` (tasks.md
-7.1/7.2), against the real `create_app()` wiring with fakes and the
-in-memory repo (precedent: `test_validate_health.py`). Covers Unit 7's
-Covers line except `GET /phrases` + the OpenAPI scenarios (deferred to Unit
-7b -- tasks.md's seam note, over budget even after a trim pass) and the
-three real-Postgres ones (`tests/integration/test_endpoints_pgvector.py`).
+"""Contract tests for `POST /phrases`, `POST /phrases/matches` (tasks.md
+7.1/7.2) and `GET /phrases` (tasks.md 7b.1/7b.2, folded in here per the
+task's own instruction), against the real `create_app()` wiring with fakes
+and the in-memory repo (precedent: `test_validate_health.py`). The OpenAPI
+scenarios live in `tests/contract/test_openapi.py`; the three real-Postgres
+scenarios live in `tests/integration/test_endpoints_pgvector.py`.
 """
 
 from __future__ import annotations
@@ -50,10 +50,12 @@ def _client(
     uow_factory: UnitOfWorkFactory | None = None,
     cache_capacity: int = 0,
     matches_page_size: int = 50,
+    phrases_list_limit: int = 200,
 ) -> tuple[TestClient, EmbeddingProvider, UnitOfWorkFactory]:
     settings = Settings(
         database_url="postgresql+psycopg://test:test@localhost:5432/test",
         matches_page_size=matches_page_size,
+        phrases_list_limit=phrases_list_limit,
     )
     app = create_app(settings)
     inner = embedder if embedder is not None else FakeEmbedder({_QUERY_TEXT: PROBE, "hola": PROBE})
@@ -67,6 +69,7 @@ def _client(
         policy=SimilarityPolicy(threshold=settings.similarity_threshold),
         phrase_max_length=settings.phrase_max_length,
         matches_page_size=settings.matches_page_size,
+        phrases_list_limit=settings.phrases_list_limit,
     )
     return TestClient(app, raise_server_exceptions=False), inner, factory
 
@@ -334,5 +337,42 @@ def test_save_unique_violation_on_insert_maps_to_409_never_500() -> None:
     assert response.status_code == 409
     assert response.json()["error"]["code"] == "DUPLICATE_CONFIRMATION_REQUIRED"
 
-# `GET /phrases` (List shape/Empty/Hard cap, phrase-management's List
-# phrases x3) is deferred to Unit 7b -- see this file's module docstring.
+
+# --- GET /phrases (tasks.md 7b.1/7b.2) ------------------------------------
+
+
+def test_list_phrases_empty_store() -> None:
+    client, _, _ = _client()
+    response = client.get("/phrases")
+    assert response.status_code == 200
+    assert response.json() == {"data": {"items": []}}
+
+
+def test_list_phrases_newest_first_with_metadata() -> None:
+    client, _, factory = _client()
+    _seed(factory, ("a", 0.05), ("b", 0.10))  # ids 1, 2 -- both `unique`, null metadata
+    response = client.get("/phrases")
+    assert response.status_code == 200
+    items = response.json()["data"]["items"]
+    assert [item["text"] for item in items] == ["b", "a"]  # newest (highest id) first
+    for item in items:
+        assert set(item) == {"id", "text", "created_at", "validation"}
+        assert set(item["validation"]) == {
+            "status",
+            "score",
+            "most_similar_phrase_id",
+            "validated_at",
+        }
+        assert item["validation"]["status"] == "unique"
+        assert item["validation"]["score"] is None
+        assert item["validation"]["most_similar_phrase_id"] is None
+
+
+def test_list_phrases_hard_cap() -> None:
+    client, _, factory = _client(phrases_list_limit=2)
+    _seed(factory, *[(f"p{i}", 0.05 + i * 0.001) for i in range(5)])
+    response = client.get("/phrases")
+    assert response.status_code == 200
+    items = response.json()["data"]["items"]
+    assert len(items) == 2
+    assert [item["text"] for item in items] == ["p4", "p3"]  # newest first, capped

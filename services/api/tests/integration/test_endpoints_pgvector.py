@@ -133,3 +133,19 @@ def test_concurrent_identical_saves_yield_exactly_one_201_and_one_409(engine: En
     assert statuses == [201, 409]
     with engine.connect() as conn:
         assert conn.execute(text("SELECT count(*) FROM phrases")).scalar_one() == 1
+
+
+def test_get_phrases_returns_newest_first_against_real_postgres(engine: Engine) -> None:
+    # Unit 7b fix-pass, task 2: the exact regression this test guards
+    # against -- `PgVectorPhraseRepository` did not implement `list_recent`
+    # (see apply-progress.md's Unit 7b "Discovered gap" note), so this
+    # endpoint 500'd with an `AttributeError` against real Postgres despite
+    # every contract test (against the in-memory adapter only) passing.
+    client = _client(engine)
+    for phrase_text in ("first", "second", "third"):
+        response = client.post("/phrases", json={"text": phrase_text})
+        assert response.status_code == 201
+    response = client.get("/phrases")
+    assert response.status_code == 200
+    items = response.json()["data"]["items"]
+    assert [item["text"] for item in items] == ["third", "second", "first"]

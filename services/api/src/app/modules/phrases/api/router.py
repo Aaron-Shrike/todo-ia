@@ -3,13 +3,12 @@
 # field bounds close over the caller's settings; postponed evaluation would
 # turn those into unresolved strings FastAPI can't reach via closure locals
 # -- the exact bug the Unit 6 fix-pass found (see test_framework_errors.py).
-"""`POST /phrases/validate` (tasks.md 6b.1) plus `POST /phrases` and
-`POST /phrases/matches` (tasks.md 7.1, design.md's Data Flow / "Request
-shapes"). `GET /phrases` and the OpenAPI documentation pass are deferred to
-Unit 7b (tasks.md's Unit 7 seam note: over budget even after a trim pass).
-Every route reads its use case off `request.app.state.phrases` (assembled
-by `phrases/container.py`) -- imports no adapter (import-linter's
-`composition-root-owns-adapters` contract forbids it for `phrases.api`).
+"""`POST /phrases/validate` (tasks.md 6b.1) plus `POST /phrases`,
+`POST /phrases/matches` (tasks.md 7.1) and `GET /phrases` (tasks.md 7b.1,
+design.md's Data Flow / "Request shapes"). Every route reads its use case
+off `request.app.state.phrases` (assembled by `phrases/container.py`) --
+imports no adapter (import-linter's `composition-root-owns-adapters`
+contract forbids it for `phrases.api`).
 """
 
 from datetime import datetime
@@ -19,7 +18,7 @@ from fastapi import APIRouter, Request
 from pydantic import BaseModel, ConfigDict, Field, StrictBool
 from starlette.responses import JSONResponse
 
-from app.modules.phrases.api.schemas import PhraseId, page_limit, raw_phrase_text
+from app.modules.phrases.api.schemas import PhraseId, error_responses, page_limit, raw_phrase_text
 from app.modules.phrases.application._shared import MatchView, MostSimilarView, VerdictView
 from app.modules.phrases.container import PhrasesContainer
 from app.modules.phrases.contracts import Phrase
@@ -29,6 +28,28 @@ from app.modules.phrases.contracts import Phrase
 # `similarity.domain.errors`, and import-linter checks the FULL transitive
 # chain -- `phrases.api -> platform.errors -> similarity.domain` would break
 # the `phrases-only-similarity-contracts` contract.
+
+# tasks.md 7b.2 / api-contract spec's "OpenAPI documentation": every code in
+# `platform.errors.ERROR_REGISTRY` must appear in the generated document
+# (`INVALID_CURSOR`, `VALIDATION_ERROR`, `EMBEDDING_UNAVAILABLE`,
+# `EMBEDDING_TIMEOUT`), plus `DUPLICATE_CONFIRMATION_REQUIRED` (hand-built,
+# not registry-mapped -- see the note above) on `POST /phrases` specifically
+# (api-contract's "Error responses documented" scenario: 201/409/422/503/504).
+_VALIDATE_ERRORS = error_responses(
+    (422, "VALIDATION_ERROR"), (503, "EMBEDDING_UNAVAILABLE"), (504, "EMBEDDING_TIMEOUT")
+)
+_SAVE_ERRORS = error_responses(
+    (409, "DUPLICATE_CONFIRMATION_REQUIRED"),
+    (422, "VALIDATION_ERROR"),
+    (503, "EMBEDDING_UNAVAILABLE"),
+    (504, "EMBEDDING_TIMEOUT"),
+)
+_MATCHES_ERRORS = error_responses(
+    (400, "INVALID_CURSOR"),
+    (422, "VALIDATION_ERROR"),
+    (503, "EMBEDDING_UNAVAILABLE"),
+    (504, "EMBEDDING_TIMEOUT"),
+)
 
 
 class _ScoredPhrase(BaseModel):
@@ -121,7 +142,7 @@ def build_validate_router(*, phrase_max_length: int, matches_page_size: int) -> 
         text: raw_phrase_text(phrase_max_length)  # type: ignore[valid-type]
         limit: page_limit(matches_page_size) | None = None  # type: ignore[valid-type]
 
-    @router.post("/phrases/validate", response_model=_ValidateResponse)
+    @router.post("/phrases/validate", response_model=_ValidateResponse, responses=_VALIDATE_ERRORS)
     def validate_phrase(body: _ValidateRequest, request: Request) -> _ValidateResponse:
         container: PhrasesContainer = request.app.state.phrases
         limit = body.limit if body.limit is not None else matches_page_size
@@ -158,8 +179,17 @@ class _PhraseResponse(BaseModel):
     data: _PhraseOut
 
 
+class _PhraseListData(BaseModel):
+    items: list[_PhraseOut]
+
+
+class _PhraseListResponse(BaseModel):
+    data: _PhraseListData
+
+
 def build_phrases_router(*, phrase_max_length: int, matches_page_size: int) -> APIRouter:
-    """`POST /phrases`, `POST /phrases/matches` (tasks.md 7.1)."""
+    """`POST /phrases`, `POST /phrases/matches` (tasks.md 7.1),
+    `GET /phrases` (tasks.md 7b.1)."""
     router = APIRouter()
 
     class _SaveRequest(BaseModel):
@@ -175,7 +205,9 @@ def build_phrases_router(*, phrase_max_length: int, matches_page_size: int) -> A
         cursor: Annotated[str, Field(description="Opaque; clients MUST NOT parse it.")]
         limit: page_limit(matches_page_size) | None = None  # type: ignore[valid-type]
 
-    @router.post("/phrases", status_code=201, response_model=_PhraseResponse)
+    @router.post(
+        "/phrases", status_code=201, response_model=_PhraseResponse, responses=_SAVE_ERRORS
+    )
     def save_phrase(body: _SaveRequest, request: Request) -> _PhraseResponse | JSONResponse:
         container: PhrasesContainer = request.app.state.phrases
         result = container.save_phrase(body.text, confirm_duplicate=body.confirm_duplicate)
@@ -202,7 +234,7 @@ def build_phrases_router(*, phrase_max_length: int, matches_page_size: int) -> A
             raise RuntimeError("SaveResult.phrase must be set when result.conflict is None")
         return _PhraseResponse(data=_phrase_out(result.phrase))
 
-    @router.post("/phrases/matches", response_model=_MatchesResponse)
+    @router.post("/phrases/matches", response_model=_MatchesResponse, responses=_MATCHES_ERRORS)
     def list_matches(body: _MatchesRequest, request: Request) -> _MatchesResponse:
         container: PhrasesContainer = request.app.state.phrases
         limit = body.limit if body.limit is not None else matches_page_size
@@ -214,5 +246,13 @@ def build_phrases_router(*, phrase_max_length: int, matches_page_size: int) -> A
                 has_more=page.has_more,
             )
         )
+
+    @router.get("/phrases", response_model=_PhraseListResponse)
+    def list_phrases(request: Request) -> _PhraseListResponse:
+        # No parameters, not paginated -- hard-capped at `PHRASES_LIST_LIMIT`
+        # inside `ListPhrases` itself (design.md's "Request shapes").
+        container: PhrasesContainer = request.app.state.phrases
+        phrases = container.list_phrases()
+        return _PhraseListResponse(data=_PhraseListData(items=[_phrase_out(p) for p in phrases]))
 
     return router

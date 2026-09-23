@@ -26,6 +26,7 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from math import floor
+from typing import TYPE_CHECKING, cast
 
 from sqlalchemy import Connection, Engine, text
 from sqlalchemy.exc import IntegrityError, OperationalError
@@ -40,6 +41,8 @@ from app.modules.phrases.contracts import (
     NewPhrase,
     Page,
     Phrase,
+    PhraseRepository,
+    ValidationStatus,
 )
 from app.modules.similarity.contracts import KEY_EPSILON, Vector
 from app.platform.db import acquire_write_lock
@@ -97,10 +100,35 @@ ORDER BY embedding <=> CAST(:q AS vector), id
 LIMIT 1
 """
 
+# `list_recent` (Unit 7b fix-pass, task 2): newest first, no cursor, per
+# `PhraseRepository.list_recent`'s own comment -- same `(created_at, id)
+# DESC` ordering as `InMemoryPhraseRepository.list_recent`. Served by
+# migration 0001's `phrases_created_at_id_idx (created_at DESC, id DESC)`,
+# unused until now. `embedding::text` (not the bare column): no
+# pgvector-python adapter is registered on this connection (this module's
+# own docstring/`serialize_vector` note), so casting explicitly guarantees
+# the `[c0,c1,...]` text form `deserialize_vector` below expects, instead of
+# depending on driver-specific behaviour for an unregistered custom OID.
+LIST_RECENT_QUERY = """
+SELECT id, text, normalized_text, embedding::text AS embedding, similarity_score,
+       most_similar_phrase_id, validation_status, validated_at, created_at
+FROM phrases
+ORDER BY created_at DESC, id DESC
+LIMIT :limit
+"""
+
 
 def serialize_vector(vector: Vector) -> str:
     """`[c0,c1,...]` text literal pgvector's input parser accepts."""
     return "[" + ",".join(repr(float(component)) for component in vector) + "]"
+
+
+def deserialize_vector(raw: str) -> Vector:
+    """Inverse of `serialize_vector`. pgvector always renders a `vector`
+    column cast to `::text` in this exact `[c0,c1,...]` form -- used by
+    `list_recent` to turn a queried row's `embedding` column back into a
+    `Vector` for the `Phrase` dataclass."""
+    return tuple(float(component) for component in raw.strip("[]").split(","))
 
 
 def _bucket(distance: float) -> int:
@@ -192,6 +220,24 @@ class PgVectorPhraseRepository:
         self._mark_statement()
         return Phrase(id=row.id, created_at=row.created_at, **vars(phrase))
 
+    def list_recent(self, limit: int) -> list[Phrase]:
+        rows = self._connection.execute(text(LIST_RECENT_QUERY), {"limit": limit}).fetchall()
+        self._mark_statement()
+        return [
+            Phrase(
+                id=row.id,
+                text=row.text,
+                normalized_text=row.normalized_text,
+                embedding=deserialize_vector(row.embedding),
+                similarity_score=row.similarity_score,
+                most_similar_phrase_id=row.most_similar_phrase_id,
+                validation_status=ValidationStatus(row.validation_status),
+                validated_at=row.validated_at,
+                created_at=row.created_at,
+            )
+            for row in rows
+        ]
+
     def find_nearest(self, q: Vector) -> Neighbor | None:
         # Unfiltered top-1, HNSW; explicit `on` in case an earlier statement
         # in this transaction turned it off (design.md).
@@ -226,6 +272,40 @@ class PgVectorPhraseRepository:
                 raise LockTimeout from exc
             raise
         self._mark_statement()
+
+
+if TYPE_CHECKING:
+    # mypy-only structural conformance check (Unit 7b fix-pass, task 1):
+    # `PgVectorPhraseRepository` must satisfy `PhraseRepository` in full.
+    #
+    # Why this check is needed and where it was missing: `PgVectorUnitOfWork
+    # .repo: PgVectorPhraseRepository` (a concrete, narrower type) never
+    # structurally satisfies `UnitOfWork.repo: PhraseRepository` (a mutable
+    # Protocol ATTRIBUTE, which mypy treats as INVARIANT -- it could be read
+    # OR written through the Protocol-typed reference, so a narrower
+    # assigned type is always rejected, even when it is a superset of
+    # behaviour). `main.py`'s `_build_container` hits exactly that
+    # pre-existing, legitimate false positive when it passes
+    # `PgVectorUnitOfWorkFactory` to a `UnitOfWorkFactory`-typed parameter,
+    # and silences it with `# type: ignore[arg-type]` (in place since Unit
+    # 5b). That single suppressed line was the ONLY place in `src/` where
+    # `PgVectorPhraseRepository` ever got checked against `PhraseRepository`
+    # -- and only indirectly, through the `repo` attribute -- so the
+    # ignore silently swallowed this class's separate, genuine missing
+    # `list_recent` method too (confirmed empirically: removing the ignore
+    # surfaces only the attribute-invariance note, never a missing-member
+    # note, because mypy's attribute-type check short-circuits before
+    # comparing the two classes' full member sets).
+    #
+    # Checking `PgVectorPhraseRepository` directly against `PhraseRepository`
+    # here -- never through the mutable `.repo` attribute -- sidesteps that
+    # invariance false positive entirely (confirmed empirically: this cast
+    # alone, with `list_recent` missing, correctly failed with `"PgVector
+    # PhraseRepository" is missing following "PhraseRepository" protocol
+    # member: list_recent`). It is therefore a cheap (zero runtime cost,
+    # `TYPE_CHECKING`-only), correct, no-false-positive guard against this
+    # exact class of regression recurring for this adapter.
+    _phrase_repository_conformance: PhraseRepository = cast(PgVectorPhraseRepository, None)
 
 
 class PgVectorUnitOfWork:
