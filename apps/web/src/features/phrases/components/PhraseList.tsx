@@ -34,10 +34,27 @@ export interface PhraseListProps {
 
 type ListStatus = "idle" | "loading" | "error";
 
+/**
+ * The generated API type widens `validation.status` to plain `string` (no
+ * literal union exists anywhere in this client to narrow it against), so an
+ * unrecognized value cannot be caught at compile time. The backend's DB
+ * CHECK constraint (Unit 4) makes only `unique` and `duplicate_confirmed`
+ * possible today, but this stays a defensive runtime guard rather than
+ * silently mapping every non-`duplicate_confirmed` value to "Única" —
+ * matching `errorCopy.ts`'s "never silently swallow an unmapped value"
+ * convention, minus a dedicated fallback copy key since exactly two
+ * statuses are contractually possible.
+ */
 function badgeLabel(status: string): string {
-  return status === "duplicate_confirmed"
-    ? copy.badge.duplicate_confirmed
-    : copy.badge.unique;
+  if (status === "duplicate_confirmed") {
+    return copy.badge.duplicate_confirmed;
+  }
+  if (status !== "unique") {
+    console.warn(
+      `PhraseList: unrecognized validation status "${status}", rendering as "${copy.badge.unique}"`,
+    );
+  }
+  return copy.badge.unique;
 }
 
 /**
@@ -84,7 +101,13 @@ export const PhraseList = forwardRef<PhraseListHandle, PhraseListProps>(
         )}
 
         {items.length === 0 ? (
-          status !== "error" && <p>{copy.list.empty}</p>
+          // Only render the empty state once the list is settled with zero
+          // items — never while `loading` (a refresh/Reintentar in flight)
+          // or `error`, both of which already have their own state above
+          // (`aria-busy` / the load-error block). Previously this only
+          // excluded `error`, so a Reintentar click briefly showed "Aún no
+          // hay frases guardadas." while the refetch was still in flight.
+          status === "idle" && <p>{copy.list.empty}</p>
         ) : (
           <ul>
             {items.map((item) => (
