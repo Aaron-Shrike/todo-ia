@@ -356,13 +356,26 @@ toHaveAccessibleDescription(...)` instead of `data-testid` (genuine RED->GREEN, 
 actual behavior gap). `role="alertdialog"` on the duplicate section remains explicitly Unit 12 scope --
 not skipped, deliberately deferred.
 
-## Unit 12: Duplicate alert with infinite-scroll matches (~310)
+## Unit 12: Duplicate alert with infinite-scroll matches (~310) -- SHIPPED (`size:exception`, user-approved)
+
+**Resolution**: both sub-tasks were fully implemented, RED->GREEN confirmed, and green against
+every quality gate (136/136 vitest, `tsc --noEmit` clean, `next build` clean, backend regression
+unaffected) before this unit stopped mid-batch to report a review-budget risk: 684 changed lines
+(660 insertions / 24 deletions) against the 400-line cap, ~1.7x over. A finer 4-slice split was
+proposed (12a `percent.ts`+machine event ~58 lines, 12b hook+hook-tests ~290, 12c `DuplicateAlert`
+component+tests ~245, 12d `PhraseForm` wiring+copy ~104) alongside a single-PR `size:exception`.
+**The user explicitly chose `size:exception`**: ship everything as ONE PR rather than the 4-slice
+split, the same pattern already used for Units 6, 6b, 7 and 11 this session. No further code changes
+were needed -- the implementation committed during the STOP (`2f05c8d`
+`feat(web): duplicate alert with infinite-scroll matches`) was already complete; only delivery
+(push + PR) was withheld pending this decision, now resolved. See apply-progress.md's Unit 12
+section for the full review-budget table, the split proposal, and the TDD Cycle Evidence.
 
 Commit: `feat(web): duplicate alert with infinite-scroll matches`. Rollback: revert (web track only).
 Covers: Duplicate alert x7 (Alert content, Percentage never overstates, Confirm, Cancel, 409 during save, 409 while confirming (defensive)); Infinite scroll x7 (Load next page on scroll, Invalid cursor restarts validation, Reach the end, No concurrent page requests, Page load failure, Deduplicate on overlap, Single page); Reset on text edit: Edit during duplicate; Cancel saves nothing.
-- [ ] 12.1 RED then GREEN `percent.ts` (floored: 0.9312 -> 93, 0.9950 -> 99, 0.9999 -> 99, 0.29 -> 29, 1.0 -> 100) with unit test.
-- [ ] 12.2 RED then GREEN `DuplicateAlert.tsx` and `useMatchesInfiniteScroll.ts` (IntersectionObserver sentinel, in-flight guard, dedupe by id, stop on `has_more=false`, `INVALID_CURSOR` discards matches and re-runs validation) with component tests on the typed fake client.
-- Verify: `cd apps/web && npx vitest run`.
+- [x] 12.1 RED then GREEN `percent.ts` (floored: 0.9312 -> 93, 0.9950 -> 99, 0.9999 -> 99, 0.29 -> 29, 1.0 -> 100) with unit test.
+- [x] 12.2 RED then GREEN `DuplicateAlert.tsx` and `useMatchesInfiniteScroll.ts` (IntersectionObserver sentinel, in-flight guard, dedupe by id, stop on `has_more=false`, `INVALID_CURSOR` discards matches and re-runs validation) with component tests on the typed fake client.
+- Verify: `cd apps/web && npx vitest run` -- 136/136 passed.
 
 ## Unit 13: Saved list, status badges, Spanish copy module (~290)
 
