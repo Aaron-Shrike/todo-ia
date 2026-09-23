@@ -6035,3 +6035,57 @@ C proposed, each independently verified green at its own tip via an isolated `gi
 or the equivalent clean-tree state (13c). Nothing pushed, no PR opened yet — that is the orchestrator's
 next step, in order: push 13a, open PR 1 against `develop`; after it merges, rebase/retarget 13b onto
 `develop`, push, open PR 2; after it merges, rebase/retarget 13c onto `develop`, push, open PR 3.
+
+## Unit 13 fix pass (reliability review of `PhraseList.tsx`, on `feat/pv-13b-list-badges`)
+
+A fresh-context reliability review of `apps/web/src/features/phrases/components/PhraseList.tsx`
+(the file lives entirely in the 13b slice) found two real, reproduced WARNING-level bugs, same
+"fix on the owning branch, then rebase forward" pattern as Unit 12's fix pass above:
+
+1. **Empty-state message shown during loading/retry.** The empty-state guard only excluded
+   `status === "error"`, not `status === "loading"` — so clicking Reintentar (or any refresh
+   starting from zero held items) briefly rendered "Aún no hay frases guardadas." while the
+   refetch was still in flight, contradicting the phrase-ui spec's "Saved phrase list with status
+   badge" requirement ("MUST show ... a loading state"). Reproduced with a throwaway test
+   (`status="loading"`, `items=[]]` → empty paragraph present) before fixing.
+2. **`badgeLabel` silently mislabeled any unrecognized status as "Única".** `validation.status` is
+   plain `string` in the generated API types (no literal union exists anywhere in this client to
+   narrow it against), so any value other than exactly `"duplicate_confirmed"` silently rendered as
+   the `unique` badge — a typo or a new backend status would be indistinguishable from a genuine
+   unique phrase, with no test coverage of that path.
+
+**Fix (TDD, RED confirmed against the pre-fix code before implementing, then GREEN):**
+- Empty-state condition narrowed from `status !== "error"` to `status === "idle"`, so it excludes
+  both `loading` and `error` — the existing `aria-busy={status === "loading"}` on the `<section>`
+  remains the (already-present) loading signal; no new copy key was added (`copy.es.ts` is
+  untouched, matching the "both fixes live in `PhraseList.tsx`/`PhraseList.test.tsx` only" scope).
+- `badgeLabel` keeps its `unique` fallback (exactly two statuses are contractually possible per the
+  backend's DB CHECK constraint from Unit 4, so a new badge/copy key would be over-engineering) but
+  now `console.warn`s whenever the status is neither `duplicate_confirmed` nor `unique`, so an
+  unrecognized value is never *silently* indistinguishable from a real one — the same
+  never-silently-swallow-an-unmapped-value convention `errorCopy.ts` (Unit 13a) already uses for
+  unknown `ErrorCode`s.
+- Two new regression tests added to `PhraseList.test.tsx`: a deferred-promise `refresh()` mid-flight
+  with zero items (asserts the empty message is absent and `aria-busy="true"` is present, then
+  resolves and asserts the empty message returns), and an unrecognized `validation.status` (asserts
+  `console.warn` fires with the unrecognized value).
+
+**Commit**: `fix(web): show loading state during list retry and guard unrecognized badge status`
+SHA: `a0e4a88`, on `feat/pv-13b-list-badges` (new tip, was `3211bc5`). 2 files changed (both
+`PhraseList.tsx`/`PhraseList.test.tsx`, no other file touched). Verified on this commit:
+`cd apps/web && npx vitest run` → 162/162 passed (9 test files); `npx tsc --noEmit` → clean.
+
+**Rebase of `feat/pv-13c-page-wiring` onto the new 13b tip**: `git rebase feat/pv-13b-list-badges
+feat/pv-13c-page-wiring` — no conflicts (13c never touches `PhraseList.tsx`), both of 13c's commits
+replayed cleanly. New 13c tip: `8a95272` (was `387bfe5`; `feat(web): wire saved-list first paint
+into the phrase workspace` is now `e7acfbf`, was `8a66eb1`). Re-verified at the new tip:
+`npx vitest run` → 164/164 passed (10 test files, the +2 fix-pass tests included); `npx tsc
+--noEmit` → clean; `npm run build` → succeeds, `/` correctly `ƒ Dynamic`.
+
+### Status (Unit 13 fix pass — complete, 13b and 13c both updated locally, not yet pushed)
+
+Both bugs fixed with TDD (RED confirmed, then GREEN), landed as one commit on `feat/pv-13b-list-badges`
+(`a0e4a88`), and `feat/pv-13c-page-wiring` rebased forward onto it (new tip `8a95272`) with a clean
+rebase and full green re-verification (vitest/tsc/build). `feat/pv-13a-copy-module` is unaffected
+(untouched by this fix). Nothing pushed. Orchestrator's push order is unchanged from above — 13a,
+then 13b (now `a0e4a88`), then 13c (now `8a95272`).
