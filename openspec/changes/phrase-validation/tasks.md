@@ -53,7 +53,7 @@ Rule from Unit 4 onward: branch N is cut from `develop` after PR N-1 has merged 
 | 7 | `feat/pv-07-save-list-matches` | `develop` | save, matches (list deferred) | ~380 |
 | 7b | `feat/pv-07b-list-openapi` | `develop` | GET /phrases + OpenAPI snapshot | ~250 (actual: 378 excl. `docs/openapi.json`) |
 | 8 | `feat/pv-08-embeddings-image` | `develop` | ST adapter, bounded, wiring, image | ~380 |
-| 9 | `test/pv-09-calibration` | `develop` | ES/EN fixture + evidence | ~150 |
+| 9 | `feat/pv-09-calibration` (orchestrator-directed branch name, supersedes this table's original `test/pv-09-calibration` for the actual PR) | `develop` | ES/EN fixture scaffold only, BLOCKED (no torch wheel for macOS x86_64) | ~150 est., ~395 actual (scaffold only, no evidence) |
 | 10 | `feat/pv-10-web-scaffold` | `develop` | web scaffold + client | ~300 |
 | 11 | `feat/pv-11-web-machine-form` | `develop` | state machine + form | ~360 |
 | 12 | `feat/pv-12-web-duplicate-alert` | `develop` | alert + infinite scroll | ~310 |
@@ -279,13 +279,30 @@ Covers: Model failure and timeout: Provider raises, Provider times out, Recovery
 - [x] Fix pass: 4-lens review (risk + resilience + readability + reliability) of the shipped Unit 8 diff, 12 confirmed findings fixed and folded into the same commit -- semaphore leak in `BoundedEmbeddingProvider.embed()` on `executor.submit()` failure; `_lifespan`'s boot SEQUENCING extracted into a new, independently unit-tested `platform/boot_sequence.py::run_boot_sequence`; `/health` now returns 503 (not 500) on any DB-check exception, not only `OperationalError`; Dockerfile `EMBEDDING_MODEL` allow-list validation, pinned `torch`/`sentence-transformers` versions, and mixed-case revision-SHA regex alignment; `SentenceTransformersEmbedder` wired to `build_model_id`; plus several test-coverage and readability suggestions. Full per-finding writeup, TDD evidence, and the genuinely environment-blocked items left untouched are in apply-progress.md's "Unit 8 fix pass" section.
 - Verify: `cd services/api && .venv/bin/python -m pytest tests/unit tests/contract_suite tests/contract -m "not integration and not slow" -q` -> **274 passed, 1 deselected** (was 236 on the branch base before this unit, 259 after the original Unit 8 batch, +15 more from the fix pass); `ruff check .` -> clean; `mypy src` -> `Success: no issues found in 42 source files`; `lint-imports` -> `Contracts: 5 kept, 0 broken.` `docker build`/`pytest -m slow` -> BLOCKED, not run (no docker, no real model install) -- see apply-progress.md.
 
-## Unit 9: ES/EN calibration fixture and integration evidence (~150)
+## Unit 9: ES/EN calibration fixture and integration evidence (~150) -- 9.1 SCAFFOLD ONLY (BLOCKED: no torch wheel for this platform), 9.2 NOT STARTED
 
-Commit: `test(calibration): es/en fixture and integration evidence`. Rollback: revert (manual step only, not in CI).
-Covers: Cross-language calibration x3 (Paraphrase pairs flagged, Unrelated pairs pass, Default changes are recorded); Exact duplicates: Case and spacing variants (real model).
-- [ ] 9.1 `services/api/tests/fixtures/calibration.yaml` (categories `duplicate`, `distinct`, `expected_weakness`) and `tests/slow/test_calibration.py` (`slow`): hard assert on `duplicate`/`distinct`, report-only on `expected_weakness`.
-- [ ] 9.2 `make evidence` writes the score table to `docs/evidence/calibration.md` (the brief's Hugging Face evidence deliverable). VERIFY (unmeasured): score cased pairs with and without casefolding and record both margins plus the cased-variant cosine (design estimate ~0.98); decision rule: if the margin around 0.80 is poor, change the `SIMILARITY_THRESHOLD` DEFAULT (and `.env.example`, spec, ADR-003 note) as a recorded spec change, never bend the fixture.
-- Verify: `make evidence` then `git diff --stat docs/evidence/calibration.md`.
+**Investigation before this unit's write phase** (per the orchestrator's explicit instruction):
+network access to PyPI and huggingface.co confirmed reachable (HTTP 200), disk space is not the
+constraint (245 GiB free), but `pip install torch==2.14.0` (the version pinned in the Dockerfile and
+`pyproject.toml`'s `embeddings` extra) fails with "Could not find a version that satisfies the
+requirement" -- PyTorch has never published a macOS x86_64 (Intel) wheel for any release from 2.6.0
+through the current 2.14.0 (checked via PyPI's JSON API: every recent release ships
+`macosx_11_0_arm64`/`macosx_14_0_arm64` wheels only), and this venv's platform tag is
+`sysconfig.get_platform() == "macosx-14.0-x86_64"`. This is a genuine, unresolvable-in-this-session
+architecture gap (Apple Silicon or Linux/docker required), not a network/disk/permission issue. Per
+the orchestrator's own stated fallback: implemented ONLY the fixture + test-file scaffold (9.1),
+correctly written, collection-verified (`pytest --collect-only` succeeds; the real failure point is a
+clean `ModuleNotFoundError: No module named 'sentence_transformers'` inside `load_sentence_transformer`,
+confirming the code itself is correct and the gap is exactly the missing native dependency), and did
+NOT run it against the real model. 9.2 (the actual measured evidence table, the cased-vs-casefolded
+margin, and the threshold-default decision) could not be attempted at all without 9.1 actually
+running. See apply-progress.md's Unit 9 section for the full investigation transcript.
+
+Commit: `test(calibration): add ES/EN fixture and slow test scaffold (blocked: no torch wheel for macOS x86_64)`. Rollback: revert (manual step only, not in CI; no production code touched).
+Covers: Cross-language calibration x3 (Paraphrase pairs flagged, Unrelated pairs pass, Default changes are recorded) -- fixture and test written, NOT executed, so NOT verified; Exact duplicates: Case and spacing variants (real model) -- same, not verified.
+- [~] 9.1 `services/api/tests/fixtures/calibration.yaml` (categories `duplicate`, `distinct`, `expected_weakness` -- 7/5/3 real ES/EN pairs) and `tests/slow/test_calibration.py` (`slow`): hard assert on `duplicate`/`distinct`, report-only on `expected_weakness`. **Written and collection-verified only** -- NOT run against the real model (blocked, see above); `pyproject.toml` gained `pyyaml>=6.0` as a new dev dependency (installed and used by the fixture loader; unrelated to the torch blocker, this installs fine on this platform).
+- [ ] 9.2 `make evidence` writes the score table to `docs/evidence/calibration.md` (the brief's Hugging Face evidence deliverable). The evidence-rendering code is written (inside `test_calibration.py`, exercised as a side effect of the `calibration_report` fixture when the suite actually runs), but **NOT executed** -- `docs/evidence/calibration.md` does NOT exist yet, no real scores were measured, and the cased-vs-casefolded margin / threshold-default decision could not be evaluated. **NOT DONE** -- needs a docker/Apple-Silicon/Linux session to run `make evidence` for real.
+- Verify: `make evidence` then `git diff --stat docs/evidence/calibration.md` -- **NOT RUN** (see above). Safety net instead: `cd services/api && .venv/bin/ruff check src tests`, `.venv/bin/mypy src`, `.venv/bin/lint-imports`, `.venv/bin/python -m pytest tests/unit tests/contract_suite tests/contract -m "not integration and not slow" -q` (274 passed, unchanged) all green; `.venv/bin/python -m pytest tests/slow/test_calibration.py --collect-only -q` (5 tests collected) confirms the new file is syntactically and semantically valid.
 
 ## Unit 10: Web scaffold, API client, generated types (~300) -- SHIPPED (`size:exception`, user-approved)
 

@@ -4191,6 +4191,151 @@ database, before this endpoint is considered production-ready.
   test_list_matches.py` (an untouched, pre-existing Unit 3b file) shows the identical class of error.
   Not part of this project's actual `mypy src` gate, so not fixed here, consistent with leaving `main.py`'s
   existing `# type: ignore` comments as the established pattern for this specific mypy limitation.
+## Unit 9: ES/EN calibration fixture and integration evidence -- 9.1 SCAFFOLD ONLY (BLOCKED), 9.2 NOT STARTED
+
+**Branch**: `feat/pv-09-calibration` (orchestrator-directed name; tasks.md's Delivery Plan table
+originally named this unit's branch `test/pv-09-calibration` -- the orchestrator's explicit branch
+instruction for this batch is authoritative and is used for the actual PR; tasks.md's table has been
+annotated accordingly, not silently changed).
+**Base**: `develop` (confirmed up to date, includes Units B.0-8, 274 tests green, per the orchestrator's
+briefing -- no retarget needed).
+
+### Investigation: can the real model run in this environment without docker? NO (architecture, not access)
+
+The orchestrator's briefing correctly identified this unit as needing real-environment investigation
+before writing anything, and gave a three-step protocol. Followed exactly, in order:
+
+1. **Disk space**: `df -h /` -> 245 GiB available on `/dev/disk1s5s1`. Not a constraint.
+2. **Network**: `curl -s -o /dev/null -w "%{http_code}"` against `https://pypi.org/simple/torch/`,
+   `https://huggingface.co/api/models/sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2`,
+   and `https://download.pytorch.org/whl/cpu/torch/` -- **all three returned `200`**. Network access
+   confirmed, consistent with Unit 8's finding.
+3. **Install attempt**: `cd services/api && .venv/bin/pip install torch==2.14.0 --index-url
+   https://download.pytorch.org/whl/cpu` ->
+   ```
+   Looking in indexes: https://download.pytorch.org/whl/cpu
+   ERROR: Could not find a version that satisfies the requirement torch==2.14.0 (from versions: none)
+   ERROR: No matching distribution found for torch==2.14.0
+   ```
+   Retried against the **plain PyPI index** (no `--index-url` override, in case the CPU-specific index
+   was simply stale) -- **identical error**. This ruled out "wrong index" as the cause and pointed at a
+   platform/wheel-availability problem instead of a network one.
+
+**Root cause, confirmed via PyPI's JSON API** (`curl https://pypi.org/pypi/torch/json`, no
+`huggingface_hub`/`pip` package needed -- same direct-HTTP technique Unit 8 used for the Hub SHA):
+listed every macOS wheel filename for torch `2.14.0` (current), `2.9.1`, `2.8.0`, `2.7.1`, `2.6.0`.
+**Every single one is `macosx_11_0_arm64` or `macosx_14_0_arm64` -- none is `x86_64`.** PyTorch has
+not published a macOS Intel wheel for any of the last several releases (Apple Silicon only). Cross-
+checked this venv's actual platform tag directly:
+```
+>>> import sysconfig, platform
+>>> platform.machine()
+'x86_64'
+>>> sysconfig.get_platform()
+'macosx-14.0-x86_64'
+```
+This sandbox is an Intel (x86_64) Mac, not Apple Silicon. **This is an unresolvable, environment-
+architecture gap, not a network/disk/permission/version-pin problem** -- pinning any other recent
+torch version would hit the identical wall, since none of them ship an x86_64 macOS wheel either (the
+table above spans 2.6.0 through 2.14.0, i.e. roughly the entire relevant release history). A docker-
+capable session, an Apple-Silicon Mac, or a Linux CI runner would all work; this sandbox cannot,
+regardless of how the install command is phrased.
+
+Per the orchestrator's explicit fallback instruction for this exact scenario ("IF this investigation
+fails... STOP, do not fabricate calibration scores... implement ONLY the fixture/test-file
+scaffolding... without actually running it... Report this clearly as blocked, not done"): stopped
+after confirming the root cause, did not attempt to fabricate or estimate scores, and scoped the rest
+of this batch to 9.1's scaffold only.
+
+### What was implemented (9.1 scaffold, written but NOT executed)
+
+**`services/api/tests/fixtures/calibration.yaml`** (85 lines): three categories exactly as tasks.md
+specifies (`duplicate`, `distinct`, `expected_weakness`), all real Spanish/English text, no placeholder
+lorem ipsum:
+- `duplicate` (7 pairs, MUST score >= threshold when run for real): the four spec-example pairs
+  verbatim (`"Comprar leche"`/`"Ir a comprar leche"` verb-added paraphrase; `"Comprar leche"`/
+  `"comprar LECHE"` case-and-spacing exact duplicate; cross-lingual `"Comprar leche"`/`"Buy milk"`;
+  an accent variant `"Llamar al dentista"`/`"Llamar al déntista"`), plus three more for broader
+  coverage: an English-only paraphrase, a Spanish reordered-items paraphrase, and a reverse-direction
+  (EN->ES) cross-lingual pair. The case-and-spacing pair carries `casefold_probe: true`, marking it as
+  the one used for the task 9.2 cased-vs-casefolded measurement (design.md's own worked example,
+  `"Comprar leche"` vs `"comprar LECHE"`, is this exact pair).
+- `distinct` (5 pairs, MUST score < threshold): the two spec-example pairs (different grocery item;
+  unrelated Spanish tasks) plus three more: a cross-lingual unrelated pair, its reverse direction, and
+  an unrelated pair from the same bureaucratic-errand domain (harder distinct case, not a trivially
+  obvious non-match).
+- `expected_weakness` (3 pairs, reported only, never gated): the spec-example negation pair
+  (`"Me gusta el café"`/`"No me gusta el café"`), an English negation pair, and a second Spanish
+  negation pair with a different verb (`"Necesito ir al banco"`/`"No necesito ir al banco"`) --
+  triangulating that the weakness isn't specific to one verb/sentence structure.
+
+**`services/api/tests/slow/test_calibration.py`** (309 lines) and `tests/slow/__init__.py` (new
+package, matching every other `tests/*` subpackage's convention):
+- Loads the fixture via a small `Pair` dataclass and `_load_fixture()` (needed `pyyaml`, see
+  dependency note below).
+- `calibration_report` is a `module`-scoped pytest fixture: loads the real model once via the
+  existing `load_sentence_transformer(settings)` factory (Unit 8's adapter -- reused, not
+  reimplemented), scores every `duplicate`/`distinct`/`expected_weakness` pair through the
+  PRODUCTION-shaped path (`comparison_form` on both texts, `SimilarityPolicy.score`, exactly what
+  `ValidatePhrase`/`SavePhrase` do), runs the task 9.2 cased-vs-casefolded probe on the
+  `casefold_probe: true` pair (embeds the raw display form directly -- a deliberate, commented,
+  measurement-only bypass of `embed()`'s documented comparison-form precondition -- alongside the
+  normal casefolded score, and records the raw cosine similarity of the two cased embeddings, i.e.
+  design.md's "cased-variant cosine ≈ 0.98, unmeasured" estimate), and writes the full score table to
+  `docs/evidence/calibration.md` as a side effect (this IS task 9.2's `make evidence` mechanism --
+  the Makefile target was already `pytest tests/slow/test_calibration.py -q`, unchanged, so no
+  Makefile edit was needed).
+- Five test functions: a determinism sanity check (embed the same text twice, must be byte-identical
+  -- so the hard gates below are testing the model, not noise), the hard `duplicate`/`distinct` gates
+  (assert on `margin < 0` / `margin >= 0` respectively, listing every failing pair id + score in the
+  assertion message), a soft `expected_weakness` check (only asserts the category is non-empty and
+  every score is a well-formed `[0,1]` float -- explicitly NO threshold assertion, matching tasks.md's
+  "report-only" instruction), and a check that the evidence file was actually written.
+- Module docstring states plainly, up front, that this file was NOT executed in this session and why
+  (condensed version of the investigation above), so a future reader opening the file directly (not
+  just this progress log) sees the same disclosure.
+
+**New dev dependency**: `pyproject.toml` gained `pyyaml>=6.0` under `[project.optional-dependencies]
+dev` and was installed into the venv (`pip install "pyyaml>=6.0"` -> `pyyaml-6.0.3`, a pure-Python/C
+package with an x86_64 wheel available -- this install succeeded fine; the torch blocker is specific
+to torch, not to this environment's ability to install packages in general). Needed for the fixture
+loader; no runtime/production code touches `yaml`.
+
+### Verification actually run (everything that does NOT require torch)
+
+- `cd services/api && .venv/bin/python -m pytest tests/slow/test_calibration.py --collect-only -q`
+  -> **5 tests collected**, 0 errors. Proves the file imports cleanly and is syntactically/structurally
+  valid -- `load_sentence_transformer`'s import of `sentence_transformers` is lazy (inside the function
+  body, Unit 8's existing pattern), so collection never touches the missing package.
+- `cd services/api && .venv/bin/python -m pytest tests/slow/test_calibration.py -q` (actually
+  executed, not just collected) -> **5 errors**, all the identical, clean
+  `ModuleNotFoundError: No module named 'sentence_transformers'` raised from
+  `load_sentence_transformer`'s `from sentence_transformers import SentenceTransformer` line. This
+  confirms the failure is EXACTLY the documented environment gap and nothing else -- no assertion
+  logic bug, no fixture-loading bug, no import-order bug.
+- `.venv/bin/ruff check src tests` -> `All checks passed!`
+- `.venv/bin/mypy src` -> `Success: no issues found in 42 source files` (unchanged; `mypy` is
+  configured to check `src` only, per the existing `pyproject.toml`/Makefile convention -- the new test
+  file was also run through `mypy tests/slow/test_calibration.py` directly as an extra check: `Success:
+  no issues found in 1 source file`).
+- `.venv/bin/lint-imports` -> `Contracts: 5 kept, 0 broken.` (the new test file imports only domain/
+  adapter modules already covered by the existing contracts; no new import-boundary surface).
+- `cd services/api && .venv/bin/python -m pytest tests/unit tests/contract_suite tests/contract -m
+  "not integration and not slow" -q` -> **274 passed, 1 deselected**, unchanged from Unit 8's baseline
+  -- this batch touched zero production code, so an unchanged count is the expected, correct safety-net
+  result, not a coincidence.
+- `make evidence` -> **NOT RUN**. `git diff --stat docs/evidence/calibration.md` -> **N/A, the file
+  does not exist** (not created, per the explicit instruction not to fabricate it).
+
+**Pre-existing, unrelated observation** (not part of this unit's scope, not fixed): running plain
+`pytest -q` or `pytest -m "not integration and not slow" -q` from the `services/api` root (i.e. letting
+pytest also try to COLLECT `tests/integration/`) fails with `ModuleNotFoundError: No module named
+'alembic'` before any tests run, because `alembic` is not installed in this venv. This is unrelated to
+Unit 9 (it affects `tests/integration/test_schema.py` and friends, which need a live Postgres via
+docker compose anyway -- already a standing, documented gap since Unit 4/5). The verification above
+scopes pytest explicitly to `tests/unit tests/contract_suite tests/contract`, matching the exact
+invocation Unit 8's own Verify line used, to route around this pre-existing, out-of-scope collection
+error rather than silently declaring it part of Unit 9's blocker.
 
 ### Review-budget check
 
@@ -4900,3 +5045,78 @@ Dockerfile changes, not by an actual build.
 **Status: DONE.** All 8 confirmed findings fixed, folded into the Unit 10 commit(s) via
 `git reset --soft` + re-commit (not a separate fixup commit), force-pushed with `--force-with-lease` to
 `feat/pv-10-web-scaffold`. PR #27 updates automatically. Ready for `sdd-verify`.
+git diff --stat --cached
+ services/api/pyproject.toml                  |   1 +
+ services/api/tests/fixtures/calibration.yaml |  85 ++++++++
+ services/api/tests/slow/__init__.py          |   0
+ services/api/tests/slow/test_calibration.py  | 309 +++++++++++++++++++++++++++
+ 4 files changed, 395 insertions(+)
+```
+**395 changed lines, under the 400-line budget** -- no split or exception needed. (First draft of
+`test_calibration.py` measured 325 lines with a more verbose docstring and a repetitive markdown-table
+renderer; a genuine trim pass -- condensing the module docstring from 31 to 15 lines, extracting a
+`_table`/`_scored_rows` helper to de-duplicate the four near-identical table-building blocks, and
+compacting `calibration.yaml`'s header comment and removing blank lines between fixture entries --
+brought the total from 440 to 395 before this was ever reported as a budget risk.)
+
+### Deviations from design / tasks.md
+
+- **9.1 is marked `[~]` (partial), not `[x]`**: the fixture and test file are written, collection-
+  verified, and confirmed to fail for exactly the documented reason -- but they were never actually run
+  against the real model, so the task's real acceptance criterion (a passing hard gate on real
+  `duplicate`/`distinct` scores) is unmet. Calling this "done" would misrepresent the state to
+  `sdd-verify` and to whoever picks this up next.
+- **9.2 is marked `[ ]` (not started)**: no real evidence table, no measured cased-vs-casefolded
+  margin, no measured cased-variant cosine, and therefore no threshold-default decision was possible.
+  Per the explicit instruction, this was NOT decided unilaterally -- there is nothing to decide yet,
+  since no real numbers exist.
+- **Commit message changed** from tasks.md's original `test(calibration): es/en fixture and
+  integration evidence` to `test(calibration): add ES/EN fixture and slow test scaffold (blocked: no
+  torch wheel for macOS x86_64)`, to accurately describe what actually shipped (a scaffold, not
+  evidence). tasks.md's Unit 9 header and Delivery Plan table row were both annotated in place to
+  match, not silently rewritten.
+- **Branch name**: used the orchestrator-directed `feat/pv-09-calibration` rather than tasks.md's
+  original `test/pv-09-calibration`. Documented in both tasks.md's PR chain table and here rather than
+  silently picking one.
+- No `SIMILARITY_THRESHOLD` default change, no `.env.example` edit, no ADR-003 note: none of these
+  apply without real measured numbers, and none were fabricated to force a decision.
+
+### Next steps for a capable environment
+
+1. Run this exact branch's `services/api/tests/slow/test_calibration.py` on Apple Silicon, Linux, or
+   inside the project's own Docker image (which already bakes the CPU torch wheel + model per Unit 8's
+   Dockerfile) -- no code changes should be needed, only environment capability.
+2. `make evidence` will then produce a real `docs/evidence/calibration.md`; re-run `git diff --stat
+   docs/evidence/calibration.md` per tasks.md's Verify line.
+3. If any `duplicate`/`distinct` pair fails its hard gate, or if the cased-vs-casefolded margin in the
+   new evidence table shows the separating margin degrading materially around 0.80, STOP and follow
+   the design-documented decision rule (change `SIMILARITY_THRESHOLD`'s default + `.env.example` +
+   spec + an ADR-003 note, as a recorded spec change) rather than editing the fixture.
+4. Flip 9.1 and 9.2 to `[x]` only once the above has actually run and the evidence file exists with
+   real, non-fabricated numbers.
+
+### TDD Cycle Evidence (Unit 9)
+
+Strict TDD (RED -> GREEN -> REFACTOR) does not map cleanly onto this unit, as tasks.md's own framing
+already anticipates ("Rollback: revert (manual step only, not in CI)" -- this was judged, per the
+orchestrator's explicit permission to use judgment here, as a fixture-and-measurement-script unit, not
+application/domain code with a callable production contract to drive out via failing tests). No
+production code (`src/app/...`) was touched at all in this batch -- only a new fixture file, a new test
+file, and one new dev dependency. Recorded here for completeness rather than omitted:
+
+| Task | Test File | Layer | Safety Net | RED | GREEN | TRIANGULATE | REFACTOR |
+|------|-----------|-------|------------|-----|-------|-------------|----------|
+| 9.1 | `tests/slow/test_calibration.py` | Slow/manual (evidence script, not unit/integration) | N/A (new file, no existing behaviour to protect) | N/A -- no production code exists to write a pre-existing failing test against; the "RED" analogue is the confirmed `ModuleNotFoundError` when the suite is actually run | ❌ NOT reached -- the missing native dependency blocks execution before any assertion runs | ➖ N/A | ➖ N/A |
+
+**Total tests written**: 5 (all in `test_calibration.py`)
+**Total tests passing**: 0 (blocked -- see above; all 5 collect cleanly and fail identically on the
+same `ModuleNotFoundError`, not on 5 different bugs)
+**Layers used**: Slow/manual evidence (5)
+**Pure functions created**: 2 (`_score_comparison_form`, `_casefold_probe` -- both framework-free,
+operate only on already-embedded vectors and the existing domain `cosine`/`policy` modules)
+
+**Commit**: `test(calibration): add ES/EN fixture and slow test scaffold (blocked: no torch wheel for macOS x86_64)`
+**Branch**: `feat/pv-09-calibration`, base `develop`.
+**Status**: **BLOCKED, not done.** 0/2 tasks (9.1, 9.2) fully complete; 9.1 partially complete
+(scaffold only). Ready for `sdd-apply` to resume on a torch-capable (Apple Silicon/Linux/docker)
+environment -- no further scaffolding work is needed first, only execution.
