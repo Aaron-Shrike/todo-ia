@@ -475,7 +475,7 @@ Covers: "Beyond the brief" decision log: README summary; api-contract Env docume
   stop-and-report step was followed first (see apply-progress.md's original Unit 15 "STOPPED" section
   for the full per-file table and the proposed README/`docs/architecture.md` split). **The user
   explicitly chose `size:exception`**: ship everything as ONE PR, declining the proposed split given
-  how marginal the overage is.
+  how marginal the overage is. Delivered as **PR #37** (`feat/pv-15-readme-architecture` -> `develop`).
 
 ## Unit 16: Decision log (~340) -- SPLIT into Unit 16 and Unit 16b
 
