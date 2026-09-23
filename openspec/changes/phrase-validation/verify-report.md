@@ -1647,3 +1647,31 @@ finding. GREEN confirmed after restoring the fix: **41 passed, 0 errors**, same 
 conditions. No regressions: `ruff check` clean on the changed file; full non-integration suite
 `291 passed, 1 deselected`, unchanged from this pass's own count. Task 8.4 (WARNING, evidence-
 gathering only) remains open and is not addressed by this fix -- tracked separately.
+
+### Resolution (task 8.4, post-verify follow-up, branch `feat/pv-08b-runtime-measurements`)
+
+The WARNING above was closed immediately following this verify pass, in the same session. Docker
+was confirmed available (as this pass's own finding already noted) and used to close both remaining
+halves of task 8.4:
+
+- **Image size**: `docker build -t todo-ia-api services/api` (fully cached rebuild, confirming the
+  image is current) + `docker images todo-ia-api` -> **10.4 GB disk / 4.4 GB content size**
+  (`docker inspect --format '{{.Size}}'` -> 4,400,446,152 bytes). Same figure this pass's own prose
+  already cited informally from ADR-008/ADR-003; now recorded in a dedicated evidence file and
+  re-confirmed by an independent rebuild rather than trusted from a prior session's cached number.
+- **`embed()` p50/p95 latency**: a one-off timing script (not a new pytest file -- simple scope per
+  this follow-up's explicit instructions) run inside `todo-ia-api:latest` with the offline env vars
+  set, 50 real calls against the baked model -> **p50 13.23 ms / p95 15.12 ms**. This was genuinely
+  never measured anywhere before this follow-up, exactly as this pass found.
+- **Warm-vs-cold HTTP timing pair**: `docker compose up -d db migrate api` (real Postgres/pgvector +
+  real model), 5 cold/warm pairs each for `POST /phrases/validate` and `POST /phrases` via
+  `curl -w "%{time_total}"` -> ~15 ms/request saved on cache hit (~65-68%), consistent with the raw
+  `embed()` timing above. Stack torn down (`docker compose down -v`) after measurement; built images
+  left cached.
+
+`docs/evidence/runtime-measurements.md` (new) records the full numbers and methodology; ADR-003 and
+ADR-011 were updated to cite the real values in place of their prior UNMEASURED/ESTIMATE language;
+`tasks.md`'s 8.4 is now `[x]`. Task 8.4 is now genuinely closed -- both halves measured for real, not
+estimated or fabricated. All 17 units' tasks are now complete; the one remaining verdict item from
+this pass's own Verdict section is the CRITICAL DATABASE_URL hermeticity finding, already resolved
+above (`fix/verify-database-url-hermeticity`).
