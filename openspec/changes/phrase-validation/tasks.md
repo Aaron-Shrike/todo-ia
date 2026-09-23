@@ -317,6 +317,7 @@ with the offline env vars (`HF_HUB_OFFLINE=1`/`TRANSFORMERS_OFFLINE=1`/`SENTENCE
 measured scores, and one genuine fixture-data finding (`accent_variant` was wrongly categorized as
 `duplicate`, measured score 0.4977 << 0.8 threshold; recategorized to `expected_weakness` with the
 real number recorded, same treatment as the negation pairs) are in apply-progress.md's Unit 9 section.
+Delivered as **PR #34** (`feat/pv-09b-calibration-evidence` -> `develop`).
 
 Commit: `test(calibration): add ES/EN fixture and slow test scaffold (blocked: no torch wheel for macOS x86_64)`. Rollback: revert (manual step only, not in CI; no production code touched).
 Covers: Cross-language calibration x3 (Paraphrase pairs flagged, Unrelated pairs pass, Default changes are recorded) -- fixture and test written, NOT executed, so NOT verified; Exact duplicates: Case and spacing variants (real model) -- same, not verified.
