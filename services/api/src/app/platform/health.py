@@ -31,8 +31,23 @@ class HealthState:
 
 def build_health_payload(state: HealthState) -> tuple[int, dict[str, object]]:
     """`model` is the readiness string; 200 only when DB and model are both
-    ready, else 503 `NOT_READY` with per-component `details`."""
-    database_ok = state.check_database()
+    ready, else 503 `NOT_READY` with per-component `details`.
+
+    Fix-pass finding #3 (resilience WARNING): `state.check_database()` used
+    to be called with no `try`/`except` around it. The real production
+    implementation (`platform/embedding_boot.py::check_database_reachable`)
+    only ever catches `sqlalchemy.exc.OperationalError` and lets any other
+    exception propagate -- a sibling connectivity failure (pool-exhaustion
+    `TimeoutError`, a driver `InterfaceError`) would fall through this
+    handler uncaught, straight to `main.py`'s generic `CatchAllMiddleware`,
+    producing a `500 INTERNAL_ERROR` instead of the designed `503 NOT_READY`
+    diagnostic contract (D15). ANY exception from the check -- not just a
+    `bool` `False` -- now maps to `database: "unavailable"`, so `/health`
+    always tells a caller WHICH dependency is down instead of crashing."""
+    try:
+        database_ok = state.check_database()
+    except Exception:
+        database_ok = False
     model = "ready" if state.model_ready else "unavailable"
     if database_ok and state.model_ready:
         data: dict[str, object] = {
