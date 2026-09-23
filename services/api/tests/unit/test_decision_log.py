@@ -61,13 +61,11 @@ def test_every_top_level_adr_is_type_beyond_brief() -> None:
 
 
 def test_technical_adrs_are_present_and_typed_technical() -> None:
-    """Structural check only (dir non-empty, every present file typed
-    `technical`) -- deliberately no hard count here. Unit 16 ships ADR-006..
-    009 (4 files); Unit 16b adds ADR-010..015 to reach the full 10. Unit 16b
-    tightens this into an exact-count assertion once all ten exist (see
-    apply-progress.md's Unit 16 resolution note)."""
     files = _technical_adr_files()
-    assert files, "no technical ADR files found under docs/decisions/technical/"
+    assert len(files) == 10, (
+        f"expected exactly 10 technical ADRs (ADR-006..015), found "
+        f"{[f.name for f in files]}"
+    )
     wrong = [f.name for f in files if _front_matter(f).get("type") != "technical"]
     assert not wrong, f"technical ADRs missing front-matter type: technical: {wrong}"
 

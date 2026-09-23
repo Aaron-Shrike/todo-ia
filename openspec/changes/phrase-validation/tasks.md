@@ -484,7 +484,9 @@ Unit 16b ships the remaining six technical ADRs (ADR-010-015, 118 lines), both i
 cap. `test_decision_log.py`'s technical-ADR test was relaxed in Unit 16 to a structural check only (dir
 non-empty, every present file typed `technical`, no hard count) since only 4 of the eventual 10
 technical files exist at Unit 16's own tip; Unit 16b restores the exact-10-count assertion once all ten
-exist. See apply-progress.md's "Unit 16 resolution" section for both branches' final commit SHAs.
+exist. Delivered as **PR #35** (`feat/pv-16-decision-log` -> `develop`) and **PR #36**
+(`feat/pv-16b-decision-log-technical` -> #35, authoring-ahead). See apply-progress.md's
+"Unit 16 resolution" section for both branches' final commit SHAs.
 
 Covers (unchanged, now spread across Unit 16/16b as noted per task): Decision log x4 (Five entries
 present, Technical ADRs are separate, README summary linkage, ONNX path documented); Concurrency:

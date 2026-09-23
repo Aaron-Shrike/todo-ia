@@ -6753,8 +6753,9 @@ Files: `docs/decisions/ADR-001-full-match-list.md` .. `ADR-005-staged-progress.m
 `openspec/changes/phrase-validation/tasks.md`, `openspec/changes/phrase-validation/apply-progress.md`
 (this section). 358 lines (code-only, excluding the two doc-tracking files).
 Verify (own-tip, isolated `git worktree`): `services/api/.venv/bin/python -m pytest
-tests/unit/test_decision_log.py -q` -> 3 passed, 1 xfailed.
-Commit SHA: recorded in Unit 16b's subsection below (not knowable from within this commit itself).
+tests/unit/test_decision_log.py -q` -> 3 passed, 1 xfailed (confirmed for real in a detached
+`git worktree` at this commit, not assumed).
+Commit SHA: `947b603`.
 
 ### Unit 16b (`feat/pv-16b-decision-log-technical`, base `feat/pv-16-decision-log`*)
 
@@ -6767,9 +6768,8 @@ Verify (own-tip, isolated `git worktree`): `services/api/.venv/bin/python -m pyt
 tests/unit/test_decision_log.py -q` -> 3 passed, 1 xfailed; full unit suite
 (`pytest tests/unit tests/contract_suite tests/contract -m "not integration and not slow" -q`) green,
 no regressions.
-*Authored ahead against `feat/pv-16-decision-log`'s tip (depends on its files existing) -- must rebase
-onto `develop` and retarget once Unit 16's own PR merges, same pattern as Units 2b/2c and 13a-13c
-elsewhere in this file.
-Commit SHAs -- Unit 16: filled in once known (see git log on `feat/pv-16-decision-log`); Unit 16b: this
-commit's own SHA is not knowable from within itself, same limitation as Unit 16 above. Both SHAs were
-reported directly to the user at the end of this batch rather than self-embedded here.
+*Authored ahead against `feat/pv-16-decision-log`'s tip (`947b603`, depends on its files existing) --
+must rebase onto `develop` and retarget once Unit 16's own PR merges, same pattern as Units 2b/2c and
+13a-13c elsewhere in this file.
+Commit SHA: this commit's own hash is not knowable from within itself (same limitation noted for Unit
+16 above) -- reported directly to the user at the end of this batch rather than self-embedded here.
