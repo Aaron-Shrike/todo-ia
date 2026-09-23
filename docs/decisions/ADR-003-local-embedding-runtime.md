@@ -33,13 +33,19 @@ gate are written down so the choice stays revisable, not permanent.
   include reusable layer cache rather than only the final image's own
   layers — treat it as the current best measurement, not a from-clean
   baseline.
-- **p95 embedding latency**: **UNMEASURED**. Neither Unit 8 nor Unit 14
-  timed `embed()` p50/p95 against the running model; Unit 14 only measured
-  cold-build wall time (torch install 71.6 s, `snapshot_download` 139.5 s,
-  image export/unpack 157.7 s) and container-start-to-healthy (~10.6 s,
-  see ADR-008), which are cold-start and boot numbers, not steady-state
-  request latency. This stays an open item for whoever exercises
-  `EMBEDDING_CACHE_SIZE` sizing or the p95 migration trigger below.
+- **p95 embedding latency (measured, task 8.4)**: **p50 13.23 ms / p95
+  15.12 ms** over 50 real `embed()` calls against the baked model inside
+  `todo-ia-api:latest` (offline env vars, zero network calls), after 3
+  discarded warmup calls. Full measurement, including a real
+  `docker compose`-backed warm-vs-cold `POST /phrases/validate` +
+  `POST /phrases` HTTP timing pair, in
+  `docs/evidence/runtime-measurements.md`. This corrects the earlier "~50
+  ms CPU forward pass, ESTIMATE" — the real p95 is roughly 3x faster than
+  that estimate on this host's CPU. Unit 14's cold-build wall time (torch
+  install 71.6 s, `snapshot_download` 139.5 s, image export/unpack 157.7
+  s) and container-start-to-healthy (~10.6 s, see ADR-008) remain separate,
+  correctly-scoped cold-start/boot numbers, not steady-state request
+  latency.
 - **Casefold margins** (measured in Unit 9, `docs/evidence/calibration.md`,
   pair `case_and_spacing_variant`, "Comprar leche" vs "comprar LECHE"):
   cased cosine/score **0.3313**, cased margin **-0.4687**; casefolded score

@@ -4017,6 +4017,86 @@ numbered writeup above.
 **Branch**: `feat/pv-08-embeddings-image`
 **Base**: unchanged, `fix/pv-07-review-fixes` at `48bff7b`.
 
+### Unit 8 follow-up: task 8.4, real image/latency measurements (branch `feat/pv-08b-runtime-measurements`)
+
+The original 8.4 blocker ("no docker in this environment") no longer applied: Docker was confirmed
+available and used for real in at least three later sessions (Unit 9's follow-up calibration batch,
+Unit 14's compose build/smoke-test, and the full-system `sdd-verify` pass, which flagged this as a
+WARNING -- see `verify-report.md`'s "Task 8.4" entry). This follow-up batch, cut from `develop` after
+PR #38 merged (`bbff878`), closes both remaining halves of 8.4: real image size (already informally
+captured by Unit 14/16 but re-confirmed here by an independent rebuild) and real `embed()`
+p50/p95 + warm-vs-cold HTTP timing (never captured anywhere before this batch).
+
+**1. Image size** -- `docker build -t todo-ia-api services/api` (default target, the final `api`
+stage per the Dockerfile's own last-stage-wins convention and task 8.4's literal command): fully
+cached rebuild (every layer `CACHED`, ~0.2 s), confirming the image already cached from Unit 14/16 is
+still current. `docker images todo-ia-api` -> **10.4 GB disk usage**; `docker inspect
+todo-ia-api:latest --format '{{.Size}}'` -> **4,400,446,152 bytes (4.4 GB content size)**. Same
+number Unit 16 already cited informally in ADR-003/ADR-008 prose; this batch is the first to record
+it in a dedicated evidence file and re-confirm it with an independent build rather than trust a prior
+session's cached figure.
+
+**2. `embed()` p50/p95 latency** -- no existing `pytest -m slow` test covers this (only
+`tests/slow/test_calibration.py` exists, a different concern), and the task's own relaxed scope
+allowed a simple timing script rather than a new formal test file. Ran a one-off script
+(`_tmp_embed_timing.py`, written to a temp location inside the repo so it could be bind-mounted, then
+deleted after the run -- never committed) inside a container from `todo-ia-api:latest`:
+
+```
+docker run --rm -v "$(pwd):/repo" -w /repo/services/api \
+  -e HF_HUB_OFFLINE=1 -e TRANSFORMERS_OFFLINE=1 -e SENTENCE_TRANSFORMERS_HOME=/opt/models \
+  -e DATABASE_URL=postgresql+psycopg://contract:contract@localhost:5432/todo_ia \
+  -e EMBEDDING_MODEL_REVISION=e8f8c211226b894fcb81acc59f3b34ba3efd5f42 \
+  todo-ia-api:latest python /repo/services/api/_tmp_embed_timing.py
+```
+
+Calls `load_sentence_transformer(settings)` (the same production factory `main.py`'s lifespan uses),
+3 discarded warmup calls, then 50 timed `provider.embed(text)` calls over 10 rotating ES/EN texts
+drawn from the calibration fixture. Result: cold model load **5,892.0 ms**; embed() **p50 13.23 ms /
+p95 15.12 ms** (min 11.01, max 16.07, mean 13.22, stdev 1.17). This replaces design.md's "~50 ms CPU
+forward pass, ESTIMATE, unmeasured" -- the real number is roughly 3x faster than the estimate.
+
+**3. Warm-vs-cold `POST /phrases/validate` + `POST /phrases` HTTP timing pair** -- brought up the
+real compose stack (`docker compose up -d db migrate api`), polled `/health` until 200 (ready on the
+second poll, well inside the 120 s `start_period`), then used `curl -s -o /dev/null -w
+"%{time_total}"` for 5 cold/warm pairs per endpoint. Cold = first request for a text never embedded
+before (`CachingEmbeddingProvider` miss, real `embed()` call); warm = an immediate second request for
+the *same* text (cache hit, `embed()` skipped -- for `POST /phrases` this returns 409, which is
+expected and does not affect the cache-hit timing being measured). Results: `/phrases/validate` avg
+cold **22.16 ms** / avg warm **7.02 ms**; `/phrases` avg cold **22.80 ms** / avg warm **8.25 ms** --
+roughly 15 ms saved per request on a cache hit (~65-68%), consistent with the raw `embed()` p50/p95
+measured in step 2 being skipped entirely. This is the first real number for ADR-011's "measured
+warm-vs-cold saving from the cache," previously UNMEASURED.
+
+**Evidence file**: `docs/evidence/runtime-measurements.md` (new), full numbers, methodology, and
+per-pair tables, same honest-measurement style as `docs/evidence/calibration.md` and
+`docs/evidence/exact-scan-timings.md`.
+
+**ADRs updated**: ADR-003 (`docs/decisions/ADR-003-local-embedding-runtime.md`, "What it costs"
+section, replaces the UNMEASURED p95 latency line) and ADR-011
+(`docs/decisions/technical/ADR-011-embedding-cache.md`, replaces the UNMEASURED cache-saving line).
+design.md's Verification Status table (3 rows: API image size, real p95 embed latency, ~50 ms CPU
+forward pass estimate) and Open Questions section updated to point at the real measured values.
+
+**Docker cleanup**: `docker compose down -v` after the HTTP timing measurements (containers, network,
+and the `pgdata` volume removed); the `todo-ia-api`/`todo-ia-migrate`/`todo-ia-web` images built by
+earlier units were left cached (not rebuilt from scratch, not removed) -- consistent with Unit 9's
+follow-up cleanup convention (cached images kept, only ephemeral containers/volumes torn down). The
+temporary `_tmp_embed_timing.py` script was deleted from the repo after use; `git status --short`
+confirmed a clean tree before committing.
+
+**Files changed this batch**: `docs/evidence/runtime-measurements.md` (new), `docs/decisions/ADR-003-
+local-embedding-runtime.md`, `docs/decisions/technical/ADR-011-embedding-cache.md`, `design.md`
+(Verification Status table + Open Questions), `tasks.md` (8.4 flipped to `[x]`, Unit 8 header
+updated, Verify line updated), `apply-progress.md` (this section), `verify-report.md` (resolution
+note). No `src/app/...` production code touched -- this is a docs/evidence-only follow-up, matching
+task 8.4's own scope.
+
+**Branch**: `feat/pv-08b-runtime-measurements`, base `develop` (current HEAD after PR #38 merged,
+`bbff878`).
+**Status**: **DONE.** Task 8.4 fully closed -- both halves (image size, embed/HTTP latency) measured
+for real and recorded, not estimated or fabricated.
+
 ## Remaining Tasks (as of the end of this batch)
 
 - [x] Unit 7: save + matches endpoints (tasks 7.1-7.3) -- done, `size:exception` granted, merged as
@@ -4038,9 +4118,10 @@ numbered writeup above.
   confirmed findings fixed, folded into the same commit (`97f0fff`), PR #24 still open. See "Unit 8
   fix pass" section above for the full per-finding writeup, TDD evidence, and the two genuinely
   environment-blocked items left untouched.
-- [ ] Unit 8.4 (image build + real-model timing): **BLOCKED**, no docker in this environment, needs a
-  docker-capable session. Not silently skipped -- documented as deferred, same as Unit 4's typmod-reader
-  gap pattern.
+- [x] Unit 8.4 (image build + real-model timing): **DONE** (follow-up batch, branch
+  `feat/pv-08b-runtime-measurements`, Docker confirmed available). Image size 10.4 GB / 4.4 GB,
+  `embed()` p50/p95 13.23 ms / 15.12 ms, warm-vs-cold HTTP saving ~15 ms/request -- see "Unit 8
+  follow-up" section above and `docs/evidence/runtime-measurements.md`.
 - [ ] Unit 9 (ES/EN calibration fixture) needs Unit 8 (now PR #24, not yet merged) -- confirm merge
   before starting.
 - [ ] Unit 10 (web scaffold + generated types) needs Unit 7b's `docs/openapi.json` (not this unit).

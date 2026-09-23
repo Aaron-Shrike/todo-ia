@@ -40,7 +40,15 @@ keyset tolerates a recomputed vector), only latency. A shared cache is a
 possible future step if more than one replica is ever run; it is not
 designed here.
 
-Real p95 embedding latency and the measured warm-vs-cold saving from the
-cache are **UNMEASURED** — see ADR-003's "What it costs" section; no unit
-timed `embed()` p50/p95 or a warm/cold `POST /phrases/validate` +
-`POST /phrases` pair against the real model.
+**Measured (task 8.4)**: real p95 embedding latency is **13.23 ms p50 /
+15.12 ms p95** (50 real `embed()` calls against the baked model). The
+warm-vs-cold saving from this cache, measured against a real running
+Docker Compose stack with `curl -w`, is **~15 ms/request** (~68% faster on
+`POST /phrases/validate`, ~64% faster on `POST /phrases`, 5 pairs each) —
+consistent with a cache hit skipping the ~13-15 ms `embed()` call entirely
+and leaving only the ~7-8 ms FastAPI/DB round-trip floor. Full numbers,
+methodology, and per-pair tables in
+`docs/evidence/runtime-measurements.md`. See also ADR-003's "What it
+costs" section for the same p50/p95 figures. One local run, no concurrent
+load — not a production capacity benchmark for `EMBEDDING_CACHE_SIZE`
+sizing under real multi-replica traffic.
