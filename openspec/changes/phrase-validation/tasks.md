@@ -547,7 +547,7 @@ Specs: SV = semantic-validation, PM = phrase-management, DC = duplicate-confirma
 | PM Maximum length | 1, 6 |
 | PM Phrase persistence with validation metadata | 3, 4, 7, 8 (dimension mismatch) |
 | PM Database-level uniqueness | 4 |
-| PM List phrases | 7 |
+| PM List phrases | 7, PR #42 (real keyset pagination -- `limit`/`cursor`/`total`, beyond-plan) |
 | PM Migrations | 4 |
 | PM "Beyond the brief" decision log | 15, 16 |
 | AC Response envelopes | 6, 6b |
@@ -555,7 +555,7 @@ Specs: SV = semantic-validation, PM = phrase-management, DC = duplicate-confirma
 | AC POST /phrases/validate | 6b |
 | AC POST /phrases/matches | 7 |
 | AC POST /phrases | 7 |
-| AC GET /phrases | 7 |
+| AC GET /phrases | 7, PR #42 (rewritten to real `limit`/`cursor`/`total` keyset pagination, beyond-plan) |
 | AC GET /health | 6b, 14 |
 | AC OpenAPI documentation | 7 |
 | AC Caching is invisible to the contract | 6b, 7 |
@@ -569,9 +569,12 @@ Specs: SV = semantic-validation, PM = phrase-management, DC = duplicate-confirma
 | UI Client-side input checks | 10, 11 |
 | UI Error handling | 11 (Retry), 13 |
 | UI Saved phrase list with status badge | 13 |
+| UI Infinite scroll over the saved list | PR #42 (new requirement, beyond-plan -- not in the original 21-unit design) |
 | UI Spanish copy table | 10, 13 |
 
 Every requirement above has at least one owning unit. Scenario-level ownership is listed in each unit's "Covers" line.
+
+**Retroactive note on PR #41/#42 (beyond-plan, added after this session's fresh `sdd-verify` pass flagged it as a WARNING):** PR #41 (1,487 lines: Peruvian seed data, `/acerca` page, app restyle) and PR #42 (1,346 lines: real keyset pagination for `GET /phrases` and the saved/match lists) were both authored and merged outside the per-unit `sdd-apply` flow this plan's other 21 units followed -- neither went through the mandatory review-workload guard (stop-and-ask at >400 changed lines, `size:exception` sign-off) every tracked unit received, and neither has its own `apply-progress.md` entry. Both are legitimate, verified work (298/298 backend + 176/176 frontend tests green post-merge, manually QA'd in a real browser per their own PR bodies, no functional regressions found by the fresh full-system verify pass), but they were delivered via a faster, less-audited path than the rest of this change. Documented here after the fact so the audit trail is honest about it, not to relitigate or revert either PR.
 
 ### Scenario coverage flags (for the reviewer and for sdd-verify)
 
