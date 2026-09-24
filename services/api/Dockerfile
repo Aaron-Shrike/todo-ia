@@ -92,6 +92,7 @@ COPY --from=api-builder /usr/local/bin /usr/local/bin
 COPY --from=api-builder /opt/models /opt/models
 COPY pyproject.toml ./
 COPY src ./src
+COPY scripts ./scripts
 RUN pip install --no-deps .
 EXPOSE 8000
 CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]
