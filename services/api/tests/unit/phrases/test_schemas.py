@@ -5,7 +5,13 @@ from __future__ import annotations
 import pytest
 from pydantic import BaseModel, ValidationError
 
-from app.modules.phrases.api.schemas import PhraseId, page_limit, raw_phrase_text
+from app.modules.phrases.api.schemas import (
+    PhraseId,
+    page_limit,
+    query_score,
+    query_text,
+    raw_phrase_text,
+)
 
 pytestmark = pytest.mark.unit
 
@@ -68,3 +74,48 @@ def test_raw_phrase_text_error_reports_the_semantic_max_length_not_the_raw_cap()
 def test_raw_phrase_text_rejects_non_string() -> None:
     with pytest.raises(ValidationError):
         _TextModel(text=123)
+
+
+class _ScoreModel(BaseModel):
+    min_score: query_score()  # type: ignore[valid-type]
+
+
+@pytest.mark.parametrize("value", [0.0, 0.5, 1.0])
+def test_query_score_boundary_values_accepted(value: float) -> None:
+    assert _ScoreModel(min_score=value).min_score == value
+
+
+@pytest.mark.parametrize("value", [-0.1, 1.1])
+def test_query_score_rejects_out_of_range_values(value: float) -> None:
+    with pytest.raises(ValidationError):
+        _ScoreModel(min_score=value)
+
+
+def test_query_score_rejects_nan() -> None:
+    with pytest.raises(ValidationError):
+        _ScoreModel(min_score=float("nan"))
+
+
+class _QueryTextModel(BaseModel):
+    q: query_text(280)  # type: ignore[valid-type]
+
+
+def test_query_text_accepts_up_to_the_semantic_max_length() -> None:
+    assert _QueryTextModel(q="a" * 280).q == "a" * 280
+
+
+def test_query_text_rejects_one_over_the_semantic_max_length() -> None:
+    with pytest.raises(ValidationError):
+        _QueryTextModel(q="a" * 281)
+
+
+def test_query_text_error_reports_the_semantic_max_length() -> None:
+    """Unlike `raw_phrase_text`, `query_text` has no 4x raw cap -- `q` is
+    only ever compared against `normalized_text`, never stored, so its own
+    raw length IS the semantic bound (api-contract spec's "q over the
+    length cap" scenario)."""
+    with pytest.raises(ValidationError) as exc_info:
+        _QueryTextModel(q="a" * 281)
+    (error,) = exc_info.value.errors()
+    assert error["type"] == "string_too_long"
+    assert error["ctx"]["max_length"] == 280
