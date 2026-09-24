@@ -231,6 +231,45 @@
   margin-top: var(--space-3);
 }
 
+.filterBar {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+  margin-bottom: var(--space-3);
+}
+
+.filterField {
+  display: flex;
+  flex-direction: column;
+  gap: 0.3rem;
+  min-width: 10rem;
+}
+
+.filterSelect,
+.filterInput {
+  background: var(--color-background);
+  color: var(--color-foreground);
+  border: 1px solid var(--color-border);
+  border-radius: 0.5rem;
+  padding: 0.5rem 0.7rem;
+  font-family: var(--font-sans);
+  font-size: 0.9rem;
+}
+
+.filterSelect:focus-visible,
+.filterInput:focus-visible {
+  border-color: var(--color-accent);
+  outline: 2px solid var(--color-ring);
+  outline-offset: 1px;
+}
+
+.emptyStateFiltered {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: var(--space-2);
+}
+
 .listCounter {
   font-family: var(--font-mono);
   font-size: 0.8rem;

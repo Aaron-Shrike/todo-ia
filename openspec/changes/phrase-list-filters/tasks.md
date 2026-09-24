@@ -25,6 +25,8 @@ Notes:
 - Unit 4 (ADR-016 + decision-log test) is independent of Units 1-3 (docs + one assertion). Sequenced last to match the archived `phrase-validation` precedent (docs/ADRs cite already-shipped behaviour), not because of a hard dependency.
 - If any unit measures over 400 on the actual diff, split at the seam named in its Verify line rather than requesting `size:exception` first — same rule the archived change used.
 
+**Unit 2 `size:exception` (recorded during apply, orchestrator + user decision):** Unit 2's real diff measured ~614 non-generated lines (schemas + router + application + 3 test files), above the 400-line budget and above this unit's own ~460-560 estimate. `sdd-apply` reported no natural sub-seam: `query_score`/`query_text` (schemas), the router wiring, and `ListPhrases`'s filter/normalize logic all had to land together for any test in the unit to pass under strict TDD — splitting further would mean landing broken intermediate states. The user reviewed this tradeoff live and chose `size:exception` over an artificial split. PR 2 ships as-is, documented here as the accepted exception.
+
 ### Suggested Work Units
 
 | Unit | Goal | Likely PR | Notes |
@@ -66,12 +68,12 @@ Covers (api-contract): all `GET /phrases` filter/422/AND/total/cursor scenarios;
 
 Commit: `feat(phrase-ui): status/text/min-score filter controls with debounced text input`. Rollback: revert; unfiltered list behaviour unchanged.
 Covers (phrase-ui): all three ADDED requirements — filter controls, filtered counter/empty state, filter copy keys.
-- [ ] 3.1 RED then GREEN `apps/web/src/lib/api/client.ts` (+ `client.test.ts`): `ListPhrasesParams` gains `status?`, `q?`, `minScore?`, serialized as `status`/`q`/`min_score`; only defined values are serialized.
-- [ ] 3.2 RED then GREEN `apps/web/src/features/phrases/hooks/useDebouncedValue.ts` (new, + test): `useState` + `useEffect`/`setTimeout`/`clearTimeout`; `constants.ts` gains `LIST_FILTER_DEBOUNCE_MS = 300`.
-- [ ] 3.3 RED then GREEN `apps/web/src/features/phrases/components/PhraseListFilters.tsx` (new, presentational, + test): status `<select>` (`Todas`/`Única`/`Duplicado confirmado`), text input (`maxLength` = phrase max), min-score `<input type="number" min=0 max=100 step=1>` sending `percent/100`; `apps/web/src/i18n/copy.es.ts` (+ test): status label/options, text label/placeholder, min-score label, `emptyFiltered`, `clearFilters`, all in neutral Spanish, none hardcoded outside the copy module.
-- [ ] 3.4 RED then GREEN `apps/web/src/features/phrases/components/PhraseList.tsx` (+ test): filter state (`debouncedQ`, `appliedKey`, `fetchedKey`/`generation` guard per design.md); `refresh()` reused unchanged for "page 1 with current filters"; `loadMore` sends `{...filtersRef.current, cursor}`; filtered `{loaded}/{total}` counter; filtered empty state with a "Limpiar filtros" action; `phrases.module.css` filter-bar styles.
-- [ ] 3.5 Frontend scenario tests (Vitest, fake timers, injected client): debounce fires once after 300ms, not per keystroke; status/min-score refetch immediately and reset to page 1; a stale response is dropped (generation guard); `refresh()` after save keeps active filters; clear-filters resets all three controls and refetches unfiltered from page 1; the query string matches the active combination.
-- Verify: `cd apps/web && npm test`.
+- [x] 3.1 RED then GREEN `apps/web/src/lib/api/client.ts` (+ `client.test.ts`): `ListPhrasesParams` gains `status?`, `q?`, `minScore?`, serialized as `status`/`q`/`min_score`; only defined values are serialized.
+- [x] 3.2 RED then GREEN `apps/web/src/features/phrases/hooks/useDebouncedValue.ts` (new, + test): `useState` + `useEffect`/`setTimeout`/`clearTimeout`; `constants.ts` gains `LIST_FILTER_DEBOUNCE_MS = 300`.
+- [x] 3.3 RED then GREEN `apps/web/src/features/phrases/components/PhraseListFilters.tsx` (new, presentational, + test): status `<select>` (`Todas`/`Única`/`Duplicado confirmado`), text input (`maxLength` = phrase max), min-score `<input type="number" min=0 max=100 step=1>` sending `percent/100`; `apps/web/src/i18n/copy.es.ts` (+ test): status label/options, text label/placeholder, min-score label, `emptyFiltered`, `clearFilters`, all in neutral Spanish, none hardcoded outside the copy module.
+- [x] 3.4 RED then GREEN `apps/web/src/features/phrases/components/PhraseList.tsx` (+ test): filter state (`debouncedQ`, `appliedKey`, `fetchedKey`/`generation` guard per design.md); `refresh()` reused unchanged for "page 1 with current filters"; `loadMore` sends `{...filtersRef.current, cursor}`; filtered `{loaded}/{total}` counter; filtered empty state with a "Limpiar filtros" action; `phrases.module.css` filter-bar styles.
+- [x] 3.5 Frontend scenario tests (Vitest, fake timers, injected client): debounce fires once after 300ms, not per keystroke; status/min-score refetch immediately and reset to page 1; a stale response is dropped (generation guard); `refresh()` after save keeps active filters; clear-filters resets all three controls and refetches unfiltered from page 1; the query string matches the active combination.
+- Verify: `cd apps/web && npm test`. **DONE** — `npx vitest run` (202/202 passed) and `npx tsc --noEmit` (clean), see `apply-progress.md`'s Unit 3 section.
 
 ## Unit 4: Decision log — ADR-016 (~66, PR 4, independent)
 
