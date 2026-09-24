@@ -16,7 +16,14 @@ services:
       - pgdata:/var/lib/postgresql/data
       - ./infra/db/init.sql:/docker-entrypoint-initdb.d/init.sql:ro
     ports:
-      - "5432:5432"
+      # `DB_HOST_PORT` (default 5432, same convention as every other
+      # `${VAR:-default}` in this file): the HOST side of the mapping only
+      # -- the container's own internal port stays 5432 always, so `api`'s
+      # DATABASE_URL (Compose-network hostname `db:5432`, never `localhost`)
+      # is unaffected by this. Override it in your local `.env` (e.g.
+      # `DB_HOST_PORT=5433`) if something else on your machine already owns
+      # host port 5432 -- a native PostgreSQL install is the common case.
+      - "${DB_HOST_PORT:-5432}:5432"
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-todo_ia} -d ${POSTGRES_DB:-todo_ia}"]
       interval: 5s
