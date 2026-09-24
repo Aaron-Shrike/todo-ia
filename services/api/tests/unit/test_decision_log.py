@@ -42,10 +42,10 @@ def _technical_adr_files() -> list[Path]:
     return sorted(p for p in TECHNICAL_DIR.glob("*.md") if p.is_file())
 
 
-def test_exactly_five_beyond_brief_adrs_at_top_level() -> None:
+def test_exactly_six_beyond_brief_adrs_at_top_level() -> None:
     files = _top_level_adr_files()
-    assert len(files) == 5, (
-        f"expected exactly 5 top-level ADRs (ADR-001..005), found "
+    assert len(files) == 6, (
+        f"expected exactly 6 top-level ADRs (ADR-001..005, ADR-016), found "
         f"{[f.name for f in files]}"
     )
 
