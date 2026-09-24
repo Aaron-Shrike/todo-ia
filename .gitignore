@@ -1,6 +1,10 @@
 # Local tooling caches
 .atl/
 
+# Local, machine-specific Docker Compose overrides (auto-merged by Compose,
+# never committed -- e.g. host port remaps to dodge a local service clash)
+docker-compose.override.yml
+
 # Environment and secrets
 .env
 .env.*
