@@ -96,3 +96,86 @@ Returns 200 `{"data":{"items":[<phrase>...], "total": integer, "next_cursor": st
 - GIVEN a first page requested with `q=leche`
 - WHEN the client requests the next page using `next_cursor` and the same `q=leche`
 - THEN pagination continues correctly over the filtered set
+
+### Requirement: Error codes and status mapping
+
+The API MUST use exactly these codes and statuses:
+
+| HTTP | code | When |
+| --- | --- | --- |
+| 400 | `INVALID_CURSOR` | `cursor` malformed/undecodable, violating the cursor field rules (see `POST /phrases/matches`), or issued for a different normalized text or threshold |
+| 404 | `NOT_FOUND` | unknown route |
+| 404 | `PHRASE_NOT_FOUND` | `GET /phrases/{id}` for an id that does not exist |
+| 405 | `METHOD_NOT_ALLOWED` | wrong method |
+| 409 | `DUPLICATE_CONFIRMATION_REQUIRED` | save of a duplicate without `confirm_duplicate: true` |
+| 413 | `PAYLOAD_TOO_LARGE` | request body larger than `MAX_REQUEST_BYTES` (default 1 MiB) |
+| 422 | `VALIDATION_ERROR` | schema violation, wrong JSON type, empty text, over-length, bad `limit` |
+| 500 | `INTERNAL_ERROR` | unhandled failure, including a database that is unreachable on any endpoint other than `/health` and a save that times out waiting for the write lock (no dedicated codes exist for these) |
+| 503 | `EMBEDDING_UNAVAILABLE` | embedding provider raised / model not loaded |
+| 504 | `EMBEDDING_TIMEOUT` | embedding exceeded `EMBEDDING_TIMEOUT_SECONDS` |
+(Previously: no `PHRASE_NOT_FOUND` row — `GET /phrases/{id}` did not exist.)
+
+There MUST be no `EXACT_DUPLICATE` code. `VALIDATION_ERROR.details` MUST identify the offending field(s), e.g. `{"fields":[{"field":"text","reason":"empty"}]}` with reasons drawn from `empty`, `too_long`, `required`, `invalid_type`, `out_of_range`; `too_long` includes `max_length`. A bad cursor is NOT a `VALIDATION_ERROR`: it is `400 INVALID_CURSOR`. `PHRASE_NOT_FOUND` is NOT a `VALIDATION_ERROR` either: it is a distinct 404 code, disambiguated from the routing-level `NOT_FOUND` (an unknown route) by naming the resource explicitly.
+
+Input is bounded before it is processed. Text longer than 4 x `PHRASE_MAX_LENGTH` code points BEFORE normalization MUST be rejected with 422 `too_long` (`details.max_length` = `PHRASE_MAX_LENGTH`) without being normalized or embedded, which bounds the cost of normalizing hostile input. A request body larger than `MAX_REQUEST_BYTES` MUST be rejected with 413 `PAYLOAD_TOO_LARGE` before it is parsed. JSON types are strict: a value of the wrong JSON type (e.g. a numeric string where an integer is required) is `invalid_type`, never coerced.
+
+#### Scenario: Empty text
+- GIVEN `POST /phrases/validate {"text":"  "}`
+- WHEN called
+- THEN 422 `VALIDATION_ERROR` with `details.fields[0] == {"field":"text","reason":"empty"}`
+
+#### Scenario: Too long
+- GIVEN 281 characters and default config
+- WHEN validate is called
+- THEN 422 with `details.fields[0].reason == "too_long"` and `details.max_length == 280`
+
+#### Scenario: Provider failure
+- GIVEN a failing embedding provider
+- WHEN validate or save is called
+- THEN 503 `EMBEDDING_UNAVAILABLE`
+
+#### Scenario: Provider timeout
+- GIVEN a slow embedding provider
+- WHEN validate or save is called
+- THEN 504 `EMBEDDING_TIMEOUT`
+
+#### Scenario: Malformed JSON
+- GIVEN a body that is not valid JSON
+- WHEN posted
+- THEN 422 `VALIDATION_ERROR` in the envelope
+
+#### Scenario: Raw length cap
+- GIVEN `PHRASE_MAX_LENGTH=280` and a text of 1121 code points (mostly padding) before normalization
+- WHEN validate or save is called
+- THEN 422 `too_long` with `details.max_length == 280` and no embedding call occurs
+
+#### Scenario: Oversized body
+- GIVEN a request body larger than `MAX_REQUEST_BYTES`
+- WHEN posted
+- THEN 413 `PAYLOAD_TOO_LARGE` in the envelope and nothing is parsed or embedded
+
+#### Scenario: Database unreachable outside health
+- GIVEN the database is unreachable
+- WHEN `POST /phrases` is called
+- THEN 500 `INTERNAL_ERROR` (documented behavior; only `/health` reports `NOT_READY`) and nothing is persisted
+
+#### Scenario: Unknown phrase id
+- GIVEN no phrase with id 999
+- WHEN `GET /phrases/999` is called
+- THEN 404 `PHRASE_NOT_FOUND`, distinct from the routing-level `NOT_FOUND`
+
+## ADDED Requirements
+
+### Requirement: GET /phrases/{id}
+
+Returns a single phrase by id, same body shape as the 201 payload (`{"data":{"id","text","created_at","validation":{...}}}`). Added so a client can resolve `validation.most_similar_phrase_id` to that phrase's own text on demand (the list/save/validate responses only ever carry the id, never the matched phrase's text) — `apps/web`'s "compare with the matched phrase" panel is the first caller. A non-existent id MUST return 404 `PHRASE_NOT_FOUND`.
+
+#### Scenario: Existing id
+- GIVEN a stored phrase with id 7
+- WHEN `GET /phrases/7` is called
+- THEN 200 and `data` has the same shape as the 201 `POST /phrases` payload for that phrase
+
+#### Scenario: Unknown id
+- GIVEN no phrase with id 999
+- WHEN `GET /phrases/999` is called
+- THEN 404 `PHRASE_NOT_FOUND`

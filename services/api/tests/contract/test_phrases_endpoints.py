@@ -592,3 +592,24 @@ def test_list_phrases_cursor_requires_resending_filters() -> None:
     assert second_data["has_more"] is False
     collected = {item["text"] for item in first_data["items"] + second_data["items"]}
     assert collected == {"leche 1", "leche 2", "leche 3"}
+
+
+# --- GET /phrases/{id} -----------------------------------------------------
+
+
+def test_get_phrase_returns_the_matching_row() -> None:
+    client, _, factory = _client()
+    _seed(factory, ("a", 0.05), ("b", 0.10))  # ids 1, 2
+    response = client.get("/phrases/2")
+    assert response.status_code == 200
+    data = response.json()["data"]
+    assert data["id"] == "2"
+    assert data["text"] == "b"
+    assert set(data) == {"id", "text", "created_at", "validation"}
+
+
+def test_get_phrase_unknown_id_is_404() -> None:
+    client, _, _ = _client()
+    response = client.get("/phrases/999")
+    assert response.status_code == 404
+    assert response.json()["error"]["code"] == "PHRASE_NOT_FOUND"

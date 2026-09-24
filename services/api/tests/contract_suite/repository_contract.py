@@ -310,6 +310,19 @@ class ListPageContractSuite:
             assert uow.repo.count_all() == len(ids)
             assert uow.repo.list_page(limit=100, cursor=None).total == len(ids)
 
+    def test_get_returns_the_matching_row(self, uow_factory: UnitOfWorkFactory) -> None:
+        ids = _seed(uow_factory, [_new_phrase("p0", PROBE), _new_phrase("p1", PROBE)])
+        with uow_factory(read_only=True) as uow:
+            phrase = uow.repo.get(ids[1])
+            assert phrase is not None
+            assert phrase.id == ids[1]
+            assert phrase.text == "p1"
+
+    def test_get_with_an_unknown_id_returns_none(self, uow_factory: UnitOfWorkFactory) -> None:
+        ids = _seed(uow_factory, [_new_phrase("p0", PROBE)])
+        with uow_factory(read_only=True) as uow:
+            assert uow.repo.get(max(ids) + 1) is None
+
     def test_list_page_pages_through_completely_with_no_gaps_or_repeats(
         self, uow_factory: UnitOfWorkFactory
     ) -> None:

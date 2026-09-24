@@ -59,6 +59,7 @@ _MATCHES_ERRORS = error_responses(
     (504, "EMBEDDING_TIMEOUT"),
 )
 _LIST_ERRORS = error_responses((400, "INVALID_CURSOR"), (422, "VALIDATION_ERROR"))
+_GET_ERRORS = error_responses((404, "PHRASE_NOT_FOUND"))
 
 
 class _ScoredPhrase(BaseModel):
@@ -292,5 +293,16 @@ def build_phrases_router(
                 has_more=view.has_more,
             )
         )
+
+    @router.get("/phrases/{phrase_id}", response_model=_PhraseResponse, responses=_GET_ERRORS)
+    def get_phrase(phrase_id: int, request: Request) -> _PhraseResponse:
+        """Single phrase by id -- `apps/web`'s "compare with the matched
+        phrase" panel resolves `validation.most_similar_phrase_id` through
+        this, since the list/save/validate responses only ever carry that
+        id, never the matched phrase's own text (design: avoid joining it
+        into every list row when most rows are never expanded)."""
+        container: PhrasesContainer = request.app.state.phrases
+        phrase = container.get_phrase(phrase_id)
+        return _PhraseResponse(data=_phrase_out(phrase))
 
     return router

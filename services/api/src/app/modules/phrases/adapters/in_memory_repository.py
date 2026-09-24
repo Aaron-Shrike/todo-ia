@@ -158,6 +158,9 @@ class InMemoryPhraseRepository:
         self._pending.append(row)
         return row
 
+    def get(self, phrase_id: int) -> Phrase | None:
+        return next((row for row in self._rows() if row.id == phrase_id), None)
+
     def list_recent(self, limit: int) -> list[Phrase]:
         rows = sorted(self._rows(), key=lambda row: (row.created_at, row.id), reverse=True)
         return rows[:limit]

@@ -130,6 +130,15 @@ ORDER BY created_at DESC, id DESC
 LIMIT :limit
 """
 
+# `get` (`GET /phrases/{id}`): single row by primary key, same column set as
+# `list_recent`/`list_page` so `_row_to_phrase` builds the same `Phrase`.
+GET_BY_ID_QUERY = """
+SELECT id, text, normalized_text, embedding::text AS embedding, similarity_score,
+       most_similar_phrase_id, validation_status, validated_at, created_at
+FROM phrases
+WHERE id = :id
+"""
+
 # `list_page` (real pagination for `GET /phrases`, see `contracts.py`'s
 # `PhraseListPage`): same `(created_at, id) DESC` ordering and index as
 # `list_recent` above, but keyset-continued from an opaque cursor instead of
@@ -359,6 +368,11 @@ class PgVectorPhraseRepository:
             raise
         self._mark_statement()
         return Phrase(id=row.id, created_at=row.created_at, **vars(phrase))
+
+    def get(self, phrase_id: int) -> Phrase | None:
+        row = self._connection.execute(text(GET_BY_ID_QUERY), {"id": phrase_id}).first()
+        self._mark_statement()
+        return _row_to_phrase(row) if row is not None else None
 
     def list_recent(self, limit: int) -> list[Phrase]:
         rows = self._connection.execute(text(LIST_RECENT_QUERY), {"limit": limit}).fetchall()

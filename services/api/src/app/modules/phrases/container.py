@@ -11,6 +11,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+from app.modules.phrases.application.get_phrase import GetPhrase
 from app.modules.phrases.application.list_matches import ListMatches
 from app.modules.phrases.application.list_phrases import ListPhrases
 from app.modules.phrases.application.save_phrase import SavePhrase
@@ -28,6 +29,7 @@ class PhrasesContainer:
     list_matches: ListMatches
     save_phrase: SavePhrase
     list_phrases: ListPhrases
+    get_phrase: GetPhrase
 
 
 def build_phrases_container(
@@ -53,4 +55,5 @@ def build_phrases_container(
             default_page_size=matches_page_size,
         ),
         list_phrases=ListPhrases(uow_factory),
+        get_phrase=GetPhrase(uow_factory),
     )

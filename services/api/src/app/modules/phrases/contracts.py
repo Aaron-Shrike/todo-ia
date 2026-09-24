@@ -235,6 +235,11 @@ class PhraseRepository(Protocol):
 
     def add(self, phrase: NewPhrase) -> Phrase: ...
 
+    def get(self, phrase_id: int) -> Phrase | None:
+        """Single row by id, or `None` if it does not exist. `GET
+        /phrases/{id}` only -- no other caller needs a lookup by id."""
+        ...
+
     def list_recent(self, limit: int) -> list[Phrase]: ...  # newest first, no cursor
 
     def list_page(

@@ -45,6 +45,59 @@
         "title": "ErrorEnvelope",
         "type": "object"
       },
+      "HTTPValidationError": {
+        "properties": {
+          "detail": {
+            "items": {
+              "$ref": "#/components/schemas/ValidationError"
+            },
+            "title": "Detail",
+            "type": "array"
+          }
+        },
+        "title": "HTTPValidationError",
+        "type": "object"
+      },
+      "ValidationError": {
+        "properties": {
+          "ctx": {
+            "title": "Context",
+            "type": "object"
+          },
+          "input": {
+            "title": "Input"
+          },
+          "loc": {
+            "items": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "integer"
+                }
+              ]
+            },
+            "title": "Location",
+            "type": "array"
+          },
+          "msg": {
+            "title": "Message",
+            "type": "string"
+          },
+          "type": {
+            "title": "Error Type",
+            "type": "string"
+          }
+        },
+        "required": [
+          "loc",
+          "msg",
+          "type"
+        ],
+        "title": "ValidationError",
+        "type": "object"
+      },
       "ValidationStatus": {
         "description": "Mirrors the `validation_status` CHECK constraint (migration 0001, the\nAlembic revision that creates the `phrases` table -- see design.md's\n\"Data Model and Migrations\").",
         "enum": [
@@ -759,6 +812,56 @@
           }
         },
         "summary": "Validate Phrase"
+      }
+    },
+    "/phrases/{phrase_id}": {
+      "get": {
+        "description": "Single phrase by id -- `apps/web`'s \"compare with the matched\nphrase\" panel resolves `validation.most_similar_phrase_id` through\nthis, since the list/save/validate responses only ever carry that\nid, never the matched phrase's own text (design: avoid joining it\ninto every list row when most rows are never expanded).",
+        "operationId": "get_phrase_phrases__phrase_id__get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "phrase_id",
+            "required": true,
+            "schema": {
+              "title": "Phrase Id",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/_PhraseResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            },
+            "description": "Error envelope; `error.code` = `PHRASE_NOT_FOUND`."
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Get Phrase"
       }
     }
   }
