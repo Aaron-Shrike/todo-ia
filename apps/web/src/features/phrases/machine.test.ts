@@ -12,7 +12,10 @@ import {
   type ErrorInfo,
   type MachineEvent,
   type MachineState,
+  type ScoredPhrase,
 } from "./machine";
+
+const SAMPLE_SCORED: ScoredPhrase = { id: "3", text: "Tomar mate", score: 0.42 };
 
 const SAMPLE_DETAILS: DuplicateDetails = {
   threshold: 0.8,
@@ -48,7 +51,7 @@ const SAMPLE_ERROR: ErrorInfo = {
 const STATES: Record<string, MachineState> = {
   idle: { status: "idle" },
   validating: { status: "validating", intent: "validate" },
-  ok: { status: "ok" },
+  ok: { status: "ok", mostSimilar: null },
   duplicate: { status: "duplicate", details: SAMPLE_DETAILS },
   revalidating: { status: "revalidating" },
   saving: { status: "saving", details: SAMPLE_DETAILS },
@@ -59,7 +62,7 @@ const EVENTS: Record<string, MachineEvent> = {
   EDIT_TEXT: { type: "EDIT_TEXT" },
   VALIDATE: { type: "VALIDATE" },
   SAVE: { type: "SAVE" },
-  VALIDATE_OK_UNIQUE: { type: "VALIDATE_OK_UNIQUE" },
+  VALIDATE_OK_UNIQUE: { type: "VALIDATE_OK_UNIQUE", mostSimilar: SAMPLE_SCORED },
   VALIDATE_OK_DUPLICATE: { type: "VALIDATE_OK_DUPLICATE", details: FRESH_DETAILS },
   SAVE_OK: { type: "SAVE_OK" },
   CONFLICT: { type: "CONFLICT", details: FRESH_DETAILS },
@@ -95,7 +98,7 @@ const EXPECTED: Record<string, Record<string, MachineState | typeof IGNORED>> = 
     SAVE: IGNORED,
     // Representative row: intent "validate" -> ok (see the intent-branching
     // describe block below for the intent "save" -> revalidating case).
-    VALIDATE_OK_UNIQUE: { status: "ok" },
+    VALIDATE_OK_UNIQUE: { status: "ok", mostSimilar: SAMPLE_SCORED },
     VALIDATE_OK_DUPLICATE: { status: "duplicate", details: FRESH_DETAILS },
     SAVE_OK: IGNORED,
     CONFLICT: IGNORED,
@@ -210,16 +213,22 @@ describe("phraseMachineReducer", () => {
   describe("intent branching on VALIDATE_OK_UNIQUE (triangulation)", () => {
     it("Validar-only intent lands on ok, not revalidating", () => {
       const state: MachineState = { status: "validating", intent: "validate" };
-      expect(phraseMachineReducer(state, { type: "VALIDATE_OK_UNIQUE" })).toEqual(
-        { status: "ok" },
-      );
+      expect(
+        phraseMachineReducer(state, {
+          type: "VALIDATE_OK_UNIQUE",
+          mostSimilar: SAMPLE_SCORED,
+        }),
+      ).toEqual({ status: "ok", mostSimilar: SAMPLE_SCORED });
     });
 
     it("blind-save intent skips ok and goes straight to revalidating", () => {
       const state: MachineState = { status: "validating", intent: "save" };
-      expect(phraseMachineReducer(state, { type: "VALIDATE_OK_UNIQUE" })).toEqual(
-        { status: "revalidating" },
-      );
+      expect(
+        phraseMachineReducer(state, {
+          type: "VALIDATE_OK_UNIQUE",
+          mostSimilar: SAMPLE_SCORED,
+        }),
+      ).toEqual({ status: "revalidating" });
     });
   });
 

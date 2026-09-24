@@ -29,6 +29,7 @@ describe("copy (phrase-ui spec's copy table)", () => {
       },
       validation: {
         ok: "La frase es única. Puedes guardarla.",
+        closestMatch: "Aunque es única, se parece a",
       },
       duplicate: {
         title: "Posible duplicado",

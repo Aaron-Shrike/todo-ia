@@ -34,6 +34,16 @@ Invalid transitions (e.g. Confirmar while idle) MUST be impossible or ignored.
 - WHEN Validar is pressed
 - THEN the state passes through `validating` and ends in `ok`
 
+#### Scenario: Unique but similar to an existing phrase
+- GIVEN state idle with text and the API returns `is_duplicate: false` with a non-null `most_similar` and `score`
+- WHEN Validar is pressed
+- THEN the state ends in `ok` and the UI shows the closest match's text and score alongside "La frase es única. Puedes guardarla."
+
+#### Scenario: Unique with no similar phrase
+- GIVEN the API returns `is_duplicate: false` with `most_similar: null`
+- WHEN Validar is pressed
+- THEN only "La frase es única. Puedes guardarla." is shown, with no closest-match line
+
 #### Scenario: Validate duplicate
 - GIVEN the API returns `is_duplicate: true`
 - WHEN Validar is pressed
@@ -308,6 +318,7 @@ All user-visible strings MUST come from a single copy module using exactly these
 | `progress.revalidating` | Revalidando... |
 | `progress.saving` | Guardando... |
 | `validation.ok` | La frase es única. Puedes guardarla. |
+| `validation.closestMatch` | Aunque es única, se parece a |
 | `duplicate.title` | Posible duplicado |
 | `duplicate.mostSimilar` | Frase más similar |
 | `duplicate.score` | Similitud: {percent}% |

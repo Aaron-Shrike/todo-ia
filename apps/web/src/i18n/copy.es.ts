@@ -27,6 +27,7 @@ export const copy = {
   },
   validation: {
     ok: "La frase es única. Puedes guardarla.",
+    closestMatch: "Aunque es única, se parece a",
   },
   duplicate: {
     title: "Posible duplicado",

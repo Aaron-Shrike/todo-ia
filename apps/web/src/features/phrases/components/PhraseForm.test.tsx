@@ -10,6 +10,7 @@ import { ApiError, type PhraseApiClient } from "@/lib/api/client";
 import type { components } from "@/types/api";
 import { copy } from "@/i18n/copy.es";
 
+import { scoreLabel } from "../scoreLabel";
 import { PhraseForm } from "./PhraseForm";
 
 type ValidateData = components["schemas"]["_ValidateData"];
@@ -40,6 +41,17 @@ const UNIQUE_RESULT: ValidateData = {
   is_duplicate: false,
   score: 0.12,
   most_similar: null,
+  matches: [],
+  next_cursor: null,
+  has_more: false,
+  total: 0,
+};
+
+const UNIQUE_WITH_CLOSE_MATCH_RESULT: ValidateData = {
+  threshold: 0.8,
+  is_duplicate: false,
+  score: 0.7267,
+  most_similar: { id: "17987", text: "Cocinar chairo en el Cañón del Colca", score: 0.7267 },
   matches: [],
   next_cursor: null,
   has_more: false,
@@ -145,6 +157,9 @@ describe("PhraseForm", () => {
       await waitFor(() =>
         expect(screen.getByText(copy.validation.ok)).toBeInTheDocument(),
       );
+      expect(
+        screen.queryByText(copy.validation.closestMatch),
+      ).not.toBeInTheDocument();
       expect(region).not.toHaveTextContent(copy.progress.validating);
 
       fireEvent.click(screen.getByRole("button", { name: copy.button.save }));
@@ -159,6 +174,29 @@ describe("PhraseForm", () => {
       await waitFor(() =>
         expect(region).not.toHaveTextContent(copy.progress.revalidating),
       );
+    });
+
+    it("ok with a closest match: shows the closest-match text and score alongside the unique message", async () => {
+      const validateDeferred = createDeferred<ValidateData>();
+      const client = createFakeClient({
+        validatePhrase: vi.fn(() => validateDeferred.promise),
+      });
+      const { container } = render(<PhraseForm client={client} />);
+
+      typeText("Cocinar chairo");
+      fireEvent.click(screen.getByRole("button", { name: copy.button.validate }));
+
+      await act(async () => {
+        validateDeferred.resolve(UNIQUE_WITH_CLOSE_MATCH_RESULT);
+      });
+
+      await waitFor(() =>
+        expect(screen.getByText(copy.validation.ok)).toBeInTheDocument(),
+      );
+      expect(
+        screen.getByText("Cocinar chairo en el Cañón del Colca"),
+      ).toBeInTheDocument();
+      expect(container).toHaveTextContent(scoreLabel(0.7267));
     });
 
     it("confirm from duplicate: only Guardando is shown", async () => {
@@ -351,6 +389,9 @@ describe("PhraseForm", () => {
       await waitFor(() =>
         expect(screen.getByText(copy.validation.ok)).toBeInTheDocument(),
       );
+      expect(
+        screen.queryByText(copy.validation.closestMatch),
+      ).not.toBeInTheDocument();
 
       typeText("Comprar leche y pan");
       expect(screen.queryByText(copy.validation.ok)).not.toBeInTheDocument();
