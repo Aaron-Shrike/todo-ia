@@ -1675,3 +1675,132 @@ ADR-011 were updated to cite the real values in place of their prior UNMEASURED/
 estimated or fabricated. All 17 units' tasks are now complete; the one remaining verdict item from
 this pass's own Verdict section is the CRITICAL DATABASE_URL hermeticity finding, already resolved
 above (`fix/verify-database-url-hermeticity`).
+
+---
+
+## Full-System Verification Report — Fresh Pass on `develop` (post PR #38, covering PR #39-#42)
+
+**Scope**: independent, fresh full-system verification of `develop` as it stands after PR #42
+(`f09b56c`), not a re-trust of this file's own prior "17 units" pass. Explicitly re-checks for
+regressions introduced by PR #39 (runtime measurements, docs-only), PR #40 (real browser
+`fetchImpl` binding bug fix), PR #41 (Peruvian seed data, `/acerca` page, app restyle) and PR #42
+(real `GET /phrases` pagination + `{loaded}/{total}` counters on both lists), none of which this
+file's prior pass had seen. Environment note: Docker is NOT available in this session; the
+integration suite (real Postgres/pgvector) could not be executed directly here — see "Not
+executable in this environment" below, and note CI itself only fires on `main`, which is 86 commits
+behind `develop` and has never validated any work past Unit 3a-equivalent history (a known,
+documented, deliberate `develop`-first strategy, not a defect).
+
+### Completeness (tasks.md)
+
+69/69 checkboxes are `[x]` except task 0.4, which is `[~]` (partial) — `.env.example` still does not
+exist on disk, unchanged since Unit 0, blocked by a hard tool-permission deny on `.env*` writes; the
+full intended content remains reproduced in `apply-progress.md` and the README documents the same
+gap with a fallback (env var table in README + `design.md`). This is a carried-forward, pre-existing,
+already-documented limitation, not a new finding.
+
+Neither `tasks.md` nor `apply-progress.md` was touched by PR #40, #41 or #42 (only PR #39's task 8.4
+follow-up touched `tasks.md`, 6 lines). This means the real pagination/counters feature (PR #42) and
+the seed/about/restyle feature (PR #41) exist entirely outside the unit-tracked plan — see Issues.
+
+### Build & Tests Execution (all re-run directly in this pass)
+
+- Backend: `cd services/api && .venv/bin/python -m pytest tests/unit tests/contract_suite tests/contract -m "not integration and not slow" -q` → **298 passed, 1 deselected**.
+- `ruff check .` → clean. `mypy src` → `Success: no issues found in 44 source files`. `lint-imports` → `Contracts: 5 kept, 0 broken.`
+- Frontend: `cd apps/web && npx vitest run` → **176/176 passed** (matches PR #42's own claimed count exactly). `npx tsc --noEmit` → clean. `npm run build` → succeeds, `next build` shows `/` as `ƒ Dynamic`, `/acerca` as static.
+- **Not executable in this environment**: `pytest -m integration` (needs real Postgres/pgvector; no Docker in this session) and the `slow` calibration test. Read directly instead of executed: `tests/integration/test_list_page_pgvector.py` (new, PR #42, 131 lines — real Alembic upgrade/downgrade fixture, real SQL keyset predicate assertions, not a stub) and the `test_find_matches.py` additions. Correct by careful reading; genuinely unverified by execution in this session. CI's `backend-integration` job (real pgvector service container) exists and would run these, but only on `main`/PRs-to-`main` — these PRs targeted `develop`, so CI never ran on them (`gh pr checks 40/41/42` → "no checks reported"), consistent with the project's own documented `develop`-doesn't-trigger-CI decision, not a new gap.
+
+### Spec vs. implementation cross-check (fresh, not re-trusted)
+
+- `api-contract` spec's `GET /phrases` (limit/cursor/total/pagination), `POST /phrases/matches` and
+  `POST /phrases/validate`'s `total` field, and the 409 `details.total` — all match the router
+  (`phrases/api/router.py`), the use cases (`list_phrases.py`, `_shared.py`'s `build_matches_page`,
+  `save_phrase.py`'s `_conflict`, which now genuinely issues 3 similarity queries —
+  `find_nearest_exact` + `find_matches` + `count_matches` — exactly as PR #42's own description
+  claims) and both repository adapters (`list_page`/`count_all`/`count_matches` implemented on
+  both `InMemoryPhraseRepository` and `PgVectorPhraseRepository`).
+- `phrase-ui` spec's new "Infinite scroll over the saved list" requirement matches `PhraseList.tsx`
+  (counter via `counterLabel.ts`, dedupe-on-overlap, in-flight guard via a ref, `refresh()` always
+  restarts from page 1). The duplicate-alert match list's `IntersectionObserver` now correctly scopes
+  `root` to the list's own `overflow-y: auto` container (`useMatchesInfiniteScroll.ts`, `rootRef`) —
+  read directly and confirmed this is the real fix for the "auto-loads every page at once" bug PR #42
+  describes finding; `PhraseList.tsx`'s own observer correctly omits `root` (its container is not
+  `overflow: auto`, it scrolls with the page) — not the same bug, no regression there.
+- PR #40's fix (`fetch.bind(globalThis)` in `client.ts`) is present and has a dedicated regression
+  test (`client.test.ts`) asserting the receiver binding directly, with a comment explaining why
+  jsdom's own `fetch` never caught it. Read and confirmed correct; this class of bug (browser-only,
+  invisible to jsdom) cannot be re-proven without a real browser, which this session does not have —
+  the existing regression test is the right mitigation available in this environment.
+- `phrase-management`, `semantic-validation`, `duplicate-confirmation` capability specs: re-read in
+  full: no regressions found against the code paths exercised by the 298 backend tests (normalization,
+  clamped/rounded score with `Decimal`-exact threshold comparison, the `find_nearest`/
+  `find_nearest_exact`/`find_matches` three-read-shape split, cache invisibility, advisory lock).
+- `docs/decisions/`: exactly 5 top-level `beyond-brief` ADRs + 10 `docs/decisions/technical/` ADRs,
+  matching the spec's exact-five/separate-technical-dir requirement precisely.
+- `docs/evidence/calibration.md` and `docs/evidence/runtime-measurements.md`: both contain real,
+  specific, non-round numbers (per-pair cosine scores to 4 decimals, p50/p95 latencies, 5 cold/warm
+  timing pairs with per-pair values) with methodology notes, not placeholder/templated text — genuine
+  measured content for Unit 9/16's requirements.
+
+### Issues Found
+
+**CRITICAL**: None. No regression, no spec/code mismatch, no fabricated evidence found in this pass.
+
+**WARNING**:
+1. **PR #41 (1,529 changed lines) and PR #42 (1,421 changed lines) both bypassed this change's own
+   review-workload guard** (the 400-line budget, `ask-on-risk` delivery strategy, and the
+   split-or-escalate/`size:exception` sign-off procedure every single SDD unit through Unit 16b
+   followed without exception). Neither PR has a `size:exception` note, a split proposal, or any
+   entry in `tasks.md`/`apply-progress.md` at all — they exist purely as ad hoc follow-up commits
+   outside the tracked unit plan. Functionally the work is real, tested and matches the specs (which
+   PR #42 correctly amended), so this is a process/governance finding, not a defect in the shipped
+   product — but it is a genuine, measurable deviation from the discipline this project otherwise
+   enforced everywhere else this session, and reviewers did not get the same size-bounded, escalated
+   review every prior unit received.
+2. **`tasks.md`'s Requirement-to-task traceability table was not updated** for the new "Infinite
+   scroll over the saved list" requirement (`phrase-ui` spec) or for `GET /phrases`'s pagination
+   rewrite (`phrase-management`/`api-contract` specs) introduced by PR #42 — the specs themselves
+   were correctly amended, but the planning artifact's own audit trail now undercounts what the specs
+   require. Low risk (specs are the contract; this is a documentation-completeness gap in `tasks.md`,
+   not a behavior gap), but real.
+3. **The pgvector adapter's new `list_page`/`count_matches`/`count_all` methods have zero coverage in
+   the shared `tests/contract_suite/repository_contract.py`** (the same suite that already parametrizes
+   `find_nearest`/`find_nearest_exact`/`find_matches` across both adapters) — they are tested only via
+   a dedicated integration file for pgvector and a unit test for in-memory, never proven to agree with
+   each other the way every other repository method is. This is the same *class* of gap Unit 7b's own
+   verify section already flagged for `list_recent` (never closed), now widened to three more methods
+   by PR #42. Not executable-and-confirmed in this session (no Docker); correct by reading.
+4. **`.env.example` still does not exist** (task 0.4, unchanged since Unit 0) — a real, if
+   already-known and README-mitigated, failure of the `api-contract` spec's literal "Env documented"
+   scenario (`GIVEN .env.example WHEN read THEN every variable is present` — there is no file to
+   read). Carried forward, not new.
+
+**SUGGESTION**:
+1. PR #41's `/acerca` page, restyle, and the Peruvian seeder script are real, tested, working
+   additions with no corresponding capability spec or `beyond-brief` ADR entry (they are cosmetic/
+   tooling, not a behavior change, so likely out of the five-ADR contract's intent — but the project's
+   own convention is "every future deliberate deviation from the brief MUST add a `beyond-brief`
+   entry"; a one-line addendum or a note in the README's decision-log summary would keep that
+   convention airtight).
+2. Before `sdd-archive`, consider promoting `develop` → `main` at least once so CI (lint, unit,
+   mypy, import-linter AND the real-Postgres `backend-integration` job) actually runs end-to-end over
+   the full 21-unit + PR #39-42 history — today `main` is 86 commits behind and has never validated
+   any of Units 4 through 16b or the four follow-up PRs. This is an explicit, already-documented
+   manual step (not a unit obligation), just newly relevant now that verification is otherwise clean.
+3. Close the `repository_contract.py` gap named in WARNING 3 (parametrize `list_page`/`count_matches`/
+   `count_all`/`list_recent` the same way `find_matches` already is) in a small follow-up.
+
+### Verdict
+
+**PASS WITH WARNINGS.** Every executable test (298 backend, 176 frontend) is genuinely green on a
+fresh run against the current `develop` tip; `ruff`/`mypy`/`lint-imports`/`tsc`/`next build` are all
+clean; no spec/code mismatch or fabricated evidence was found anywhere sampled, including the four
+PRs landed since the last verify pass; the decision-log and evidence docs genuinely satisfy Unit
+9/16's requirements with real measured numbers. Commit attribution is clean (no AI co-authorship) on
+every commit since PR #38. The four WARNINGs are real but none indicate incorrect shipped behavior:
+two are process/governance deviations (PR #41/#42 skipped the review-workload guard the rest of the
+session enforced strictly), one is a test-coverage gap on new repository methods (unexecuted here for
+lack of Docker, correct by reading), and one is the long-standing `.env.example` limitation. None
+block `sdd-archive` on their own merits, but WARNING 1 and 2 should be acknowledged (or retroactively
+resolved with a short `tasks.md` addendum) so the change's own audit trail stays trustworthy end to
+end, and WARNING 3 is worth a small follow-up before further pagination changes land.
