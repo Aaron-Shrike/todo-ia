@@ -5,7 +5,7 @@
 // convention as `PhraseForm.test.tsx` / `DuplicateAlert.test.tsx`.
 import { createRef } from "react";
 import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import type { PhraseApiClient } from "@/lib/api/client";
 import type { components } from "@/types/api";
@@ -36,9 +36,9 @@ function fakePage(items: PhraseOut[], overrides: Partial<PhraseListData> = {}): 
 }
 
 function createFakeClient(
-  overrides: Partial<Pick<PhraseApiClient, "listPhrases">> = {},
-): Pick<PhraseApiClient, "listPhrases"> {
-  return { listPhrases: vi.fn(), ...overrides };
+  overrides: Partial<Pick<PhraseApiClient, "listPhrases" | "getPhrase">> = {},
+): Pick<PhraseApiClient, "listPhrases" | "getPhrase"> {
+  return { listPhrases: vi.fn(), getPhrase: vi.fn(), ...overrides };
 }
 
 // Same deferred-promise pattern as `DuplicateAlert.test.tsx` / `PhraseForm.test.tsx`.
@@ -316,6 +316,398 @@ describe("PhraseList", () => {
       });
 
       await waitFor(() => expect(screen.getAllByRole("listitem")).toHaveLength(2));
+    });
+  });
+
+  // phrase-ui spec, "Filter controls over the saved list" / "Filtered
+  // counter and empty state" — design.md's `PhraseList.tsx` section: filter
+  // state lives here, `refresh()` keeps its public signature and reads
+  // `filtersRef.current`, a `generation` ref guards against a stale
+  // response overwriting a newer one.
+  describe("filters", () => {
+    beforeEach(() => {
+      vi.useFakeTimers();
+    });
+
+    afterEach(() => {
+      vi.useRealTimers();
+    });
+
+    it("changing the status filter refetches immediately, resets pagination, and sends the new status", async () => {
+      const page1 = fakePage([fakePhrase({ id: "1", text: "p1" })], {
+        total: 3,
+        has_more: true,
+        next_cursor: "c1",
+      });
+      const filteredPage = fakePage([fakePhrase({ id: "9", text: "dup" })], {
+        total: 1,
+        has_more: false,
+      });
+      const client = createFakeClient({ listPhrases: vi.fn(async () => filteredPage) });
+      render(<PhraseList client={client} initialPage={page1} />);
+
+      fireEvent.change(screen.getByLabelText(copy.filters.statusLabel), {
+        target: { value: "duplicate_confirmed" },
+      });
+
+      await act(async () => {
+        await Promise.resolve();
+      });
+
+      expect(client.listPhrases).toHaveBeenCalledWith({ status: "duplicate_confirmed" });
+      expect(screen.getByText("1/1")).toBeInTheDocument();
+      expect(screen.queryByTestId("phrase-list-sentinel")).not.toBeInTheDocument();
+    });
+
+    it("changing the minimum score refetches immediately with the percent/100 fraction and resets pagination", async () => {
+      const page1 = fakePage([fakePhrase()], { total: 3, has_more: true, next_cursor: "c1" });
+      const filteredPage = fakePage([fakePhrase({ id: "9" })], { total: 1, has_more: false });
+      const client = createFakeClient({ listPhrases: vi.fn(async () => filteredPage) });
+      render(<PhraseList client={client} initialPage={page1} />);
+
+      fireEvent.change(screen.getByLabelText(copy.filters.minScoreLabel), {
+        target: { value: "85" },
+      });
+
+      await act(async () => {
+        await Promise.resolve();
+      });
+
+      expect(client.listPhrases).toHaveBeenCalledWith({ minScore: 0.85 });
+    });
+
+    it("debounces the text filter: only one request is sent after the user stops typing", async () => {
+      const client = createFakeClient({ listPhrases: vi.fn(async () => fakePage([])) });
+      render(<PhraseList client={client} initialPage={fakePage([fakePhrase()])} />);
+      const input = screen.getByLabelText(copy.filters.textLabel);
+
+      fireEvent.change(input, { target: { value: "l" } });
+      fireEvent.change(input, { target: { value: "le" } });
+      fireEvent.change(input, { target: { value: "lec" } });
+
+      act(() => {
+        vi.advanceTimersByTime(299);
+      });
+      expect(client.listPhrases).not.toHaveBeenCalled();
+
+      await act(async () => {
+        vi.advanceTimersByTime(1);
+        await Promise.resolve();
+      });
+
+      expect(client.listPhrases).toHaveBeenCalledTimes(1);
+      expect(client.listPhrases).toHaveBeenCalledWith({ q: "lec" });
+    });
+
+    it("clearing the text filter applies immediately, without waiting for the debounce", async () => {
+      const listPhrases = vi.fn<PhraseApiClient["listPhrases"]>(async () => fakePage([]));
+      const client = createFakeClient({ listPhrases });
+      render(<PhraseList client={client} initialPage={fakePage([fakePhrase()])} />);
+      const input = screen.getByLabelText(copy.filters.textLabel);
+
+      fireEvent.change(input, { target: { value: "leche" } });
+      act(() => {
+        vi.advanceTimersByTime(300);
+      });
+      await act(async () => {
+        await Promise.resolve();
+      });
+      listPhrases.mockClear();
+
+      fireEvent.change(input, { target: { value: "" } });
+      await act(async () => {
+        await Promise.resolve();
+      });
+
+      expect(listPhrases).toHaveBeenCalledWith({});
+    });
+
+    it("combines active filters (status, min-score, debounced text) into one request", async () => {
+      const client = createFakeClient({ listPhrases: vi.fn(async () => fakePage([])) });
+      render(<PhraseList client={client} initialPage={fakePage([fakePhrase()])} />);
+
+      fireEvent.change(screen.getByLabelText(copy.filters.statusLabel), {
+        target: { value: "unique" },
+      });
+      fireEvent.change(screen.getByLabelText(copy.filters.minScoreLabel), {
+        target: { value: "50" },
+      });
+      fireEvent.change(screen.getByLabelText(copy.filters.textLabel), {
+        target: { value: "leche" },
+      });
+
+      act(() => {
+        vi.advanceTimersByTime(300);
+      });
+      await act(async () => {
+        await Promise.resolve();
+      });
+
+      expect(client.listPhrases).toHaveBeenLastCalledWith({
+        status: "unique",
+        minScore: 0.5,
+        q: "leche",
+      });
+    });
+
+    it("drops a stale response when a newer filter change already resolved (generation guard)", async () => {
+      const first = createDeferred<PhraseListData>();
+      const second = fakePage([fakePhrase({ id: "9", text: "second" })], { total: 1 });
+      const listPhrases = vi
+        .fn<PhraseApiClient["listPhrases"]>()
+        .mockImplementationOnce(() => first.promise)
+        .mockImplementationOnce(async () => second);
+      const client = createFakeClient({ listPhrases });
+      render(<PhraseList client={client} initialPage={fakePage([fakePhrase()])} />);
+
+      fireEvent.change(screen.getByLabelText(copy.filters.statusLabel), {
+        target: { value: "unique" },
+      });
+      await act(async () => {
+        await Promise.resolve();
+      });
+      expect(listPhrases).toHaveBeenCalledTimes(1);
+
+      fireEvent.change(screen.getByLabelText(copy.filters.statusLabel), {
+        target: { value: "duplicate_confirmed" },
+      });
+      await act(async () => {
+        await Promise.resolve();
+        await Promise.resolve();
+      });
+      expect(listPhrases).toHaveBeenCalledTimes(2);
+      expect(screen.getByText("second")).toBeInTheDocument();
+
+      await act(async () => {
+        first.resolve(fakePage([fakePhrase({ id: "1", text: "stale" })], { total: 99 }));
+        await Promise.resolve();
+      });
+
+      expect(screen.getByText("second")).toBeInTheDocument();
+      expect(screen.queryByText("stale")).not.toBeInTheDocument();
+      expect(screen.getByText("1/1")).toBeInTheDocument();
+    });
+
+    it("refresh() (the post-save/Reintentar call site) keeps the currently active filters", async () => {
+      const listPhrases = vi.fn<PhraseApiClient["listPhrases"]>(async () =>
+        fakePage([fakePhrase({ id: "2" })]),
+      );
+      const client = createFakeClient({ listPhrases });
+      const ref = createRef<PhraseListHandle>();
+      render(<PhraseList ref={ref} client={client} initialPage={fakePage([fakePhrase()])} />);
+
+      fireEvent.change(screen.getByLabelText(copy.filters.statusLabel), {
+        target: { value: "unique" },
+      });
+      await act(async () => {
+        await Promise.resolve();
+      });
+      expect(listPhrases).toHaveBeenCalledWith({ status: "unique" });
+      listPhrases.mockClear();
+
+      await act(async () => {
+        await ref.current?.refresh();
+      });
+
+      expect(listPhrases).toHaveBeenCalledWith({ status: "unique" });
+    });
+
+    it("shows a distinct filtered-empty-state message with a clear-filters action, not the unfiltered empty message", async () => {
+      const client = createFakeClient({ listPhrases: vi.fn(async () => fakePage([])) });
+      render(<PhraseList client={client} initialPage={fakePage([fakePhrase()])} />);
+
+      fireEvent.change(screen.getByLabelText(copy.filters.statusLabel), {
+        target: { value: "duplicate_confirmed" },
+      });
+      await act(async () => {
+        await Promise.resolve();
+      });
+      expect(screen.getByText(copy.list.emptyFiltered)).toBeInTheDocument();
+      expect(screen.queryByText(copy.list.empty)).not.toBeInTheDocument();
+      expect(screen.getByRole("button", { name: copy.button.clearFilters })).toBeInTheDocument();
+    });
+
+    it("clear-filters resets all three controls and refetches the unfiltered list from page 1", async () => {
+      const emptyFilteredPage = fakePage([]);
+      const unfilteredPage = fakePage([fakePhrase()]);
+      const listPhrases = vi
+        .fn<PhraseApiClient["listPhrases"]>()
+        .mockImplementationOnce(async () => emptyFilteredPage)
+        .mockImplementationOnce(async () => unfilteredPage);
+      const client = createFakeClient({ listPhrases });
+      render(<PhraseList client={client} initialPage={fakePage([fakePhrase()])} />);
+
+      fireEvent.change(screen.getByLabelText(copy.filters.statusLabel), {
+        target: { value: "duplicate_confirmed" },
+      });
+      await act(async () => {
+        await Promise.resolve();
+      });
+      expect(screen.getByText(copy.list.emptyFiltered)).toBeInTheDocument();
+
+      fireEvent.click(screen.getByRole("button", { name: copy.button.clearFilters }));
+
+      await act(async () => {
+        await Promise.resolve();
+      });
+      expect(listPhrases).toHaveBeenLastCalledWith({});
+      expect(screen.getByRole("listitem")).toBeInTheDocument();
+      expect(screen.getByLabelText(copy.filters.statusLabel)).toHaveValue("");
+      expect(screen.getByLabelText(copy.filters.textLabel)).toHaveValue("");
+    });
+
+    it("shows a persistent clear-filters button next to the filter bar whenever a filter is active, even with results loaded", async () => {
+      const client = createFakeClient({ listPhrases: vi.fn(async () => fakePage([fakePhrase()])) });
+      render(<PhraseList client={client} initialPage={fakePage([fakePhrase()])} />);
+
+      expect(screen.queryByRole("button", { name: copy.button.clearFilters })).not.toBeInTheDocument();
+
+      fireEvent.change(screen.getByLabelText(copy.filters.statusLabel), {
+        target: { value: "unique" },
+      });
+      await act(async () => {
+        await Promise.resolve();
+      });
+
+      expect(screen.getByRole("button", { name: copy.button.clearFilters })).toBeInTheDocument();
+      expect(screen.getByRole("listitem")).toBeInTheDocument();
+    });
+  });
+
+  describe("compare with the matched phrase", () => {
+    // The trigger is the item's own "Similitud: NN%" text (a plain-looking
+    // button, `aria-label` prefixed with copy.compare.button/hide) — not a
+    // separate "Comparar" button, which read as too similar to the status
+    // badge next to it. `RegExp` name matching below only needs the prefix.
+
+    it("shows no score/compare action when the item has no match", () => {
+      const item = fakePhrase({ id: "1", validation: {
+        status: "unique", score: null, most_similar_phrase_id: null, validated_at: "2026-01-01T00:00:00Z",
+      } });
+      render(<PhraseList client={createFakeClient()} initialPage={fakePage([item])} />);
+
+      expect(
+        screen.queryByRole("button", { name: new RegExp(copy.compare.button) }),
+      ).not.toBeInTheDocument();
+    });
+
+    it("fetches and shows both phrases when the score text is clicked", async () => {
+      const item = fakePhrase({
+        id: "1",
+        text: "la vaca lola",
+        validation: {
+          status: "unique",
+          score: 0.72,
+          most_similar_phrase_id: "9",
+          validated_at: "2026-01-01T00:00:00Z",
+        },
+      });
+      const matched = fakePhrase({ id: "9", text: "Cocinar chairo en el Cañón del Colca" });
+      const getPhrase = vi.fn(async () => matched);
+      const client = createFakeClient({ getPhrase });
+      render(<PhraseList client={client} initialPage={fakePage([item])} />);
+
+      const trigger = screen.getByRole("button", { name: new RegExp(copy.compare.button) });
+      expect(trigger).toHaveTextContent("Similitud: 72%");
+      expect(trigger).toHaveAttribute("aria-expanded", "false");
+      fireEvent.click(trigger);
+
+      expect(getPhrase).toHaveBeenCalledWith("9");
+      await waitFor(() =>
+        expect(screen.getByText("Cocinar chairo en el Cañón del Colca")).toBeInTheDocument(),
+      );
+      expect(screen.getAllByText("la vaca lola").length).toBeGreaterThan(0);
+      expect(screen.getByRole("button", { name: new RegExp(copy.compare.hide) })).toHaveAttribute(
+        "aria-expanded",
+        "true",
+      );
+    });
+
+    it("collapses the panel when clicked again", async () => {
+      const item = fakePhrase({
+        id: "1",
+        validation: {
+          status: "unique",
+          score: 0.72,
+          most_similar_phrase_id: "9",
+          validated_at: "2026-01-01T00:00:00Z",
+        },
+      });
+      const matched = fakePhrase({ id: "9", text: "Otra frase" });
+      const client = createFakeClient({ getPhrase: vi.fn(async () => matched) });
+      render(<PhraseList client={client} initialPage={fakePage([item])} />);
+
+      fireEvent.click(screen.getByRole("button", { name: new RegExp(copy.compare.button) }));
+      await waitFor(() => expect(screen.getByText("Otra frase")).toBeInTheDocument());
+
+      fireEvent.click(screen.getByRole("button", { name: new RegExp(copy.compare.hide) }));
+
+      expect(screen.queryByText("Otra frase")).not.toBeInTheDocument();
+      expect(
+        screen.getByRole("button", { name: new RegExp(copy.compare.button) }),
+      ).toHaveAttribute("aria-expanded", "false");
+    });
+
+    it("expanding a different item's panel collapses the previous one", async () => {
+      const itemA = fakePhrase({
+        id: "1",
+        text: "Frase A",
+        validation: {
+          status: "unique",
+          score: 0.72,
+          most_similar_phrase_id: "9",
+          validated_at: "2026-01-01T00:00:00Z",
+        },
+      });
+      const itemB = fakePhrase({
+        id: "2",
+        text: "Frase B",
+        validation: {
+          status: "unique",
+          score: 0.75,
+          most_similar_phrase_id: "10",
+          validated_at: "2026-01-01T00:00:00Z",
+        },
+      });
+      const getPhrase = vi
+        .fn<PhraseApiClient["getPhrase"]>()
+        .mockImplementation(async (id) =>
+          fakePhrase({ id, text: id === "9" ? "Match de A" : "Match de B" }),
+        );
+      const client = createFakeClient({ getPhrase });
+      render(
+        <PhraseList client={client} initialPage={fakePage([itemA, itemB], { total: 2 })} />,
+      );
+
+      const triggers = screen.getAllByRole("button", { name: new RegExp(copy.compare.button) });
+      fireEvent.click(triggers[0]);
+      await waitFor(() => expect(screen.getByText("Match de A")).toBeInTheDocument());
+
+      fireEvent.click(screen.getByRole("button", { name: new RegExp(copy.compare.button) }));
+      await waitFor(() => expect(screen.getByText("Match de B")).toBeInTheDocument());
+      expect(screen.queryByText("Match de A")).not.toBeInTheDocument();
+    });
+
+    it("shows an inline error when the compare fetch fails", async () => {
+      const item = fakePhrase({
+        id: "1",
+        validation: {
+          status: "unique",
+          score: 0.72,
+          most_similar_phrase_id: "9",
+          validated_at: "2026-01-01T00:00:00Z",
+        },
+      });
+      const client = createFakeClient({
+        getPhrase: vi.fn(async () => {
+          throw new Error("not found");
+        }),
+      });
+      render(<PhraseList client={client} initialPage={fakePage([item])} />);
+
+      fireEvent.click(screen.getByRole("button", { name: new RegExp(copy.compare.button) }));
+
+      await waitFor(() => expect(screen.getByText(copy.compare.loadError)).toBeInTheDocument());
     });
   });
 });

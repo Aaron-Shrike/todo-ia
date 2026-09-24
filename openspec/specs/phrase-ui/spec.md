@@ -34,6 +34,16 @@ Invalid transitions (e.g. Confirmar while idle) MUST be impossible or ignored.
 - WHEN Validar is pressed
 - THEN the state passes through `validating` and ends in `ok`
 
+#### Scenario: Unique but similar to an existing phrase
+- GIVEN state idle with text and the API returns `is_duplicate: false` with a non-null `most_similar` and `score`
+- WHEN Validar is pressed
+- THEN the state ends in `ok` and the UI shows the closest match's text and score alongside "La frase es única. Puedes guardarla."
+
+#### Scenario: Unique with no similar phrase
+- GIVEN the API returns `is_duplicate: false` with `most_similar: null`
+- WHEN Validar is pressed
+- THEN only "La frase es única. Puedes guardarla." is shown, with no closest-match line
+
 #### Scenario: Validate duplicate
 - GIVEN the API returns `is_duplicate: true`
 - WHEN Validar is pressed
@@ -290,6 +300,96 @@ The saved-phrase list loads one page at a time (`GET /phrases`'s `limit`/`cursor
 - WHEN the page is appended
 - THEN the repeated id is not shown twice
 
+### Requirement: Filter controls over the saved list
+
+The saved-phrase list MUST offer three optional, combinable filter controls: a status select (`Todas` / `Única` / `Duplicado confirmado`, default `Todas` = no filter), a text input (`q`), and a minimum-score numeric input (`min_score`, `[0,1]`). The status and minimum-score controls MUST apply immediately on change and refetch the list (no separate "Aplicar" button). The text input MUST debounce: the list refetches only after the user stops typing for a few hundred milliseconds, not on every keystroke. Changing ANY filter (status, `q` after its debounce, or min-score) MUST reset pagination to page 1, reusing the existing `refresh()` pattern in `PhraseList.tsx`, and MUST send all currently active filter values together.
+
+#### Scenario: Typing in the text filter debounces the request
+- GIVEN the list is showing unfiltered results
+- WHEN the user types several characters in the text filter within a short span
+- THEN only one `GET /phrases?q=...` request is sent, after the user stops typing, not one request per keystroke
+
+#### Scenario: Changing the status filter refetches immediately and resets pagination
+- GIVEN the list has scrolled past page 1
+- WHEN the user selects a status value
+- THEN a `GET /phrases?status=...` request is sent immediately, pagination restarts at page 1, and no "Aplicar" action is needed
+
+#### Scenario: Changing the minimum score refetches immediately and resets pagination
+- GIVEN the list has scrolled past page 1
+- WHEN the user changes the minimum-score input
+- THEN a `GET /phrases?min_score=...` request is sent immediately and pagination restarts at page 1
+
+#### Scenario: Active filters combine in one request
+- GIVEN a status and a minimum score are both set
+- WHEN the text filter's debounce elapses after the user also types a query
+- THEN one request carries `status`, `q`, and `min_score` together
+
+#### Scenario: Clearing a filter returns to the broader result set
+- GIVEN a status filter is active
+- WHEN the user resets it to `Todas`
+- THEN the list refetches immediately without `status`, from page 1
+
+### Requirement: Filtered counter and empty state
+
+The `{loaded}/{total}` counter MUST reflect the ACTIVE filter set's `total`, not the unfiltered store size. When a filter combination matches zero phrases, the list MUST show a distinct empty-state message (not the "no phrases saved yet" message). The one-click clear-filters action itself is a single, persistent control next to the filter bar (see "Persistent clear-filters action" below), not duplicated inside this empty state.
+
+#### Scenario: Counter reflects the filtered total
+- GIVEN a filter matching 20 of 20004 stored phrases
+- WHEN the list renders
+- THEN the counter reads "0/20" before any page loads and grows toward "20/20" as pages load, never referencing 20004
+
+#### Scenario: Empty state for a filter with no matches
+- GIVEN a filter combination that matches no phrases
+- WHEN the list renders
+- THEN a "no results for these filters" message is shown, distinct from the empty-store message
+
+### Requirement: Persistent clear-filters action
+
+A "Limpiar filtros" action MUST be shown next to the filter bar whenever ANY filter is active (status, text, or minimum score), regardless of whether the current page has results — not only in the zero-results empty state. Pressing it resets all three filter controls and refetches the unfiltered list from page 1.
+
+#### Scenario: Clear-filters action appears once a filter is active
+- GIVEN no filter is active
+- WHEN the user sets any one of the three filter controls
+- THEN a single "Limpiar filtros" action appears next to the filter bar
+
+#### Scenario: Clear-filters action restores the unfiltered list
+- GIVEN a filter is active (with or without matching results)
+- WHEN the clear-filters action is pressed
+- THEN all filter controls reset, the list refetches unfiltered from page 1, and the action itself disappears (no filter is active anymore)
+
+### Requirement: Compare a saved phrase with its matched phrase
+
+Each saved-list item whose `validation.most_similar_phrase_id` is set (score is not null, regardless of `status`) MUST offer a compare action. The action is the item's OWN "Similitud: NN%" text, not a separate button — an earlier version used a dedicated "Comparar" button next to the status badge, but it was visually too similar to the badge itself, so the score text now doubles as the trigger (styled as plain text at rest, with a pointer cursor and an underline/color change on hover/focus so it still reads as interactive). Pressing it expands an inline panel showing this item's own text next to the matched phrase's text and the recorded score, fetching the matched phrase's text on demand via `GET /phrases/{id}` (`apps/web`'s `getPhrase`) — the list response itself never carries the matched phrase's text, only its id, to avoid joining it into every row when most items are never expanded. Pressing the score text again collapses the panel (`aria-expanded` reflects the state; `copy.compare.button`/`copy.compare.hide` are used as the accessible name via `aria-label`, not as separate visible text). Only one item's panel is expanded at a time. A load failure (including a 404, if the matched phrase was ever removed) shows an inline error in the panel, not a page-level one.
+
+#### Scenario: Comparing shows both phrases side by side
+- GIVEN a saved item with `most_similar_phrase_id` set and a 72% score
+- WHEN the user clicks the item's "Similitud: 72%" text
+- THEN a panel appears showing this item's text, the matched phrase's text (fetched via `GET /phrases/{id}`), and "72%"
+
+#### Scenario: No compare action when there is no match
+- GIVEN a saved item with `most_similar_phrase_id` null
+- WHEN the list renders
+- THEN no score text (and therefore no compare action) is shown for that item
+
+#### Scenario: Expanding a different item collapses the previous one
+- GIVEN item A's comparison panel is expanded
+- WHEN the user clicks item B's score text
+- THEN item A's panel collapses and item B's panel expands
+
+#### Scenario: Compare fetch failure shows an inline error
+- GIVEN the matched phrase's `GET /phrases/{id}` request fails
+- WHEN the panel would otherwise render
+- THEN an inline error message is shown inside that item's panel only, the rest of the list is unaffected
+
+### Requirement: Filter copy keys
+
+New user-visible strings introduced by the filter controls MUST be added to the existing single copy module (see "Spanish copy table"), in neutral Spanish: a status select label, its three option labels (`Todas`, `Única`, `Duplicado confirmado`), a text-filter label/placeholder, a minimum-score label, the filtered empty-state message, and the clear-filters action label.
+
+#### Scenario: Filter copy comes from the copy module
+- GIVEN the frontend source
+- WHEN searched for the filter controls' visible strings
+- THEN none are hardcoded outside the copy module
+
 ### Requirement: Spanish copy table
 
 All user-visible strings MUST come from a single copy module using exactly these values (neutral Spanish, no regional slang):
@@ -304,10 +404,12 @@ All user-visible strings MUST come from a single copy module using exactly these
 | `button.confirm` | Guardar de todos modos |
 | `button.cancel` | Cancelar |
 | `button.retry` | Reintentar |
+| `button.clearFilters` | Limpiar filtros |
 | `progress.validating` | Validando... |
 | `progress.revalidating` | Revalidando... |
 | `progress.saving` | Guardando... |
 | `validation.ok` | La frase es única. Puedes guardarla. |
+| `validation.closestMatch` | Aunque es única, se parece a |
 | `duplicate.title` | Posible duplicado |
 | `duplicate.mostSimilar` | Frase más similar |
 | `duplicate.score` | Similitud: {percent}% |
@@ -317,11 +419,23 @@ All user-visible strings MUST come from a single copy module using exactly these
 | `duplicate.loadMoreError` | No se pudieron cargar más coincidencias. |
 | `badge.unique` | Única |
 | `badge.duplicate_confirmed` | Duplicado confirmado |
+| `filters.statusLabel` | Estado |
+| `filters.statusAll` | Todas |
+| `filters.textLabel` | Texto |
+| `filters.textPlaceholder` | Buscar frase guardada |
+| `filters.minScoreLabel` | Similitud mínima (%) |
 | `list.empty` | Aún no hay frases guardadas. |
 | `list.loadError` | No se pudieron cargar las frases. |
 | `list.counter` | {loaded}/{total} |
 | `list.loadingMore` | Cargando más frases... |
 | `list.loadMoreError` | No se pudieron cargar más frases. |
+| `list.emptyFiltered` | No se encontraron frases con estos filtros. |
+| `compare.button` | Comparar |
+| `compare.hide` | Ocultar |
+| `compare.yourPhrase` | Esta frase |
+| `compare.comparedWith` | Comparada con |
+| `compare.loading` | Cargando comparación... |
+| `compare.loadError` | No se pudo cargar la frase comparada. |
 | `saved.success` | Frase guardada. |
 | `error.tooLong` | La frase no puede superar 280 caracteres. |
 | `error.empty` | Escribe una frase antes de continuar. |

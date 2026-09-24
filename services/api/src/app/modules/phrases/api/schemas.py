@@ -68,6 +68,41 @@ def raw_phrase_text(max_length: int) -> Any:
     return Annotated[str, Field(strict=True), AfterValidator(_check_raw_cap)]
 
 
+def query_score() -> Any:
+    """Bounded `[0, 1]` float type for `GET /phrases`' `min_score` query
+    param (design.md's `query_score`, Unit 2 D-less shorthand). `min_score`
+    has no caller-supplied max like `query_limit`/`page_limit` -- the bound
+    is always `[0, 1]` (a similarity score), so it takes no argument.
+    `allow_inf_nan=False` rejects `min_score=nan` with the same
+    `out_of_range` reason `main.py._reason_for` already gives `ge`/`le`
+    violations, instead of surfacing as a separate `finite_number` error
+    type main.py's mapping does not recognize."""
+    return Annotated[float, Field(ge=0, le=1, allow_inf_nan=False)]
+
+
+def query_text(max_length: int) -> Any:
+    """Optional string type for `GET /phrases`' `q` query parameter, capped
+    at `max_length` (`settings.phrase_max_length`) directly. Unlike
+    `raw_phrase_text`'s pre-normalization `4x` raw cap for a saved/embedded
+    JSON body field, `q` is only ever compared against `normalized_text` --
+    never stored, never embedded -- so its own raw length already IS the
+    semantic bound the api-contract spec's "q over the length cap" scenario
+    documents. Raises the same `string_too_long`-typed `PydanticCustomError`
+    as `raw_phrase_text` so `main.py`'s generic `too_long` mapping (and its
+    `details.max_length` extraction) applies unchanged."""
+
+    def _check_length(value: str) -> str:
+        if len(value) > max_length:
+            raise PydanticCustomError(
+                "string_too_long",
+                "String should have at most {max_length} characters",
+                {"max_length": max_length},
+            )
+        return value
+
+    return Annotated[str, AfterValidator(_check_length)]
+
+
 class ErrorDetail(BaseModel):
     """Mirrors `platform.errors.error_envelope`'s inner `"error"` object --
     a SEPARATE pydantic model (not imported from `platform.errors`, which

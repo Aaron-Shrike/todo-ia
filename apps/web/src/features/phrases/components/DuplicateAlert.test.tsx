@@ -31,6 +31,7 @@ function createFakeClient(overrides: Partial<PhraseApiClient> = {}): PhraseApiCl
     listMatches: vi.fn(),
     savePhrase: vi.fn(),
     listPhrases: vi.fn(),
+    getPhrase: vi.fn(),
     ...overrides,
   };
 }

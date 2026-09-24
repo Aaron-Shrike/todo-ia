@@ -73,7 +73,14 @@ export function DuplicateAlert({
             <span className={styles.matchScore}>{scoreLabel(match.score)}</span>
           </li>
         ))}
-        {hasMore && <li ref={sentinelRef} data-testid="matches-sentinel" aria-hidden="true" />}
+        {hasMore && (
+          <li
+            ref={sentinelRef}
+            className={styles.sentinel}
+            data-testid="matches-sentinel"
+            aria-hidden="true"
+          />
+        )}
       </ul>
 
       {isLoadingMore && <p className={styles.loadingMore}>{copy.duplicate.loadingMore}</p>}

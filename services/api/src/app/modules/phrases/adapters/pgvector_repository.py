@@ -32,9 +32,11 @@ from sqlalchemy import Connection, Engine, Row, text
 from sqlalchemy.exc import IntegrityError, OperationalError
 
 from app.modules.phrases.contracts import (
+    NO_FILTERS,
     DuplicateTextConflict,
     Isolation,
     ListCursor,
+    ListFilters,
     LockTimeout,
     Match,
     MatchCursor,
@@ -128,6 +130,15 @@ ORDER BY created_at DESC, id DESC
 LIMIT :limit
 """
 
+# `get` (`GET /phrases/{id}`): single row by primary key, same column set as
+# `list_recent`/`list_page` so `_row_to_phrase` builds the same `Phrase`.
+GET_BY_ID_QUERY = """
+SELECT id, text, normalized_text, embedding::text AS embedding, similarity_score,
+       most_similar_phrase_id, validation_status, validated_at, created_at
+FROM phrases
+WHERE id = :id
+"""
+
 # `list_page` (real pagination for `GET /phrases`, see `contracts.py`'s
 # `PhraseListPage`): same `(created_at, id) DESC` ordering and index as
 # `list_recent` above, but keyset-continued from an opaque cursor instead of
@@ -142,9 +153,15 @@ SELECT id, text, normalized_text, embedding::text AS embedding, similarity_score
 FROM phrases
 """
 
-_LIST_CURSOR_PREDICATE = """
-WHERE (created_at, id) < (:cursor_created_at, :cursor_id)
-"""
+# Unit 1 (`phrase-list-filters`, design.md's "SQL (pgvector_repository.py)"):
+# conditional WHERE fragments for `status`/`q`/`min_score`, combined with
+# the cursor predicate below through one shared `_list_where` builder.
+# `_LIST_CURSOR_PREDICATE` deliberately carries no leading `WHERE` -- that
+# keyword is added once, by `_list_where`, regardless of which fragments
+# are present (D6: "each variant is a real query EXPLAIN can inspect").
+_LIST_CURSOR_PREDICATE = "(created_at, id) < (:cursor_created_at, :cursor_id)"
+_LIST_TEXT_PREDICATE = r"normalized_text LIKE :text_pattern ESCAPE '\'"
+_LIST_MIN_SCORE_PREDICATE = "similarity_score >= :min_score"
 
 _LIST_ORDER_LIMIT = """
 ORDER BY created_at DESC, id DESC
@@ -152,13 +169,78 @@ LIMIT :limit + 1
 """
 
 
-def build_list_page_query(*, has_cursor: bool) -> str:
-    """Exposed so a plan/EXPLAIN test runs the real query, not a copy."""
-    predicate = _LIST_CURSOR_PREDICATE if has_cursor else ""
-    return _LIST_BASE_SELECT + predicate + _LIST_ORDER_LIMIT
+def _status_predicate(status: ValidationStatus) -> str:
+    """D4: the status value is inlined as a SQL LITERAL from the closed
+    `ValidationStatus` enum, never bound as `:status`. psycopg3 auto-
+    prepares after 5 executions, and Postgres may then pick a GENERIC plan
+    for a bound param -- a generic plan cannot prove `$1 = 'duplicate_
+    confirmed'`, so it would silently stop using migration 0002's partial
+    index. The value comes only from enum members, so this f-string is
+    injection-safe by construction (never touches request-supplied text)."""
+    return f"validation_status = '{status.value}'"
 
 
-COUNT_ALL_QUERY = "SELECT count(*) FROM phrases"
+def _list_where(
+    *,
+    has_cursor: bool,
+    status: ValidationStatus | None,
+    has_text: bool,
+    has_min_score: bool,
+) -> str:
+    """Shared by `build_list_page_query` and `build_count_list_query` --
+    the count variant omits the cursor predicate (no page, no keyset
+    position) but otherwise narrows identically, so `total`/`count_filtered`
+    always agrees with what `list_page` actually paginates through."""
+    parts = [
+        *([_status_predicate(status)] if status is not None else []),
+        *([_LIST_TEXT_PREDICATE] if has_text else []),
+        *([_LIST_MIN_SCORE_PREDICATE] if has_min_score else []),
+        *([_LIST_CURSOR_PREDICATE] if has_cursor else []),
+    ]
+    return ("WHERE " + "\n  AND ".join(parts) + "\n") if parts else ""
+
+
+def build_list_page_query(
+    *,
+    has_cursor: bool,
+    status: ValidationStatus | None = None,
+    has_text: bool = False,
+    has_min_score: bool = False,
+) -> str:
+    """Exposed so a plan/EXPLAIN test runs the real query, not a copy. With
+    no filters and no cursor, byte-identical to the pre-Unit-1 query --
+    `_list_where` returns `""` when every flag is absent/`None` -- so there
+    is no plan regression on the default (unfiltered) path."""
+    where = _list_where(
+        has_cursor=has_cursor, status=status, has_text=has_text, has_min_score=has_min_score
+    )
+    return _LIST_BASE_SELECT + where + _LIST_ORDER_LIMIT
+
+
+def build_count_list_query(
+    *,
+    status: ValidationStatus | None = None,
+    has_text: bool = False,
+    has_min_score: bool = False,
+) -> str:
+    """Same WHERE fragments as `build_list_page_query`, minus the cursor
+    predicate/ordering/limit -- what `count_filtered` runs to compute
+    `PhraseListPage.total`."""
+    return "SELECT count(*) FROM phrases\n" + _list_where(
+        has_cursor=False, status=status, has_text=has_text, has_min_score=has_min_score
+    )
+
+
+def _contains_pattern(term: str) -> str:
+    """`%term%` with `\\`, `%` and `_` escaped so they are matched
+    LITERALLY by `LIKE ... ESCAPE '\\'`, never as SQL wildcards (D3: this
+    escaping is SQL syntax, so it lives here, not in the application
+    layer -- the in-memory adapter uses plain Python `in` on the raw term
+    and must never see an escaped `\\%`). Backslash is escaped FIRST so
+    escaping `%`/`_` afterwards does not double-escape their own inserted
+    backslashes."""
+    escaped = term.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+    return f"%{escaped}%"
 
 
 def serialize_vector(vector: Vector) -> str:
@@ -287,17 +369,36 @@ class PgVectorPhraseRepository:
         self._mark_statement()
         return Phrase(id=row.id, created_at=row.created_at, **vars(phrase))
 
+    def get(self, phrase_id: int) -> Phrase | None:
+        row = self._connection.execute(text(GET_BY_ID_QUERY), {"id": phrase_id}).first()
+        self._mark_statement()
+        return _row_to_phrase(row) if row is not None else None
+
     def list_recent(self, limit: int) -> list[Phrase]:
         rows = self._connection.execute(text(LIST_RECENT_QUERY), {"limit": limit}).fetchall()
         self._mark_statement()
         return [_row_to_phrase(row) for row in rows]
 
-    def list_page(self, limit: int, cursor: ListCursor | None) -> PhraseListPage:
+    def list_page(
+        self, limit: int, cursor: ListCursor | None, *, filters: ListFilters = NO_FILTERS
+    ) -> PhraseListPage:
+        has_text = filters.text is not None
+        has_min_score = filters.min_score is not None
         params: dict[str, object] = {"limit": limit}
         if cursor is not None:
             params["cursor_created_at"] = cursor.created_at
             params["cursor_id"] = cursor.id
-        query = build_list_page_query(has_cursor=cursor is not None)
+        if has_text:
+            assert filters.text is not None  # narrowed by has_text, for mypy
+            params["text_pattern"] = _contains_pattern(filters.text)
+        if has_min_score:
+            params["min_score"] = filters.min_score
+        query = build_list_page_query(
+            has_cursor=cursor is not None,
+            status=filters.status,
+            has_text=has_text,
+            has_min_score=has_min_score,
+        )
         rows = self._connection.execute(text(query), params).fetchall()
         self._mark_statement()
 
@@ -309,13 +410,27 @@ class PgVectorPhraseRepository:
             if has_more and items
             else None
         )
-        total = self.count_all()
+        total = self.count_filtered(filters)
         return PhraseListPage(items=items, total=total, next_cursor=next_cursor, has_more=has_more)
 
-    def count_all(self) -> int:
-        total = self._connection.execute(text(COUNT_ALL_QUERY)).scalar_one()
+    def count_filtered(self, filters: ListFilters) -> int:
+        has_text = filters.text is not None
+        has_min_score = filters.min_score is not None
+        params: dict[str, object] = {}
+        if has_text:
+            assert filters.text is not None  # narrowed by has_text, for mypy
+            params["text_pattern"] = _contains_pattern(filters.text)
+        if has_min_score:
+            params["min_score"] = filters.min_score
+        query = build_count_list_query(
+            status=filters.status, has_text=has_text, has_min_score=has_min_score
+        )
+        total = self._connection.execute(text(query), params).scalar_one()
         self._mark_statement()
         return total
+
+    def count_all(self) -> int:
+        return self.count_filtered(NO_FILTERS)
 
     def find_nearest(self, q: Vector) -> Neighbor | None:
         # Unfiltered top-1, HNSW; explicit `on` in case an earlier statement

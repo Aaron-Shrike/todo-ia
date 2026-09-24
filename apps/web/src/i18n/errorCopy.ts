@@ -25,6 +25,7 @@ export const errorCopy: Record<ErrorCode, CopyKey> = {
   VALIDATION_ERROR: "error.generic",
   INVALID_CURSOR: "error.invalidCursor",
   NOT_FOUND: "error.generic",
+  PHRASE_NOT_FOUND: "error.generic",
   METHOD_NOT_ALLOWED: "error.generic",
   DUPLICATE_CONFIRMATION_REQUIRED: "error.generic",
   PAYLOAD_TOO_LARGE: "error.generic",

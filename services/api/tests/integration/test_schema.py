@@ -77,6 +77,14 @@ def _schema_state(conn: Connection) -> tuple[bool, bool]:
     return bool(table), bool(ext)
 
 
+_LIST_FILTER_STATUS_INDEX = "phrases_duplicate_confirmed_created_at_id_idx"
+
+
+def _index_exists(conn: Connection, index_name: str) -> bool:
+    row = conn.execute(text("SELECT to_regclass(:name) IS NOT NULL"), {"name": index_name})
+    return bool(row.scalar_one())
+
+
 @pytest.fixture(scope="module")
 def database_url() -> str:
     return _database_url()
@@ -180,3 +188,19 @@ class TestMigrationLifecycle:
         command.downgrade(_alembic_config(database_url), "base")
         with engine.begin() as conn:
             assert _schema_state(conn) == (False, False)
+
+
+class TestListFilterStatusIndexMigration:
+    """Migration `0002` (specs/phrase-management/spec.md's "Filter status
+    index" ADDED requirement, scenario "Migration lifecycle")."""
+
+    def test_partial_index_exists_after_upgrade_and_is_gone_after_downgrade(
+        self, engine: Engine, database_url: str
+    ) -> None:
+        # `_freshly_migrated_schema` already upgraded to head.
+        with engine.begin() as conn:
+            assert _index_exists(conn, _LIST_FILTER_STATUS_INDEX) is True
+
+        command.downgrade(_alembic_config(database_url), "base")
+        with engine.begin() as conn:
+            assert _index_exists(conn, _LIST_FILTER_STATUS_INDEX) is False

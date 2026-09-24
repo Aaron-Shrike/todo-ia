@@ -22,6 +22,15 @@ class PhraseTooLong(Exception):
         self.max_length = max_length
 
 
+class PhraseNotFound(Exception):
+    """`GET /phrases/{id}` requested an id that does not exist in the
+    store. `platform/errors.py` maps this to HTTP 404 `PHRASE_NOT_FOUND`."""
+
+    def __init__(self, *, phrase_id: int) -> None:
+        super().__init__(f"no phrase with id {phrase_id}")
+        self.phrase_id = phrase_id
+
+
 class PhraseMetadataInvariantViolation(ValueError):
     """A `NewPhrase` violates one of migration 0001's paired-metadata CHECK
     constraints. Raised by `PhraseRepository.add` implementations BEFORE any

@@ -19,6 +19,7 @@ export const copy = {
     confirm: "Guardar de todos modos",
     cancel: "Cancelar",
     retry: "Reintentar",
+    clearFilters: "Limpiar filtros",
   },
   progress: {
     validating: "Validando...",
@@ -27,6 +28,7 @@ export const copy = {
   },
   validation: {
     ok: "La frase es única. Puedes guardarla.",
+    closestMatch: "Aunque es única, se parece a",
   },
   duplicate: {
     title: "Posible duplicado",
@@ -41,12 +43,28 @@ export const copy = {
     unique: "Única",
     duplicate_confirmed: "Duplicado confirmado",
   },
+  filters: {
+    statusLabel: "Estado",
+    statusAll: "Todas",
+    textLabel: "Texto",
+    textPlaceholder: "Buscar frase guardada",
+    minScoreLabel: "Similitud mínima (%)",
+  },
   list: {
     empty: "Aún no hay frases guardadas.",
     loadError: "No se pudieron cargar las frases.",
     counter: "{loaded}/{total}",
     loadingMore: "Cargando más frases...",
     loadMoreError: "No se pudieron cargar más frases.",
+    emptyFiltered: "No se encontraron frases con estos filtros.",
+  },
+  compare: {
+    button: "Comparar",
+    hide: "Ocultar",
+    yourPhrase: "Esta frase",
+    comparedWith: "Comparada con",
+    loading: "Cargando comparación...",
+    loadError: "No se pudo cargar la frase comparada.",
   },
   saved: {
     success: "Frase guardada.",

@@ -19,6 +19,12 @@ export interface ListPhrasesParams {
   limit?: number;
   /** Opaque continuation from a previous page's `next_cursor`. */
   cursor?: string;
+  /** Serialized as `status`; server default (no filter) applies when omitted. */
+  status?: "unique" | "duplicate_confirmed";
+  /** Serialized as `q`; server default (no filter) applies when omitted. */
+  q?: string;
+  /** [0,1] fraction; serialized as `min_score`. Server default (no filter) applies when omitted. */
+  minScore?: number;
 }
 
 export interface PhraseApiClient {
@@ -30,6 +36,8 @@ export interface PhraseApiClient {
   ): Promise<Schemas["_MatchesData"]>;
   savePhrase(body: Schemas["_SaveRequest"]): Promise<Schemas["_PhraseOut"]>;
   listPhrases(params?: ListPhrasesParams): Promise<Schemas["_PhraseListData"]>;
+  /** Resolves a `validation.most_similar_phrase_id` to its own phrase (text, status, etc.) for the list's "compare" panel. Rejects with `ApiError` (`PHRASE_NOT_FOUND`, 404) if the id no longer exists. */
+  getPhrase(id: string): Promise<Schemas["_PhraseOut"]>;
 }
 
 interface DataEnvelope<T> {
@@ -154,6 +162,9 @@ export function createApiClient(config: ApiClientConfig = {}): PhraseApiClient {
       const query = new URLSearchParams();
       if (params?.limit !== undefined) query.set("limit", String(params.limit));
       if (params?.cursor !== undefined) query.set("cursor", params.cursor);
+      if (params?.status !== undefined) query.set("status", params.status);
+      if (params?.q !== undefined) query.set("q", params.q);
+      if (params?.minScore !== undefined) query.set("min_score", String(params.minScore));
       const qs = query.toString();
       return request<Schemas["_PhraseListData"]>(
         `/phrases${qs ? `?${qs}` : ""}`,
@@ -161,6 +172,12 @@ export function createApiClient(config: ApiClientConfig = {}): PhraseApiClient {
         resolved,
       );
     },
+    getPhrase: (id) =>
+      request<Schemas["_PhraseOut"]>(
+        `/phrases/${encodeURIComponent(id)}`,
+        { method: "GET" },
+        resolved,
+      ),
   };
 }
 

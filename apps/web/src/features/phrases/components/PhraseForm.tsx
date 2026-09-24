@@ -15,6 +15,7 @@ import {
   type ErrorInfo,
   type MachineState,
 } from "../machine";
+import { scoreLabel } from "../scoreLabel";
 import { DuplicateAlert } from "./DuplicateAlert";
 import styles from "./phrases.module.css";
 
@@ -142,7 +143,7 @@ export function PhraseForm({ client, maxLength = ENV_MAX_LENGTH, onSaved }: Phra
           if (data.is_duplicate) {
             dispatch({ type: "VALIDATE_OK_DUPLICATE", details: toDuplicateDetails(data) });
           } else {
-            dispatch({ type: "VALIDATE_OK_UNIQUE" });
+            dispatch({ type: "VALIDATE_OK_UNIQUE", mostSimilar: data.most_similar ?? null });
           }
         },
         (err: unknown) => {
@@ -262,7 +263,17 @@ export function PhraseForm({ client, maxLength = ENV_MAX_LENGTH, onSaved }: Phra
         </button>
       </div>
 
-      {state.status === "ok" && <p className={styles.okMessage}>{copy.validation.ok}</p>}
+      {state.status === "ok" && (
+        <>
+          <p className={styles.okMessage}>{copy.validation.ok}</p>
+          {state.mostSimilar && (
+            <p className={styles.mostSimilar}>
+              {copy.validation.closestMatch}: <strong>{state.mostSimilar.text}</strong>{" "}
+              ({scoreLabel(state.mostSimilar.score)})
+            </p>
+          )}
+        </>
+      )}
 
       {duplicateDetails && (
         <DuplicateAlert
