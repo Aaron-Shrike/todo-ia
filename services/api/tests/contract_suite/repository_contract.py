@@ -2,12 +2,18 @@
 design.md: "so the fast fake cannot drift from the real one"). Not
 `test_*.py` on purpose -- collected only through subclasses.
 
-Split into two mixins (Unit 5a) so a partial adapter registers only what it
-implements: `NearestNeighbourContractSuite` (in-memory only, until Unit 5b
-gives pgvector the write-path primitives) and `MatchesContractSuite`
-(in-memory since Unit 2d, pgvector since `tests/integration/
-test_find_matches.py`). `RepositoryContractSuite` composes both, unchanged
-for in-memory (all 8 scenarios).
+Split into mixins so a partial adapter registers only what it implements:
+`NearestNeighbourContractSuite` (in-memory only, until Unit 5b gives pgvector
+the write-path primitives), `MatchesContractSuite` (in-memory since Unit 2d,
+pgvector since `tests/integration/test_find_matches.py`; also covers
+`count_matches`, added retroactively -- see its docstring), and
+`ListPageContractSuite` (`list_page`/`count_all`, added retroactively after
+PR #42 introduced them with only a dedicated pgvector integration file and
+an in-memory unit test, never proven to agree with each other the way every
+other repository method is -- the same gap Unit 7b's own verify section
+already flagged for `list_recent`, closed here for these three methods
+instead). `RepositoryContractSuite` composes all three, unchanged for
+in-memory (now 13 scenarios: 4 + 6 + 3).
 """
 
 from __future__ import annotations
@@ -18,6 +24,7 @@ import pytest
 
 from app.modules.phrases.contracts import (
     Isolation,
+    ListCursor,
     MatchCursor,
     NewPhrase,
     UnitOfWorkFactory,
@@ -217,8 +224,117 @@ class MatchesContractSuite:
 
         assert collected == ids  # none repeated, none skipped, order preserved
 
+    def test_count_matches_on_an_empty_store_is_zero(self, uow_factory: UnitOfWorkFactory) -> None:
+        with uow_factory(read_only=True) as uow:
+            assert uow.repo.count_matches(PROBE, max_distance=1.0) == 0
 
-class RepositoryContractSuite(NearestNeighbourContractSuite, MatchesContractSuite):
-    """Full suite: both mixins' scenarios. In-memory registers here (Unit
-    2/2d); a partial adapter registers a single mixin directly instead (see
-    this module's docstring)."""
+    def test_count_matches_equals_the_total_rows_find_matches_pages_through(
+        self, uow_factory: UnitOfWorkFactory
+    ) -> None:
+        # `count_matches` and `find_matches` must agree on the SAME widened
+        # bound (design.md) -- seed a mix of within-bound and out-of-bound
+        # phrases, then prove the count equals the number of distinct ids a
+        # full `find_matches` pagination actually yields, not a hardcoded
+        # expectation either method could independently drift from.
+        within_bound = [0.05, 0.2, 0.35, 0.5, 0.65]
+        out_of_bound = [1.2, 1.5]
+        phrases = [
+            _new_phrase(f"in-{i}", _vector_at_distance(d)) for i, d in enumerate(within_bound)
+        ]
+        phrases += [
+            _new_phrase(f"out-{i}", _vector_at_distance(d)) for i, d in enumerate(out_of_bound)
+        ]
+        _seed(uow_factory, phrases)
+
+        with uow_factory(read_only=True) as uow:
+            count = uow.repo.count_matches(PROBE, max_distance=0.7)
+
+            collected: set[int] = set()
+            cursor: MatchCursor | None = None
+            while True:
+                page = uow.repo.find_matches(PROBE, max_distance=0.7, limit=2, cursor=cursor)
+                collected.update(m.id for m in page.items)
+                cursor = page.next_cursor
+                if not page.has_more:
+                    break
+
+        assert count == len(within_bound)
+        assert count == len(collected)
+
+
+class ListPageContractSuite:
+    """`list_page`/`count_all` (`GET /phrases`'s real pagination, added by
+    PR #42) -- retroactively closes the same class of gap Unit 7b's verify
+    section already flagged for `list_recent`: these methods previously had
+    no shared, adapter-agnostic coverage proving the fake and the real
+    adapter agree, only a dedicated pgvector integration file and an
+    in-memory unit test that could silently diverge from each other."""
+
+    @pytest.fixture
+    def uow_factory(self) -> UnitOfWorkFactory:
+        raise NotImplementedError("subclasses must override the `uow_factory` fixture")
+
+    def test_list_page_on_an_empty_store_returns_no_items_and_zero_total(
+        self, uow_factory: UnitOfWorkFactory
+    ) -> None:
+        with uow_factory(read_only=True) as uow:
+            page = uow.repo.list_page(limit=10, cursor=None)
+            assert page.items == []
+            assert page.total == 0
+            assert page.has_more is False
+            assert page.next_cursor is None
+            assert uow.repo.count_all() == 0
+
+    def test_count_all_matches_the_number_of_stored_phrases(
+        self, uow_factory: UnitOfWorkFactory
+    ) -> None:
+        ids = _seed(uow_factory, [_new_phrase(f"p{i}", PROBE) for i in range(7)])
+        with uow_factory(read_only=True) as uow:
+            assert uow.repo.count_all() == len(ids)
+            assert uow.repo.list_page(limit=100, cursor=None).total == len(ids)
+
+    def test_list_page_pages_through_completely_with_no_gaps_or_repeats(
+        self, uow_factory: UnitOfWorkFactory
+    ) -> None:
+        # Mirrors `test_500_matches_page_through_completely_with_no_gaps_or_repeats`'s
+        # shape for the OTHER paginated read path (`list_page`, `(created_at,
+        # id)` keyset instead of `(bucket, id)`): every seeded id reachable
+        # exactly once, `has_more`/`next_cursor` internally consistent, and
+        # `total` stable across every page regardless of pagination.
+        #
+        # Deliberately does NOT assert exact newest-first order: `NewPhrase`
+        # has no `created_at` field for either adapter to accept, so a tight
+        # seeding loop risks real timestamp collisions here -- asserting a
+        # strict order would be flaky. That proof is owned by
+        # `test_list_page_pgvector.py`'s own bespoke tests, which overwrite
+        # `created_at` via a direct SQL `UPDATE` a second apart after
+        # seeding, a DB-specific trick this adapter-agnostic suite can't
+        # express.
+        ids = _seed(uow_factory, [_new_phrase(f"m{i}", PROBE) for i in range(23)])
+
+        collected: list[int] = []
+        cursor: ListCursor | None = None
+        pages = 0
+        with uow_factory(read_only=True) as uow:
+            while True:
+                page = uow.repo.list_page(limit=5, cursor=cursor)
+                pages += 1
+                assert page.total == len(ids)
+                collected.extend(p.id for p in page.items)
+                cursor = page.next_cursor
+                if not page.has_more:
+                    break
+
+        assert pages == 5  # 23 rows, page size 5 -> 4 full pages + 1 of 3
+        assert len(collected) == len(ids)
+        assert len(set(collected)) == len(ids)  # none repeated
+        assert set(collected) == set(ids)  # none missing
+
+
+class RepositoryContractSuite(
+    NearestNeighbourContractSuite, MatchesContractSuite, ListPageContractSuite
+):
+    """Full suite: all three mixins' scenarios. In-memory registers here
+    (Unit 2/2d, extended by the `ListPageContractSuite` retrofit); a partial
+    adapter registers a single mixin directly instead (see this module's
+    docstring)."""

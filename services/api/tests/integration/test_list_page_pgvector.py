@@ -21,7 +21,8 @@ from app.modules.phrases.adapters.pgvector_repository import (
     PgVectorPhraseRepository,
     PgVectorUnitOfWorkFactory,
 )
-from app.modules.phrases.contracts import ListCursor, NewPhrase, ValidationStatus
+from app.modules.phrases.contracts import ListCursor, NewPhrase, UnitOfWorkFactory, ValidationStatus
+from tests.contract_suite.repository_contract import ListPageContractSuite
 from tests.contract_suite.vectors import vector_at_distance
 
 pytestmark = pytest.mark.integration
@@ -92,6 +93,21 @@ def _seed(engine: Engine, count: int) -> None:
                 text("UPDATE phrases SET created_at = :ca WHERE id = :id"),
                 {"ca": base + timedelta(seconds=offset), "id": row_id},
             )
+
+
+class TestPgVectorListPageContract(ListPageContractSuite):
+    """Registers `PgVectorPhraseRepository` against the shared, adapter-
+    agnostic `list_page`/`count_all` scenarios (totality, empty store,
+    running `total`) -- same registration pattern as `test_find_matches.py`'s
+    `TestPgVectorMatchesContract`. The module's own bespoke tests below still
+    own the DB-specific, timestamp-precise "genuinely newest-first" proof
+    (`_seed`'s explicit `created_at` overwrite) that a shared, adapter-
+    agnostic suite cannot express, since `NewPhrase` never exposes
+    `created_at` for the in-memory side to accept either."""
+
+    @pytest.fixture
+    def uow_factory(self, engine: Engine) -> UnitOfWorkFactory:
+        return PgVectorUnitOfWorkFactory(engine)
 
 
 def test_list_page_pagination_walk_reaches_every_row_exactly_once(engine: Engine) -> None:
