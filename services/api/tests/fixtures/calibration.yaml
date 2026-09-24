@@ -1,0 +1,93 @@
+# ES/EN calibration fixture (tasks.md Unit 9.1; design.md "ES/EN calibration
+# fixture"; specs/semantic-validation/spec.md "Cross-language calibration").
+# Consumed by `tests/slow/test_calibration.py` (marker `slow`, `make
+# evidence`, never CI). Raw DISPLAY-form text; the test derives the
+# comparison form itself before embedding (mirrors production).
+#
+# Schema: id (stable row label), a/b (raw text), note (why this pair),
+# casefold_probe (duplicate only, optional: also runs the task 9.2
+# cased-vs-casefolded margin measurement).
+#
+# Categories: duplicate/distinct MUST score >=/< SIMILARITY_THRESHOLD
+# (hard-gated). expected_weakness is reported only, NEVER gated -- sentence
+# embeddings are a known weakness on negation pairs (design.md "Accepted
+# cost"); the fixture is never bent to force a pass.
+
+duplicate:
+  - id: paraphrase_es_verb_added
+    a: "Comprar leche"
+    b: "Ir a comprar leche"
+    note: "Spanish paraphrase, verb added (spec example)"
+  - id: case_and_spacing_variant
+    a: "Comprar leche"
+    b: "comprar LECHE"
+    note: >-
+      Exact duplicate after casefold (spec example); also the pair used for
+      the task 9.2 cased-vs-casefolded probe.
+    casefold_probe: true
+  - id: cross_lingual_es_en
+    a: "Comprar leche"
+    b: "Buy milk"
+    note: "Cross-lingual ES/EN paraphrase (spec example)"
+  - id: paraphrase_en_minor_addition
+    a: "Call the dentist tomorrow"
+    b: "Call the dentist tomorrow morning"
+    note: "English paraphrase, minor addition"
+  - id: paraphrase_es_reordered
+    a: "Necesito comprar pan y leche"
+    b: "Necesito comprar leche y pan"
+    note: "Spanish paraphrase, items reordered"
+  - id: cross_lingual_en_es_reverse
+    a: "Schedule a dentist appointment"
+    b: "Programar una cita con el dentista"
+    note: "Cross-lingual EN/ES paraphrase, reverse direction"
+
+distinct:
+  - id: different_grocery_item
+    a: "Comprar leche"
+    b: "Comprar pan"
+    note: "Different grocery item (spec example)"
+  - id: unrelated_tasks_es
+    a: "Llamar al dentista"
+    b: "Comprar leche"
+    note: "Unrelated tasks, both Spanish (spec example)"
+  - id: unrelated_cross_lingual
+    a: "Buy milk"
+    b: "Schedule a dentist appointment"
+    note: "Unrelated tasks, cross-lingual"
+  - id: unrelated_es_en
+    a: "Sacar la basura"
+    b: "Read a book"
+    note: "Unrelated tasks, cross-lingual, reverse direction"
+  - id: unrelated_same_domain_es
+    a: "Pagar la factura de luz"
+    b: "Renovar el pasaporte"
+    note: "Unrelated errands, both bureaucratic but different tasks"
+
+expected_weakness:
+  - id: negation_es
+    a: "Me gusta el café"
+    b: "No me gusta el café"
+    note: >-
+      Negation pair (Spanish, spec example) -- a documented, accepted
+      weakness (design.md), not silently hidden.
+  - id: negation_en
+    a: "I like coffee"
+    b: "I don't like coffee"
+    note: "Negation pair (English)"
+  - id: negation_es_different_verb
+    a: "Necesito ir al banco"
+    b: "No necesito ir al banco"
+    note: "Negation pair (Spanish, different verb from negation_es)"
+  - id: accent_variant
+    a: "Llamar al dentista"
+    b: "Llamar al déntista"
+    note: >-
+      Accent variant of the same Spanish word -- moved here from `duplicate`
+      after the first real run (task 9.2): measured score 0.4977, far below
+      the 0.8 threshold, contradicting the original assumption that this
+      would score as a near-duplicate. Not a normalization bug (`comparison_
+      form`/`display_form` are NFC-based and never strip diacritics); the
+      checkpoint itself treats an accent-shifted, non-dictionary word form
+      as a substantial semantic change. A second, real, documented weakness
+      alongside negation -- reported for visibility, never gated.

@@ -6,6 +6,10 @@ requires-python = ">=3.11"
 dependencies = [
   "fastapi>=0.115",
   "pydantic-settings>=2.5",
+  "sqlalchemy>=2.0",
+  "psycopg[binary]>=3.1",
+  "alembic>=1.13",
+  "uvicorn[standard]>=0.30",
 ]
 
 [project.optional-dependencies]
@@ -16,6 +20,28 @@ dev = [
   "ruff>=0.6",
   "mypy>=1.11",
   "import-linter>=2.1",
+  "pyyaml>=6.0",
+]
+# NOT in core `dependencies`: a plain `pip install .` (the `migrate`
+# Dockerfile stage, design.md: "No torch/model weights") must stay
+# torch-free. Only the `api` stage's Dockerfile builder installs the
+# CPU-only torch wheel first, then `pip install .[embeddings]` -- pip then
+# finds torch already satisfied and never reaches for the default index's
+# (CUDA) wheel. `similarity/adapters/sentence_transformers.py` only ever
+# imports this lazily, inside `load_sentence_transformer`'s own body, so
+# every unit test stays import-safe without this extra installed.
+# Pinned exact (fix-pass finding #5, was `>=3.0` -- a floor only, so
+# library behaviour could still drift on every rebuild despite the
+# Dockerfile's revision-SHA pin). 6.1.0 is the current stable release as of
+# this fix-pass and declares `torch>=2.2`, compatible with the Dockerfile's
+# pinned `torch==2.14.0`.
+embeddings = [
+  "sentence-transformers==6.1.0",
+]
+# Only for `scripts/seed_phrases.py` (a maintenance script, not shipped
+# application code) — never installed in the runtime `api`/`migrate` images.
+seed = [
+  "faker>=30.0",
 ]
 
 [build-system]

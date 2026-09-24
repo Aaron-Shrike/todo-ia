@@ -105,27 +105,28 @@ Response 200:
       {"id": "<id>", "text": "Comprar leche", "score": 0.9312}
     ],
     "next_cursor": null,
-    "has_more": false
+    "has_more": false,
+    "total": 1
   }
 }
 ```
 
-`score` and `most_similar` are null when the store is empty; `matches` is `[]` when nothing meets the threshold. `matches` holds page 1 only, in the ordering defined in semantic-validation (raw distance asc, `id` asc; displayed scores are non-increasing). `next_cursor` is an opaque string when `has_more` is true, otherwise null. Pages 2..n are fetched via `POST /phrases/matches`; verdict fields exist only in this response.
+`score` and `most_similar` are null when the store is empty; `matches` is `[]` when nothing meets the threshold. `matches` holds page 1 only, in the ordering defined in semantic-validation (raw distance asc, `id` asc; displayed scores are non-increasing). `next_cursor` is an opaque string when `has_more` is true, otherwise null. `total` is the full count of phrases meeting the threshold, independent of pagination (the UI's "10/46 coincidencias" counter) — `0` when the store is empty or nothing meets the threshold. Pages 2..n are fetched via `POST /phrases/matches`; verdict fields exist only in this response.
 
 #### Scenario: Duplicate found
 - GIVEN stored "Comprar leche" scoring 0.9312 against the input
 - WHEN `POST /phrases/validate {"text":"Buy milk"}` is called
-- THEN 200 with the body above: `is_duplicate` true, `threshold` 0.8, one match, `has_more` false, `next_cursor` null
+- THEN 200 with the body above: `is_duplicate` true, `threshold` 0.8, one match, `has_more` false, `next_cursor` null, `total` 1
 
 #### Scenario: Empty store
 - GIVEN an empty store
 - WHEN validate is called
-- THEN 200 `{"data":{"is_duplicate":false,"threshold":0.8,"score":null,"most_similar":null,"matches":[],"next_cursor":null,"has_more":false}}`
+- THEN 200 `{"data":{"is_duplicate":false,"threshold":0.8,"score":null,"most_similar":null,"matches":[],"next_cursor":null,"has_more":false,"total":0}}`
 
 #### Scenario: Page 1 carries the verdict
 - GIVEN 120 matches
 - WHEN validate is called with `limit: 50`
-- THEN 50 matches, `has_more` true, non-null `next_cursor`, plus `is_duplicate`, `threshold`, `score`, `most_similar`
+- THEN 50 matches, `has_more` true, non-null `next_cursor`, `total` 120, plus `is_duplicate`, `threshold`, `score`, `most_similar`
 
 #### Scenario: Limit bounds
 - GIVEN `limit` of 0, -1, `"ten"`, or greater than `MATCHES_PAGE_SIZE`
@@ -154,7 +155,7 @@ Response 200:
 
 ### Requirement: POST /phrases/matches
 
-Request: `{"text": string, "cursor": string, "limit"?: integer}`; `cursor` is REQUIRED and `limit` follows the validate bounds. Response 200: `{"data": {"matches": [...], "next_cursor": string|null, "has_more": boolean}}`. It MUST NOT include `is_duplicate`, `threshold`, `score` or `most_similar`. The endpoint is stateless and persists nothing. The cursor is opaque (base64url; clients MUST NOT parse it) and bound to the normalized text and the threshold in force when issued. A malformed cursor, or one issued for a different normalized text or threshold, MUST return `400 INVALID_CURSOR`, and no embedding is computed for a malformed cursor. The cursor MUST be validated strictly BEFORE anything is embedded or queried: it MUST NOT exceed a maximum length derived from `PHRASE_MAX_LENGTH`; it MUST be strict base64url decoding to a JSON object (no NaN/Infinity literals) whose version `v` is the supported version, whose text `t` is a string, whose raw distance `d` is a finite number in [0, 2], whose id `i` is a positive integer that fits in int64 (booleans rejected), and whose threshold `th` is a finite number in [0, 1]; any violation, unknown or missing field is `400 INVALID_CURSOR`. Ordering and completeness semantics are defined in semantic-validation.
+Request: `{"text": string, "cursor": string, "limit"?: integer}`; `cursor` is REQUIRED and `limit` follows the validate bounds. Response 200: `{"data": {"matches": [...], "next_cursor": string|null, "has_more": boolean, "total": integer}}`. `total` is the same full-count value validate's page 1 reported for this text (independent of pagination), so a client resuming from a stored cursor without ever having seen page 1 can still render the counter. It MUST NOT include `is_duplicate`, `threshold`, `score` or `most_similar`. The endpoint is stateless and persists nothing. The cursor is opaque (base64url; clients MUST NOT parse it) and bound to the normalized text and the threshold in force when issued. A malformed cursor, or one issued for a different normalized text or threshold, MUST return `400 INVALID_CURSOR`, and no embedding is computed for a malformed cursor. The cursor MUST be validated strictly BEFORE anything is embedded or queried: it MUST NOT exceed a maximum length derived from `PHRASE_MAX_LENGTH`; it MUST be strict base64url decoding to a JSON object (no NaN/Infinity literals) whose version `v` is the supported version, whose text `t` is a string, whose raw distance `d` is a finite number in [0, 2], whose id `i` is a positive integer that fits in int64 (booleans rejected), and whose threshold `th` is a finite number in [0, 1]; any violation, unknown or missing field is `400 INVALID_CURSOR`. Ordering and completeness semantics are defined in semantic-validation.
 
 #### Scenario: Pagination walk
 - GIVEN 120 matches and page 1 from validate with `limit: 50`
@@ -164,7 +165,7 @@ Request: `{"text": string, "cursor": string, "limit"?: integer}`; `cursor` is RE
 #### Scenario: No verdict fields
 - GIVEN a valid cursor
 - WHEN matches is called
-- THEN `data` has exactly `matches`, `next_cursor`, `has_more`
+- THEN `data` has exactly `matches`, `next_cursor`, `has_more`, `total`
 
 #### Scenario: Cursor with different text
 - GIVEN a cursor issued for text A
@@ -218,7 +219,7 @@ Response 201:
 }
 ```
 
-Response 409 (`DUPLICATE_CONFIRMATION_REQUIRED`): the error envelope with `details` = `{threshold, score, most_similar, matches, next_cursor, has_more}` (same shapes as the validate response). Other statuses per the error table.
+Response 409 (`DUPLICATE_CONFIRMATION_REQUIRED`): the error envelope with `details` = `{threshold, score, most_similar, matches, next_cursor, has_more, total}` (same shapes as the validate response). Other statuses per the error table.
 
 #### Scenario: Created unique
 - GIVEN an empty store
@@ -228,7 +229,7 @@ Response 409 (`DUPLICATE_CONFIRMATION_REQUIRED`): the error envelope with `detai
 #### Scenario: Conflict shape
 - GIVEN a duplicate exists
 - WHEN saved without confirmation
-- THEN 409 `{"error":{"code":"DUPLICATE_CONFIRMATION_REQUIRED","message":<string>,"details":{"threshold":0.8,"score":0.9312,"most_similar":{...},"matches":[...],"next_cursor":null,"has_more":false}}}`
+- THEN 409 `{"error":{"code":"DUPLICATE_CONFIRMATION_REQUIRED","message":<string>,"details":{"threshold":0.8,"score":0.9312,"most_similar":{...},"matches":[...],"next_cursor":null,"has_more":false,"total":1}}}`
 
 #### Scenario: Created confirmed
 - GIVEN a duplicate exists
@@ -247,22 +248,37 @@ Response 409 (`DUPLICATE_CONFIRMATION_REQUIRED`): the error envelope with `detai
 
 ### Requirement: GET /phrases
 
-Returns 200 `{"data":{"items":[<phrase>...]}}` where `<phrase>` has the same shape as the 201 payload, ordered newest first. It takes no required parameters and is not paginated; to keep the response bounded it returns at most `PHRASES_LIST_LIMIT` (default 200, integer 1..1000) newest phrases. Older phrases are not reachable through the API in this change (documented limitation).
+Returns 200 `{"data":{"items":[<phrase>...], "total": integer, "next_cursor": string|null, "has_more": boolean}}` where `<phrase>` has the same shape as the 201 payload, ordered newest first (`created_at desc, id desc`). Keyset-paginated: `limit` (optional query param, defaults to `PHRASES_PAGE_SIZE`, bounded `[1, PHRASES_LIST_LIMIT]`) and `cursor` (optional, opaque, from a previous page's `next_cursor`) let a client page through the FULL store — this supersedes the previous "not paginated, hard-capped, older phrases unreachable" limitation. `total` is the full row count regardless of pagination. The cursor is opaque (base64url; clients MUST NOT parse it), carries only a `(created_at, id)` keyset position — no text/threshold binding, unlike `POST /phrases/matches`'s cursor — and a cursor from one endpoint MUST NOT be accepted by the other. A malformed cursor MUST return `400 INVALID_CURSOR`, decided strictly before any query runs.
 
 #### Scenario: List shape
 - GIVEN two stored phrases
 - WHEN `GET /phrases` is called
-- THEN 200, `data.items` has 2 entries each with `id`, `text`, `created_at`, `validation.{status,score,most_similar_phrase_id,validated_at}`, newest first
+- THEN 200, `data.items` has 2 entries each with `id`, `text`, `created_at`, `validation.{status,score,most_similar_phrase_id,validated_at}`, newest first, and `data.total == 2`
 
 #### Scenario: Empty
 - GIVEN no phrases
 - WHEN called
-- THEN 200 `{"data":{"items":[]}}`
+- THEN 200 `{"data":{"items":[],"total":0,"next_cursor":null,"has_more":false}}`
 
-#### Scenario: Hard cap
-- GIVEN more than `PHRASES_LIST_LIMIT` stored phrases
+#### Scenario: Default page size
+- GIVEN `PHRASES_PAGE_SIZE=10` and 15 stored phrases
+- WHEN `GET /phrases` is called without `limit`
+- THEN 10 items are returned, `has_more` true, `total` 15
+
+#### Scenario: Pagination walk
+- GIVEN 25 stored phrases and `limit=10`
+- WHEN `GET /phrases` is followed through `next_cursor` until `has_more` is false
+- THEN 25 distinct ids are returned in total across 3 pages (10, 10, 5), newest first, none repeated or skipped
+
+#### Scenario: Limit bounds
+- GIVEN `limit` of 0 or greater than `PHRASES_LIST_LIMIT`
 - WHEN `GET /phrases` is called
-- THEN exactly `PHRASES_LIST_LIMIT` items are returned, newest first
+- THEN 422 `VALIDATION_ERROR`
+
+#### Scenario: Malformed or cross-endpoint cursor
+- GIVEN `cursor="not-a-cursor"`, or a valid `POST /phrases/matches` cursor
+- WHEN `GET /phrases` is called with it
+- THEN 400 `INVALID_CURSOR`
 
 ### Requirement: GET /health
 
@@ -320,7 +336,7 @@ No response body or status of any phrase endpoint MAY depend on cache state (see
 
 ### Requirement: CORS and configuration
 
-The backend MUST accept cross-origin requests only from origins listed in `CORS_ORIGINS` (no wildcard). Allowed methods are `GET, POST, OPTIONS`; the allowed request header is `Content-Type`; credentials are NOT allowed (`allow_credentials=False`, no cookies). CORS headers MUST also be present on error responses, including 500. Every user-settable environment variable MUST be listed in `.env.example` with a default: `DATABASE_URL`, `POSTGRES_USER`, `POSTGRES_PASSWORD`, `POSTGRES_DB`, `SIMILARITY_THRESHOLD`, `MATCHES_PAGE_SIZE`, `PHRASE_MAX_LENGTH`, `PHRASES_LIST_LIMIT`, `MAX_REQUEST_BYTES`, `EMBEDDING_PROVIDER`, `EMBEDDING_MODEL`, `EMBEDDING_MODEL_REVISION`, `EMBEDDING_DIMENSIONS`, `EMBEDDING_TIMEOUT_SECONDS`, `EMBEDDING_MAX_CONCURRENCY`, `EMBEDDING_CACHE_SIZE`, `HNSW_EF_SEARCH`, `LOCK_TIMEOUT_MS`, `CORS_ORIGINS`, `LOG_LEVEL`, `NEXT_PUBLIC_API_URL`, `NEXT_PUBLIC_PHRASE_MAX_LENGTH`, `API_INTERNAL_URL`. Variables fixed inside the image (`HF_HUB_OFFLINE`, `TRANSFORMERS_OFFLINE`, `SENTENCE_TRANSFORMERS_HOME`) are not user-settable and are not listed. `EMBEDDING_PROVIDER=fake` is accepted only by the test settings, never by the runtime settings.
+The backend MUST accept cross-origin requests only from origins listed in `CORS_ORIGINS` (no wildcard). Allowed methods are `GET, POST, OPTIONS`; the allowed request header is `Content-Type`; credentials are NOT allowed (`allow_credentials=False`, no cookies). CORS headers MUST also be present on error responses, including 500. Every user-settable environment variable MUST be listed in `.env.example` with a default: `DATABASE_URL`, `POSTGRES_USER`, `POSTGRES_PASSWORD`, `POSTGRES_DB`, `SIMILARITY_THRESHOLD`, `MATCHES_PAGE_SIZE`, `PHRASE_MAX_LENGTH`, `PHRASES_LIST_LIMIT`, `PHRASES_PAGE_SIZE`, `MAX_REQUEST_BYTES`, `EMBEDDING_PROVIDER`, `EMBEDDING_MODEL`, `EMBEDDING_MODEL_REVISION`, `EMBEDDING_DIMENSIONS`, `EMBEDDING_TIMEOUT_SECONDS`, `EMBEDDING_MAX_CONCURRENCY`, `EMBEDDING_CACHE_SIZE`, `HNSW_EF_SEARCH`, `LOCK_TIMEOUT_MS`, `CORS_ORIGINS`, `LOG_LEVEL`, `NEXT_PUBLIC_API_URL`, `NEXT_PUBLIC_PHRASE_MAX_LENGTH`, `API_INTERNAL_URL`. Variables fixed inside the image (`HF_HUB_OFFLINE`, `TRANSFORMERS_OFFLINE`, `SENTENCE_TRANSFORMERS_HOME`) are not user-settable and are not listed. `EMBEDDING_PROVIDER=fake` is accepted only by the test settings, never by the runtime settings.
 
 #### Scenario: Allowed origin
 - GIVEN `CORS_ORIGINS=http://localhost:3000`

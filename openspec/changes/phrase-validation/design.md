@@ -1402,10 +1402,10 @@ on it.
 | The planner serves `ORDER BY embedding <=> :q, id LIMIT 1` from the HNSW index (incremental sort on `id`) rather than a full sort | **UNVERIFIED (from model memory)** | slice 5b | `EXPLAIN (ANALYZE, BUFFERS)` assertion with `enable_seqscan = off` on a corpus larger than `ef_search` (otherwise the test is vacuous); documented fallback is a k-NN subquery re-sorted in an outer query |
 | Casefolding before embedding does not materially degrade the ES/EN separating margin on a cased checkpoint | **UNMEASURED** | slice 9 | run the calibration fixture on cased pairs with and without casefolding; record both margins in ADR-003 |
 | fastembed supports `paraphrase-multilingual-MiniLM-L12-v2` | **UNVERIFIED** | ADR-003 / future migration | `python -c "from fastembed import TextEmbedding; print([m['model'] for m in TextEmbedding.list_supported_models()])"` — if absent, fall back to a manual `optimum` ONNX export |
-| API image size with torch CPU + model | **UNMEASURED** | slice 8 | `docker images todo-ia-api` — the measured value becomes ADR-003's migration-trigger baseline |
-| Real p95 embed latency, and the measured blind-Save / page-2 saving from the cache | **UNMEASURED** | slice 8 | time a warm vs cold `POST /phrases/validate` + `POST /phrases` pair with the real model; record in ADR-011 and use it to size `EMBEDDING_CACHE_SIZE` |
+| API image size with torch CPU + model | **MEASURED (task 8.4)**: 10.4 GB disk / 4.4 GB content, `docs/evidence/runtime-measurements.md` | slice 8 | `docker images todo-ia-api` — recorded in ADR-003's migration-trigger baseline |
+| Real p95 embed latency, and the measured blind-Save / page-2 saving from the cache | **MEASURED (task 8.4)**: p50 13.23 ms / p95 15.12 ms; warm-vs-cold HTTP saving ~15 ms/request (~65-68%), `docs/evidence/runtime-measurements.md` | slice 8 | time a warm vs cold `POST /phrases/validate` + `POST /phrases` pair with the real model; recorded in ADR-011 |
 | Cased-variant cosine ≈ 0.98 (display forms of "Comprar leche" vs "comprar LECHE") | **ESTIMATE, unmeasured** | slice 9 | score both forms with the real model; record in ADR-003 |
-| ~50 ms CPU forward pass | **ESTIMATE, unmeasured** | slice 8 | time `embed()` p50/p95 on the target host |
+| ~50 ms CPU forward pass | **MEASURED (task 8.4)**: p50 13.23 ms / p95 15.12 ms, `docs/evidence/runtime-measurements.md` | slice 8 | time `embed()` p50/p95 on the target host |
 | Postgres picks a sequential scan on small tables (a few thousand rows), so HNSW is often unused there | **ESTIMATE (model memory)** | slice 5b | `EXPLAIN` on 100 / 1 000 / 10 000 rows |
 | ~2 KB per cache entry, ≈ 1 MB at 512 entries | **ESTIMATE, unmeasured** | slice 2b/8 | `tracemalloc` over a filled cache |
 | Exact-scan `find_matches` costs milliseconds to tens of milliseconds for ~10⁴ rows | **ESTIMATE, unmeasured** | slice 5a | `EXPLAIN (ANALYZE)` on 500 and 10⁴ rows; record in ADR-008 |
@@ -1456,11 +1456,14 @@ a code change: raise `SIMILARITY_THRESHOLD` toward 1.0 to make validation effect
 ## Open Questions
 
 - [ ] Confirm the `pgvector` image tag and extension version in slice 4 before writing migration 0001.
-- [ ] Record the measured API image size in ADR-003 (slice 8) — it is the migration-trigger baseline.
+- [x] Record the measured API image size in ADR-003 (slice 8) — it is the migration-trigger baseline.
+      Done (task 8.4): 10.4 GB disk / 4.4 GB content, `docs/evidence/runtime-measurements.md`.
 - [ ] Confirm the 0.80 default survives the ES/EN calibration run (slice 9); adjust the default and
       the ADR if the observed margin sits elsewhere.
 - [ ] Size `EMBEDDING_CACHE_SIZE` against the measured p95 embed latency from slice 8; the default
-      512 (≈ 1 MB) is a memory-cheap guess, not a measurement.
+      512 (≈ 1 MB) is a memory-cheap guess, not a measurement. p50/p95 latency is now measured
+      (13.23 ms / 15.12 ms, task 8.4, `docs/evidence/runtime-measurements.md`); the actual capacity
+      sizing decision against that number is still open, left for a future follow-up.
 - [ ] Revisit whether a shared embedding cache is warranted only if a deployment ever runs more than
       one API replica — out of scope while the target is single-worker Docker Compose.
 - [ ] Record the pinned Hub commit SHA (`EMBEDDING_MODEL_REVISION`) in slice 8; it is unverified.

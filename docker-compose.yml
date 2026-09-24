@@ -1,0 +1,149 @@
+# Root compose file, one command, no `-f` flag (design.md "Repository
+# Layout"). Values default to the `.env.example` placeholders (apply-
+# progress.md, Unit 0 note) so this works before a real `.env` exists. Copy
+# `.env.example` to `.env` to override. `env_file` on `api`/`web` points at
+# a `.env` that may not exist yet (`required: false`, Compose spec >=
+# 2.24) -- every var still has a working `${VAR:-default}` fallback below,
+# same pattern as `db`/`migrate`.
+services:
+  db:
+    image: pgvector/pgvector:pg16
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-todo_ia}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-todo_ia}
+      POSTGRES_DB: ${POSTGRES_DB:-todo_ia}
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      - ./infra/db/init.sql:/docker-entrypoint-initdb.d/init.sql:ro
+    ports:
+      - "5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-todo_ia} -d ${POSTGRES_DB:-todo_ia}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  migrate:
+    build:
+      context: ./services/api
+      target: migrate
+    environment:
+      DATABASE_URL: ${DATABASE_URL:-postgresql+psycopg://todo_ia:todo_ia@db:5432/todo_ia}
+    depends_on:
+      db:
+        condition: service_healthy
+    restart: "no"
+
+  # `api`: builds the `api` stage (Unit 8's api-builder + this final
+  # runtime stage), the CPU-only torch wheel + baked embedding checkpoint.
+  # No build args passed -- the Dockerfile's own ARG defaults already pin
+  # `EMBEDDING_MODEL`/`EMBEDDING_MODEL_REVISION`; `EMBEDDING_MODEL_REVISION`
+  # below is the SAME verified SHA (Unit 8) so the runtime `Settings`
+  # validation and the baked model agree by default. Note: the Unit 0
+  # `.env.example` draft's all-zero placeholder for this var is only 37
+  # chars, not the required 40-hex -- do not reuse it here or the container
+  # never becomes ready (see apply-progress.md's Unit 14 section).
+  api:
+    build:
+      context: ./services/api
+      target: api
+    env_file:
+      - path: .env
+        required: false
+    environment:
+      DATABASE_URL: ${DATABASE_URL:-postgresql+psycopg://todo_ia:todo_ia@db:5432/todo_ia}
+      SIMILARITY_THRESHOLD: ${SIMILARITY_THRESHOLD:-0.80}
+      MATCHES_PAGE_SIZE: ${MATCHES_PAGE_SIZE:-50}
+      PHRASE_MAX_LENGTH: ${PHRASE_MAX_LENGTH:-280}
+      PHRASES_LIST_LIMIT: ${PHRASES_LIST_LIMIT:-200}
+      PHRASES_PAGE_SIZE: ${PHRASES_PAGE_SIZE:-10}
+      MAX_REQUEST_BYTES: ${MAX_REQUEST_BYTES:-1048576}
+      EMBEDDING_PROVIDER: ${EMBEDDING_PROVIDER:-sentence_transformers}
+      EMBEDDING_MODEL: ${EMBEDDING_MODEL:-sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2}
+      EMBEDDING_MODEL_REVISION: ${EMBEDDING_MODEL_REVISION:-e8f8c211226b894fcb81acc59f3b34ba3efd5f42}
+      EMBEDDING_DIMENSIONS: ${EMBEDDING_DIMENSIONS:-384}
+      EMBEDDING_TIMEOUT_SECONDS: ${EMBEDDING_TIMEOUT_SECONDS:-10.0}
+      EMBEDDING_MAX_CONCURRENCY: ${EMBEDDING_MAX_CONCURRENCY:-2}
+      EMBEDDING_CACHE_SIZE: ${EMBEDDING_CACHE_SIZE:-512}
+      HNSW_EF_SEARCH: ${HNSW_EF_SEARCH:-200}
+      LOCK_TIMEOUT_MS: ${LOCK_TIMEOUT_MS:-5000}
+      CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost:3000}
+      LOG_LEVEL: ${LOG_LEVEL:-INFO}
+    ports:
+      - "8000:8000"
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+    healthcheck:
+      # No curl/wget in the python:3.11-slim runtime stage -- python itself
+      # (already present) reads `/health` and exits non-zero on anything but
+      # 200 (a 503 `NOT_READY` body correctly reports "not yet healthy").
+      # `127.0.0.1`, not `localhost`: uvicorn binds the IPv4 wildcard
+      # (`--host 0.0.0.0`) only, and Unit 14's real measurement below showed
+      # `web`'s Alpine/musl resolver preferring `::1` for `localhost` and
+      # getting refused -- using the literal IPv4 address here too, out of
+      # caution, even though this Debian-based image happened to resolve
+      # `localhost` to IPv4 correctly in that same run.
+      test:
+        [
+          "CMD",
+          "python",
+          "-c",
+          "import urllib.request as u, sys; sys.exit(0 if u.urlopen('http://127.0.0.1:8000/health').status == 200 else 1)",
+        ]
+      # Unit 14.2 REAL measurement (this repo, this machine, `docker compose
+      # down -v && time docker compose up -d --build`, model baked into the
+      # image at build time per Unit 8 -- no runtime download): container
+      # start to `healthy` was ~10.6s (first check at +5.1s failed --
+      # connection refused, app still starting; second check at +10.6s
+      # succeeded). `start_period: 120s`/`retries: 12` was a pre-verification
+      # ESTIMATE for a runtime model download that never happens with this
+      # Dockerfile design -- tuned down to a value with a still-generous
+      # ~3x safety margin over the measured figure for slower reviewer
+      # hardware, not left at the wrong guess.
+      start_period: 30s
+      interval: 5s
+      timeout: 5s
+      retries: 6
+
+  # `web`: standalone Next.js runner (node:22-alpine). `NEXT_PUBLIC_*` are
+  # build args (inlined into the client bundle at `next build` time, D5);
+  # `API_INTERNAL_URL` is a plain runtime env var read server-side per
+  # request by `page.tsx`'s Server Component fetch -- its own in-code
+  # fallback is `http://localhost:8000`, which would NOT resolve to the
+  # `api` container from inside `web`, so it MUST be set here to the
+  # compose-network address.
+  web:
+    build:
+      context: ./apps/web
+      args:
+        NEXT_PUBLIC_API_URL: ${NEXT_PUBLIC_API_URL:-http://localhost:8000}
+        NEXT_PUBLIC_PHRASE_MAX_LENGTH: ${NEXT_PUBLIC_PHRASE_MAX_LENGTH:-280}
+    env_file:
+      - path: .env
+        required: false
+    environment:
+      API_INTERNAL_URL: ${API_INTERNAL_URL:-http://api:8000}
+    ports:
+      - "3000:3000"
+    depends_on:
+      api:
+        condition: service_healthy
+    healthcheck:
+      # node:22-alpine ships busybox wget; no curl. `127.0.0.1`, not
+      # `localhost`: Unit 14's real measurement found Alpine/musl's
+      # resolver returns `::1` first for `localhost`, and the standalone
+      # Next server (Dockerfile: `HOSTNAME=0.0.0.0`) only listens on the
+      # IPv4 wildcard -- `wget http://localhost:3000/` reliably failed with
+      # "Connection refused" every single check, `docker exec ... wget
+      # http://127.0.0.1:3000/` succeeded immediately. Confirmed by
+      # `docker compose logs web` showing "Ready" while the healthcheck
+      # kept failing on the old `localhost` form.
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://127.0.0.1:3000/"]
+      start_period: 20s
+      interval: 5s
+      timeout: 5s
+      retries: 4
+
+volumes:
+  pgdata:

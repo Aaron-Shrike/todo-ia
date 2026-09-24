@@ -144,3 +144,42 @@ def test_capacity_zero_bypasses_the_store_entirely() -> None:
 
     assert inner.call_count == 2
     assert cache.stats == CacheStats(hits=0, misses=0, evictions=0, size=0, capacity=0)
+
+
+def test_close_forwards_to_the_inner_providers_close_when_it_has_one() -> None:
+    # Reliability suggestion #11: `main.py`'s lifespan needs to reach the
+    # `BoundedEmbeddingProvider` wrapped INSIDE the cache (the fixed wiring
+    # order is ST -> bounded -> caching, outermost) to shut its executor
+    # down -- `CachingEmbeddingProvider.close()` forwards, so the caller
+    # never needs to know or unwrap the wiring order itself.
+    class _ClosableInner:
+        model_id = "closable@0000000000000000000000000000000000000000"
+        dimensions = 1
+
+        def __init__(self) -> None:
+            self.closed = False
+
+        def embed(self, text: str) -> list[float]:
+            return [1.0]
+
+        def check_ready(self) -> None:
+            return None
+
+        def close(self) -> None:
+            self.closed = True
+
+    inner = _ClosableInner()
+    cache = CachingEmbeddingProvider(inner, capacity=10)
+
+    cache.close()
+
+    assert inner.closed is True
+
+
+def test_close_is_a_no_op_when_the_inner_provider_has_no_close() -> None:
+    # Triangulation: `FakeEmbedder` (used everywhere else in this suite)
+    # has no `close()` -- must not raise `AttributeError`.
+    inner = FakeEmbedder({"a": [1.0, 0.0]})
+    cache = CachingEmbeddingProvider(inner, capacity=10)
+
+    cache.close()  # must not raise

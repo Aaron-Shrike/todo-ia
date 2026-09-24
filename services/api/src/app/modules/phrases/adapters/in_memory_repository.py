@@ -28,12 +28,14 @@ from math import floor
 from app.modules.phrases.contracts import (
     DuplicateTextConflict,
     Isolation,
+    ListCursor,
     Match,
     MatchCursor,
     Neighbor,
     NewPhrase,
     Page,
     Phrase,
+    PhraseListPage,
     ValidationStatus,
 )
 from app.modules.phrases.domain.errors import PhraseMetadataInvariantViolation
@@ -139,6 +141,26 @@ class InMemoryPhraseRepository:
         rows = sorted(self._rows(), key=lambda row: (row.created_at, row.id), reverse=True)
         return rows[:limit]
 
+    def list_page(self, limit: int, cursor: ListCursor | None) -> PhraseListPage:
+        rows = sorted(self._rows(), key=lambda row: (row.created_at, row.id), reverse=True)
+        if cursor is not None:
+            position = (cursor.created_at, cursor.id)
+            rows = [row for row in rows if (row.created_at, row.id) < position]
+        window = rows[: limit + 1]
+        has_more = len(window) > limit
+        items = window[:limit]
+        next_cursor = (
+            ListCursor(created_at=items[-1].created_at, id=items[-1].id)
+            if has_more and items
+            else None
+        )
+        return PhraseListPage(
+            items=items, total=len(self._rows()), next_cursor=next_cursor, has_more=has_more
+        )
+
+    def count_all(self) -> int:
+        return len(self._rows())
+
     def find_nearest(self, q: Vector) -> Neighbor | None:
         return self._nearest(q)
 
@@ -184,6 +206,9 @@ class InMemoryPhraseRepository:
             else None
         )
         return Page(items=items, next_cursor=next_cursor, has_more=has_more)
+
+    def count_matches(self, q: Vector, max_distance: float) -> int:
+        return sum(1 for row in self._rows() if cosine_distance(row.embedding, q) <= max_distance)
 
 
 class InMemoryUnitOfWork:
