@@ -338,7 +338,7 @@ class PgVectorPhraseRepository:
 
     def count_matches(self, q: Vector, max_distance: float) -> int:
         self._connection.execute(text("SELECT set_config('enable_indexscan', 'off', true)"))
-        total = self._connection.execute(
+        total: int = self._connection.execute(
             text(_COUNT_MATCHES_QUERY), {"q": serialize_vector(q), "max_distance": max_distance}
         ).scalar_one()
         self._mark_statement()
@@ -425,7 +425,7 @@ class PgVectorPhraseRepository:
         query = build_count_list_query(
             status=filters.status, has_text=has_text, has_min_score=has_min_score
         )
-        total = self._connection.execute(text(query), params).scalar_one()
+        total: int = self._connection.execute(text(query), params).scalar_one()
         self._mark_statement()
         return total
 
