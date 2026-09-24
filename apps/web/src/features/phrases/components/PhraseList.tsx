@@ -339,28 +339,33 @@ export const PhraseList = forwardRef<PhraseListHandle, PhraseListProps>(
                   <div className={styles.listItemRow}>
                     <span className={styles.listItemText}>{item.text}</span>
                     <span className={styles.listItemMeta}>
+                      {/* phrase-ui spec, "Compare a saved phrase with its
+                          matched phrase": the score text itself is the
+                          compare trigger (domain invariant: score is set
+                          iff most_similar_phrase_id is set, so no separate
+                          null-check is needed here). A dedicated button
+                          next to the badge was too easy to mistake for a
+                          status badge -- the score text doubling as the
+                          action, with a pointer cursor on hover, reads
+                          clearly as "click this number to compare". */}
                       {item.validation.score !== null && (
-                        <span className={styles.score}>{scoreLabel(item.validation.score)}</span>
+                        <button
+                          type="button"
+                          className={styles.scoreButton}
+                          onClick={() => toggleCompare(item)}
+                          aria-expanded={compareExpandedId === item.id}
+                          aria-label={`${
+                            compareExpandedId === item.id ? copy.compare.hide : copy.compare.button
+                          }: ${scoreLabel(item.validation.score)}`}
+                        >
+                          {scoreLabel(item.validation.score)}
+                        </button>
                       )}
                       <span
                         className={`${styles.badge} ${badgeClassName(item.validation.status)}`}
                       >
                         {badgeLabel(item.validation.status)}
                       </span>
-                      {/* phrase-ui spec, "Compare a saved phrase with its
-                          matched phrase": only shown when there IS a match
-                          to compare against. */}
-                      {item.validation.most_similar_phrase_id !== null && (
-                        <button
-                          type="button"
-                          className={styles.compareButton}
-                          onClick={() => toggleCompare(item)}
-                        >
-                          {compareExpandedId === item.id
-                            ? copy.compare.hide
-                            : copy.compare.button}
-                        </button>
-                      )}
                     </span>
                   </div>
                   {compareExpandedId === item.id && (

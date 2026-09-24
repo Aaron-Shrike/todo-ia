@@ -359,21 +359,21 @@ A "Limpiar filtros" action MUST be shown next to the filter bar whenever ANY fil
 
 ### Requirement: Compare a saved phrase with its matched phrase
 
-Each saved-list item whose `validation.most_similar_phrase_id` is set (score is not null, regardless of `status`) MUST offer a "Comparar" action. Pressing it expands an inline panel showing this item's own text next to the matched phrase's text and the recorded score, fetching the matched phrase's text on demand via `GET /phrases/{id}` (`apps/web`'s `getPhrase`) — the list response itself never carries the matched phrase's text, only its id, to avoid joining it into every row when most items are never expanded. Pressing the action again (or a distinct "Ocultar" action once expanded) collapses the panel. Only one item's panel is expanded at a time. A load failure (including a 404, if the matched phrase was ever removed) shows an inline error in the panel, not a page-level one.
+Each saved-list item whose `validation.most_similar_phrase_id` is set (score is not null, regardless of `status`) MUST offer a compare action. The action is the item's OWN "Similitud: NN%" text, not a separate button — an earlier version used a dedicated "Comparar" button next to the status badge, but it was visually too similar to the badge itself, so the score text now doubles as the trigger (styled as plain text at rest, with a pointer cursor and an underline/color change on hover/focus so it still reads as interactive). Pressing it expands an inline panel showing this item's own text next to the matched phrase's text and the recorded score, fetching the matched phrase's text on demand via `GET /phrases/{id}` (`apps/web`'s `getPhrase`) — the list response itself never carries the matched phrase's text, only its id, to avoid joining it into every row when most items are never expanded. Pressing the score text again collapses the panel (`aria-expanded` reflects the state; `copy.compare.button`/`copy.compare.hide` are used as the accessible name via `aria-label`, not as separate visible text). Only one item's panel is expanded at a time. A load failure (including a 404, if the matched phrase was ever removed) shows an inline error in the panel, not a page-level one.
 
 #### Scenario: Comparing shows both phrases side by side
 - GIVEN a saved item with `most_similar_phrase_id` set and a 72% score
-- WHEN the user presses "Comparar"
+- WHEN the user clicks the item's "Similitud: 72%" text
 - THEN a panel appears showing this item's text, the matched phrase's text (fetched via `GET /phrases/{id}`), and "72%"
 
 #### Scenario: No compare action when there is no match
 - GIVEN a saved item with `most_similar_phrase_id` null
 - WHEN the list renders
-- THEN no "Comparar" action is shown for that item
+- THEN no score text (and therefore no compare action) is shown for that item
 
 #### Scenario: Expanding a different item collapses the previous one
 - GIVEN item A's comparison panel is expanded
-- WHEN the user presses "Comparar" on item B
+- WHEN the user clicks item B's score text
 - THEN item A's panel collapses and item B's panel expands
 
 #### Scenario: Compare fetch failure shows an inline error

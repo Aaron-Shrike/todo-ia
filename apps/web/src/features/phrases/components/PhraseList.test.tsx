@@ -575,16 +575,23 @@ describe("PhraseList", () => {
   });
 
   describe("compare with the matched phrase", () => {
-    it("shows no Comparar action when the item has no match", () => {
+    // The trigger is the item's own "Similitud: NN%" text (a plain-looking
+    // button, `aria-label` prefixed with copy.compare.button/hide) — not a
+    // separate "Comparar" button, which read as too similar to the status
+    // badge next to it. `RegExp` name matching below only needs the prefix.
+
+    it("shows no score/compare action when the item has no match", () => {
       const item = fakePhrase({ id: "1", validation: {
         status: "unique", score: null, most_similar_phrase_id: null, validated_at: "2026-01-01T00:00:00Z",
       } });
       render(<PhraseList client={createFakeClient()} initialPage={fakePage([item])} />);
 
-      expect(screen.queryByRole("button", { name: copy.compare.button })).not.toBeInTheDocument();
+      expect(
+        screen.queryByRole("button", { name: new RegExp(copy.compare.button) }),
+      ).not.toBeInTheDocument();
     });
 
-    it("fetches and shows both phrases when Comparar is pressed", async () => {
+    it("fetches and shows both phrases when the score text is clicked", async () => {
       const item = fakePhrase({
         id: "1",
         text: "la vaca lola",
@@ -600,17 +607,23 @@ describe("PhraseList", () => {
       const client = createFakeClient({ getPhrase });
       render(<PhraseList client={client} initialPage={fakePage([item])} />);
 
-      fireEvent.click(screen.getByRole("button", { name: copy.compare.button }));
+      const trigger = screen.getByRole("button", { name: new RegExp(copy.compare.button) });
+      expect(trigger).toHaveTextContent("Similitud: 72%");
+      expect(trigger).toHaveAttribute("aria-expanded", "false");
+      fireEvent.click(trigger);
 
       expect(getPhrase).toHaveBeenCalledWith("9");
       await waitFor(() =>
         expect(screen.getByText("Cocinar chairo en el Cañón del Colca")).toBeInTheDocument(),
       );
       expect(screen.getAllByText("la vaca lola").length).toBeGreaterThan(0);
-      expect(screen.getByRole("button", { name: copy.compare.hide })).toBeInTheDocument();
+      expect(screen.getByRole("button", { name: new RegExp(copy.compare.hide) })).toHaveAttribute(
+        "aria-expanded",
+        "true",
+      );
     });
 
-    it("collapses the panel when pressed again", async () => {
+    it("collapses the panel when clicked again", async () => {
       const item = fakePhrase({
         id: "1",
         validation: {
@@ -624,13 +637,15 @@ describe("PhraseList", () => {
       const client = createFakeClient({ getPhrase: vi.fn(async () => matched) });
       render(<PhraseList client={client} initialPage={fakePage([item])} />);
 
-      fireEvent.click(screen.getByRole("button", { name: copy.compare.button }));
+      fireEvent.click(screen.getByRole("button", { name: new RegExp(copy.compare.button) }));
       await waitFor(() => expect(screen.getByText("Otra frase")).toBeInTheDocument());
 
-      fireEvent.click(screen.getByRole("button", { name: copy.compare.hide }));
+      fireEvent.click(screen.getByRole("button", { name: new RegExp(copy.compare.hide) }));
 
       expect(screen.queryByText("Otra frase")).not.toBeInTheDocument();
-      expect(screen.getByRole("button", { name: copy.compare.button })).toBeInTheDocument();
+      expect(
+        screen.getByRole("button", { name: new RegExp(copy.compare.button) }),
+      ).toHaveAttribute("aria-expanded", "false");
     });
 
     it("expanding a different item's panel collapses the previous one", async () => {
@@ -664,11 +679,11 @@ describe("PhraseList", () => {
         <PhraseList client={client} initialPage={fakePage([itemA, itemB], { total: 2 })} />,
       );
 
-      const compareButtons = screen.getAllByRole("button", { name: copy.compare.button });
-      fireEvent.click(compareButtons[0]);
+      const triggers = screen.getAllByRole("button", { name: new RegExp(copy.compare.button) });
+      fireEvent.click(triggers[0]);
       await waitFor(() => expect(screen.getByText("Match de A")).toBeInTheDocument());
 
-      fireEvent.click(screen.getByRole("button", { name: copy.compare.button }));
+      fireEvent.click(screen.getByRole("button", { name: new RegExp(copy.compare.button) }));
       await waitFor(() => expect(screen.getByText("Match de B")).toBeInTheDocument());
       expect(screen.queryByText("Match de A")).not.toBeInTheDocument();
     });
@@ -690,7 +705,7 @@ describe("PhraseList", () => {
       });
       render(<PhraseList client={client} initialPage={fakePage([item])} />);
 
-      fireEvent.click(screen.getByRole("button", { name: copy.compare.button }));
+      fireEvent.click(screen.getByRole("button", { name: new RegExp(copy.compare.button) }));
 
       await waitFor(() => expect(screen.getByText(copy.compare.loadError)).toBeInTheDocument());
     });
