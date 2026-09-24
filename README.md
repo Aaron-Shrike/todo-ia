@@ -119,7 +119,7 @@ save concurrency sequence, and residual risks.
 ## Decisions beyond the brief
 
 The brief (`docs/Reto-Tecnico-Fullstack-AI.md`) asked for a working validation flow with a clean
-layered architecture. Five decisions go beyond that literal ask, each recorded as its own ADR under
+layered architecture. Six decisions go beyond that literal ask, each recorded as its own ADR under
 `docs/decisions/`:
 
 | ADR | Decision |
@@ -129,9 +129,10 @@ layered architecture. Five decisions go beyond that literal ask, each recorded a
 | [`ADR-003`](docs/decisions/ADR-003-local-embedding-runtime.md) | Run the Hugging Face checkpoint **locally through sentence-transformers**, pinned by Hub commit SHA, with ONNX/fastembed documented as the migration path — reproducible offline, no token required. |
 | [`ADR-004`](docs/decisions/ADR-004-nextjs-frontend.md) | **Next.js with TypeScript**, not React or Vue directly — the saved-phrase list gets a real server-rendered first paint via a Server Component, while validation stays a client-side state machine. |
 | [`ADR-005`](docs/decisions/ADR-005-staged-progress.md) | **Staged progress labels** ("Validando...", "Revalidando...", "Guardando...") instead of one opaque spinner — every label narrates a request that is genuinely in flight, and none survives past the 201. |
+| [`ADR-016`](docs/decisions/ADR-016-list-filters.md) | **Saved-phrase list filters** (`status`, `q`, `min_score` on `GET /phrases`) — reverses the original "filtering is out of scope" call once the list grew large enough that scrolling newest-first stopped answering real support questions. |
 
 Ten further **technical** ADRs, one level down (`docs/decisions/technical/`, not counted among the
-five above), record narrower implementation decisions:
+six above), record narrower implementation decisions:
 
 - [`ADR-006`](docs/decisions/technical/ADR-006-partial-unique-index.md) — partial unique index on `normalized_text` for identity integrity.
 - [`ADR-007`](docs/decisions/technical/ADR-007-keyset-pagination.md) — keyset (never `OFFSET`) pagination for stable page semantics.
