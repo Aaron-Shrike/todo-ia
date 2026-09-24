@@ -36,9 +36,9 @@ function fakePage(items: PhraseOut[], overrides: Partial<PhraseListData> = {}): 
 }
 
 function createFakeClient(
-  overrides: Partial<Pick<PhraseApiClient, "listPhrases">> = {},
-): Pick<PhraseApiClient, "listPhrases"> {
-  return { listPhrases: vi.fn(), ...overrides };
+  overrides: Partial<Pick<PhraseApiClient, "listPhrases" | "getPhrase">> = {},
+): Pick<PhraseApiClient, "listPhrases" | "getPhrase"> {
+  return { listPhrases: vi.fn(), getPhrase: vi.fn(), ...overrides };
 }
 
 // Same deferred-promise pattern as `DuplicateAlert.test.tsx` / `PhraseForm.test.tsx`.
@@ -554,6 +554,145 @@ describe("PhraseList", () => {
       expect(screen.getByRole("listitem")).toBeInTheDocument();
       expect(screen.getByLabelText(copy.filters.statusLabel)).toHaveValue("");
       expect(screen.getByLabelText(copy.filters.textLabel)).toHaveValue("");
+    });
+
+    it("shows a persistent clear-filters button next to the filter bar whenever a filter is active, even with results loaded", async () => {
+      const client = createFakeClient({ listPhrases: vi.fn(async () => fakePage([fakePhrase()])) });
+      render(<PhraseList client={client} initialPage={fakePage([fakePhrase()])} />);
+
+      expect(screen.queryByRole("button", { name: copy.button.clearFilters })).not.toBeInTheDocument();
+
+      fireEvent.change(screen.getByLabelText(copy.filters.statusLabel), {
+        target: { value: "unique" },
+      });
+      await act(async () => {
+        await Promise.resolve();
+      });
+
+      expect(screen.getByRole("button", { name: copy.button.clearFilters })).toBeInTheDocument();
+      expect(screen.getByRole("listitem")).toBeInTheDocument();
+    });
+  });
+
+  describe("compare with the matched phrase", () => {
+    it("shows no Comparar action when the item has no match", () => {
+      const item = fakePhrase({ id: "1", validation: {
+        status: "unique", score: null, most_similar_phrase_id: null, validated_at: "2026-01-01T00:00:00Z",
+      } });
+      render(<PhraseList client={createFakeClient()} initialPage={fakePage([item])} />);
+
+      expect(screen.queryByRole("button", { name: copy.compare.button })).not.toBeInTheDocument();
+    });
+
+    it("fetches and shows both phrases when Comparar is pressed", async () => {
+      const item = fakePhrase({
+        id: "1",
+        text: "la vaca lola",
+        validation: {
+          status: "unique",
+          score: 0.72,
+          most_similar_phrase_id: "9",
+          validated_at: "2026-01-01T00:00:00Z",
+        },
+      });
+      const matched = fakePhrase({ id: "9", text: "Cocinar chairo en el Cañón del Colca" });
+      const getPhrase = vi.fn(async () => matched);
+      const client = createFakeClient({ getPhrase });
+      render(<PhraseList client={client} initialPage={fakePage([item])} />);
+
+      fireEvent.click(screen.getByRole("button", { name: copy.compare.button }));
+
+      expect(getPhrase).toHaveBeenCalledWith("9");
+      await waitFor(() =>
+        expect(screen.getByText("Cocinar chairo en el Cañón del Colca")).toBeInTheDocument(),
+      );
+      expect(screen.getAllByText("la vaca lola").length).toBeGreaterThan(0);
+      expect(screen.getByRole("button", { name: copy.compare.hide })).toBeInTheDocument();
+    });
+
+    it("collapses the panel when pressed again", async () => {
+      const item = fakePhrase({
+        id: "1",
+        validation: {
+          status: "unique",
+          score: 0.72,
+          most_similar_phrase_id: "9",
+          validated_at: "2026-01-01T00:00:00Z",
+        },
+      });
+      const matched = fakePhrase({ id: "9", text: "Otra frase" });
+      const client = createFakeClient({ getPhrase: vi.fn(async () => matched) });
+      render(<PhraseList client={client} initialPage={fakePage([item])} />);
+
+      fireEvent.click(screen.getByRole("button", { name: copy.compare.button }));
+      await waitFor(() => expect(screen.getByText("Otra frase")).toBeInTheDocument());
+
+      fireEvent.click(screen.getByRole("button", { name: copy.compare.hide }));
+
+      expect(screen.queryByText("Otra frase")).not.toBeInTheDocument();
+      expect(screen.getByRole("button", { name: copy.compare.button })).toBeInTheDocument();
+    });
+
+    it("expanding a different item's panel collapses the previous one", async () => {
+      const itemA = fakePhrase({
+        id: "1",
+        text: "Frase A",
+        validation: {
+          status: "unique",
+          score: 0.72,
+          most_similar_phrase_id: "9",
+          validated_at: "2026-01-01T00:00:00Z",
+        },
+      });
+      const itemB = fakePhrase({
+        id: "2",
+        text: "Frase B",
+        validation: {
+          status: "unique",
+          score: 0.75,
+          most_similar_phrase_id: "10",
+          validated_at: "2026-01-01T00:00:00Z",
+        },
+      });
+      const getPhrase = vi
+        .fn<PhraseApiClient["getPhrase"]>()
+        .mockImplementation(async (id) =>
+          fakePhrase({ id, text: id === "9" ? "Match de A" : "Match de B" }),
+        );
+      const client = createFakeClient({ getPhrase });
+      render(
+        <PhraseList client={client} initialPage={fakePage([itemA, itemB], { total: 2 })} />,
+      );
+
+      const compareButtons = screen.getAllByRole("button", { name: copy.compare.button });
+      fireEvent.click(compareButtons[0]);
+      await waitFor(() => expect(screen.getByText("Match de A")).toBeInTheDocument());
+
+      fireEvent.click(screen.getByRole("button", { name: copy.compare.button }));
+      await waitFor(() => expect(screen.getByText("Match de B")).toBeInTheDocument());
+      expect(screen.queryByText("Match de A")).not.toBeInTheDocument();
+    });
+
+    it("shows an inline error when the compare fetch fails", async () => {
+      const item = fakePhrase({
+        id: "1",
+        validation: {
+          status: "unique",
+          score: 0.72,
+          most_similar_phrase_id: "9",
+          validated_at: "2026-01-01T00:00:00Z",
+        },
+      });
+      const client = createFakeClient({
+        getPhrase: vi.fn(async () => {
+          throw new Error("not found");
+        }),
+      });
+      render(<PhraseList client={client} initialPage={fakePage([item])} />);
+
+      fireEvent.click(screen.getByRole("button", { name: copy.compare.button }));
+
+      await waitFor(() => expect(screen.getByText(copy.compare.loadError)).toBeInTheDocument());
     });
   });
 });

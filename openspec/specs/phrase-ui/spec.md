@@ -331,7 +331,7 @@ The saved-phrase list MUST offer three optional, combinable filter controls: a s
 
 ### Requirement: Filtered counter and empty state
 
-The `{loaded}/{total}` counter MUST reflect the ACTIVE filter set's `total`, not the unfiltered store size. When a filter combination matches zero phrases, the list MUST show a distinct empty-state message (not the "no phrases saved yet" message) and MUST offer a one-click action that clears all active filters and reloads the unfiltered list from page 1.
+The `{loaded}/{total}` counter MUST reflect the ACTIVE filter set's `total`, not the unfiltered store size. When a filter combination matches zero phrases, the list MUST show a distinct empty-state message (not the "no phrases saved yet" message). The one-click clear-filters action itself is a single, persistent control next to the filter bar (see "Persistent clear-filters action" below), not duplicated inside this empty state.
 
 #### Scenario: Counter reflects the filtered total
 - GIVEN a filter matching 20 of 20004 stored phrases
@@ -341,12 +341,45 @@ The `{loaded}/{total}` counter MUST reflect the ACTIVE filter set's `total`, not
 #### Scenario: Empty state for a filter with no matches
 - GIVEN a filter combination that matches no phrases
 - WHEN the list renders
-- THEN a "no results for these filters" message is shown, distinct from the empty-store message, with a clear-filters action
+- THEN a "no results for these filters" message is shown, distinct from the empty-store message
+
+### Requirement: Persistent clear-filters action
+
+A "Limpiar filtros" action MUST be shown next to the filter bar whenever ANY filter is active (status, text, or minimum score), regardless of whether the current page has results — not only in the zero-results empty state. Pressing it resets all three filter controls and refetches the unfiltered list from page 1.
+
+#### Scenario: Clear-filters action appears once a filter is active
+- GIVEN no filter is active
+- WHEN the user sets any one of the three filter controls
+- THEN a single "Limpiar filtros" action appears next to the filter bar
 
 #### Scenario: Clear-filters action restores the unfiltered list
-- GIVEN the filtered empty state is shown
+- GIVEN a filter is active (with or without matching results)
 - WHEN the clear-filters action is pressed
-- THEN all filter controls reset, the list refetches unfiltered from page 1, and the ordinary empty/loaded state applies
+- THEN all filter controls reset, the list refetches unfiltered from page 1, and the action itself disappears (no filter is active anymore)
+
+### Requirement: Compare a saved phrase with its matched phrase
+
+Each saved-list item whose `validation.most_similar_phrase_id` is set (score is not null, regardless of `status`) MUST offer a "Comparar" action. Pressing it expands an inline panel showing this item's own text next to the matched phrase's text and the recorded score, fetching the matched phrase's text on demand via `GET /phrases/{id}` (`apps/web`'s `getPhrase`) — the list response itself never carries the matched phrase's text, only its id, to avoid joining it into every row when most items are never expanded. Pressing the action again (or a distinct "Ocultar" action once expanded) collapses the panel. Only one item's panel is expanded at a time. A load failure (including a 404, if the matched phrase was ever removed) shows an inline error in the panel, not a page-level one.
+
+#### Scenario: Comparing shows both phrases side by side
+- GIVEN a saved item with `most_similar_phrase_id` set and a 72% score
+- WHEN the user presses "Comparar"
+- THEN a panel appears showing this item's text, the matched phrase's text (fetched via `GET /phrases/{id}`), and "72%"
+
+#### Scenario: No compare action when there is no match
+- GIVEN a saved item with `most_similar_phrase_id` null
+- WHEN the list renders
+- THEN no "Comparar" action is shown for that item
+
+#### Scenario: Expanding a different item collapses the previous one
+- GIVEN item A's comparison panel is expanded
+- WHEN the user presses "Comparar" on item B
+- THEN item A's panel collapses and item B's panel expands
+
+#### Scenario: Compare fetch failure shows an inline error
+- GIVEN the matched phrase's `GET /phrases/{id}` request fails
+- WHEN the panel would otherwise render
+- THEN an inline error message is shown inside that item's panel only, the rest of the list is unaffected
 
 ### Requirement: Filter copy keys
 
@@ -397,6 +430,12 @@ All user-visible strings MUST come from a single copy module using exactly these
 | `list.loadingMore` | Cargando más frases... |
 | `list.loadMoreError` | No se pudieron cargar más frases. |
 | `list.emptyFiltered` | No se encontraron frases con estos filtros. |
+| `compare.button` | Comparar |
+| `compare.hide` | Ocultar |
+| `compare.yourPhrase` | Esta frase |
+| `compare.comparedWith` | Comparada con |
+| `compare.loading` | Cargando comparación... |
+| `compare.loadError` | No se pudo cargar la frase comparada. |
 | `saved.success` | Frase guardada. |
 | `error.tooLong` | La frase no puede superar 280 caracteres. |
 | `error.empty` | Escribe una frase antes de continuar. |

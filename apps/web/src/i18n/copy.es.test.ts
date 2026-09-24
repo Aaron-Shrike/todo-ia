@@ -60,6 +60,14 @@ describe("copy (phrase-ui spec's copy table)", () => {
         loadMoreError: "No se pudieron cargar más frases.",
         emptyFiltered: "No se encontraron frases con estos filtros.",
       },
+      compare: {
+        button: "Comparar",
+        hide: "Ocultar",
+        yourPhrase: "Esta frase",
+        comparedWith: "Comparada con",
+        loading: "Cargando comparación...",
+        loadError: "No se pudo cargar la frase comparada.",
+      },
       saved: {
         success: "Frase guardada.",
       },

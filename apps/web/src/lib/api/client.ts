@@ -36,6 +36,8 @@ export interface PhraseApiClient {
   ): Promise<Schemas["_MatchesData"]>;
   savePhrase(body: Schemas["_SaveRequest"]): Promise<Schemas["_PhraseOut"]>;
   listPhrases(params?: ListPhrasesParams): Promise<Schemas["_PhraseListData"]>;
+  /** Resolves a `validation.most_similar_phrase_id` to its own phrase (text, status, etc.) for the list's "compare" panel. Rejects with `ApiError` (`PHRASE_NOT_FOUND`, 404) if the id no longer exists. */
+  getPhrase(id: string): Promise<Schemas["_PhraseOut"]>;
 }
 
 interface DataEnvelope<T> {
@@ -170,6 +172,12 @@ export function createApiClient(config: ApiClientConfig = {}): PhraseApiClient {
         resolved,
       );
     },
+    getPhrase: (id) =>
+      request<Schemas["_PhraseOut"]>(
+        `/phrases/${encodeURIComponent(id)}`,
+        { method: "GET" },
+        resolved,
+      ),
   };
 }
 

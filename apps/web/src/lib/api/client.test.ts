@@ -140,6 +140,50 @@ describe("createApiClient", () => {
     });
   });
 
+  describe("getPhrase", () => {
+    it("sends a GET request to /phrases/{id} and unwraps the phrase envelope", async () => {
+      const phraseData = {
+        id: "7",
+        text: "Comprar leche",
+        created_at: "2026-01-01T00:00:00Z",
+        validation: {
+          status: "unique",
+          score: null,
+          most_similar_phrase_id: null,
+          validated_at: "2026-01-01T00:00:00Z",
+        },
+      };
+      const fetchImpl = vi.fn<typeof fetch>(async () =>
+        fakeResponse({ status: 200, body: { data: phraseData } }),
+      );
+      const client = createApiClient({ baseUrl: "http://api.test", fetchImpl });
+
+      const result = await client.getPhrase("7");
+
+      expect(result).toEqual(phraseData);
+      const [url, init = {}] = fetchImpl.mock.calls[0];
+      expect(url).toBe("http://api.test/phrases/7");
+      expect(init.method).toBe("GET");
+    });
+
+    it("throws an ApiError built from a 404 PHRASE_NOT_FOUND envelope", async () => {
+      const fetchImpl = vi.fn<typeof fetch>(async () =>
+        fakeResponse({
+          status: 404,
+          body: {
+            error: { code: "PHRASE_NOT_FOUND", message: "no phrase with id 999" },
+          },
+        }),
+      );
+      const client = createApiClient({ baseUrl: "http://api.test", fetchImpl });
+
+      await expect(client.getPhrase("999")).rejects.toMatchObject({
+        code: "PHRASE_NOT_FOUND",
+        status: 404,
+      });
+    });
+  });
+
   describe("listMatches", () => {
     it("unwraps the data envelope and posts the JSON body to /phrases/matches", async () => {
       const matchesData = {

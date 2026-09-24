@@ -35,7 +35,7 @@ export interface PhraseListHandle {
 
 export interface PhraseListProps {
   /** Injection seam for tests, matching the rest of the phrase feature's "MSW rejected" convention. */
-  client: Pick<PhraseApiClient, "listPhrases">;
+  client: Pick<PhraseApiClient, "listPhrases" | "getPhrase">;
   /**
    * `null` means the Server Component's own first-paint fetch
    * (`app/page.tsx`) failed — rendered as the exact same load-error state a
@@ -233,6 +233,46 @@ export const PhraseList = forwardRef<PhraseListHandle, PhraseListProps>(
       return () => observer.disconnect();
     }, [sentinelNode]);
 
+    // phrase-ui spec, "Compare a saved phrase with its matched phrase": only
+    // one item's panel is expanded at a time. `compareRequest` guards against
+    // a slower, stale `getPhrase` response overwriting a newer one if the
+    // user toggles between two items' panels quickly (same "generation"
+    // shape as `refresh()`/`loadMore()` above, just id-keyed instead of a
+    // counter since the relevant identity IS which item is expanded).
+    const [compareExpandedId, setCompareExpandedId] = useState<string | null>(null);
+    const [comparePhrase, setComparePhrase] = useState<PhraseOut | null>(null);
+    const [compareStatus, setCompareStatus] = useState<"loading" | "idle" | "error">("idle");
+    const compareRequest = useRef<string | null>(null);
+
+    function toggleCompare(item: PhraseOut) {
+      if (compareExpandedId === item.id) {
+        compareRequest.current = null;
+        setCompareExpandedId(null);
+        setComparePhrase(null);
+        setCompareStatus("idle");
+        return;
+      }
+      const matchId = item.validation.most_similar_phrase_id;
+      // The "Comparar" action only renders when `matchId` is non-null (see
+      // the render below), so this is defensive, not a real path.
+      if (matchId === null) return;
+      compareRequest.current = item.id;
+      setCompareExpandedId(item.id);
+      setComparePhrase(null);
+      setCompareStatus("loading");
+      client.getPhrase(matchId).then(
+        (phrase) => {
+          if (compareRequest.current !== item.id) return;
+          setComparePhrase(phrase);
+          setCompareStatus("idle");
+        },
+        () => {
+          if (compareRequest.current !== item.id) return;
+          setCompareStatus("error");
+        },
+      );
+    }
+
     return (
       <section className={styles.listSection} aria-busy={status === "loading"}>
         {/* phrase-ui spec, "Filter controls over the saved list": the filter
@@ -245,6 +285,19 @@ export const PhraseList = forwardRef<PhraseListHandle, PhraseListProps>(
           minScore={minScore}
           onMinScoreChange={setMinScore}
         />
+        {hasActiveFilters && (
+          // Persistent, next to the filter bar — visible whenever a filter
+          // is active, not only in the zero-results empty state below (that
+          // one only shows its message now; this is the one "Limpiar
+          // filtros" action, so the two never both appear at once).
+          <button
+            type="button"
+            className={`${styles.button} ${styles.buttonGhost} ${styles.clearFiltersButton}`}
+            onClick={clearFilters}
+          >
+            {copy.button.clearFilters}
+          </button>
+        )}
 
         {status === "error" && (
           <div className={styles.errorBox}>
@@ -273,13 +326,6 @@ export const PhraseList = forwardRef<PhraseListHandle, PhraseListProps>(
             // action that clears every active filter and reloads page 1.
             <div className={styles.emptyStateFiltered}>
               <p className={styles.emptyState}>{copy.list.emptyFiltered}</p>
-              <button
-                type="button"
-                className={`${styles.button} ${styles.buttonGhost}`}
-                onClick={clearFilters}
-              >
-                {copy.button.clearFilters}
-              </button>
             </div>
           ) : (
             <p className={styles.emptyState}>{copy.list.empty}</p>
@@ -290,15 +336,56 @@ export const PhraseList = forwardRef<PhraseListHandle, PhraseListProps>(
             <ul className={styles.list}>
               {items.map((item) => (
                 <li key={item.id} className={styles.listItem}>
-                  <span className={styles.listItemText}>{item.text}</span>
-                  <span className={styles.listItemMeta}>
-                    {item.validation.score !== null && (
-                      <span className={styles.score}>{scoreLabel(item.validation.score)}</span>
-                    )}
-                    <span className={`${styles.badge} ${badgeClassName(item.validation.status)}`}>
-                      {badgeLabel(item.validation.status)}
+                  <div className={styles.listItemRow}>
+                    <span className={styles.listItemText}>{item.text}</span>
+                    <span className={styles.listItemMeta}>
+                      {item.validation.score !== null && (
+                        <span className={styles.score}>{scoreLabel(item.validation.score)}</span>
+                      )}
+                      <span
+                        className={`${styles.badge} ${badgeClassName(item.validation.status)}`}
+                      >
+                        {badgeLabel(item.validation.status)}
+                      </span>
+                      {/* phrase-ui spec, "Compare a saved phrase with its
+                          matched phrase": only shown when there IS a match
+                          to compare against. */}
+                      {item.validation.most_similar_phrase_id !== null && (
+                        <button
+                          type="button"
+                          className={styles.compareButton}
+                          onClick={() => toggleCompare(item)}
+                        >
+                          {compareExpandedId === item.id
+                            ? copy.compare.hide
+                            : copy.compare.button}
+                        </button>
+                      )}
                     </span>
-                  </span>
+                  </div>
+                  {compareExpandedId === item.id && (
+                    <div className={styles.comparePanel}>
+                      {compareStatus === "loading" && <p>{copy.compare.loading}</p>}
+                      {compareStatus === "error" && (
+                        <p className={styles.errorText}>{copy.compare.loadError}</p>
+                      )}
+                      {compareStatus === "idle" && comparePhrase && (
+                        <>
+                          <p>
+                            <strong>{copy.compare.yourPhrase}:</strong>{" "}
+                            <span>{item.text}</span>
+                          </p>
+                          <p>
+                            <strong>{copy.compare.comparedWith}:</strong>{" "}
+                            <span>{comparePhrase.text}</span>
+                            {item.validation.score !== null && (
+                              <span> ({scoreLabel(item.validation.score)})</span>
+                            )}
+                          </p>
+                        </>
+                      )}
+                    </div>
+                  )}
                 </li>
               ))}
             </ul>
