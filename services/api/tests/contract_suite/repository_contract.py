@@ -25,6 +25,7 @@ import pytest
 from app.modules.phrases.contracts import (
     Isolation,
     ListCursor,
+    ListFilters,
     MatchCursor,
     NewPhrase,
     UnitOfWorkFactory,
@@ -35,14 +36,30 @@ from tests.contract_suite.vectors import PROBE
 from tests.contract_suite.vectors import vector_at_distance as _vector_at_distance
 
 
-def _new_phrase(text: str, embedding: Vector) -> NewPhrase:
+def _new_phrase(
+    text: str,
+    embedding: Vector,
+    *,
+    status: ValidationStatus = ValidationStatus.UNIQUE,
+    score: float | None = None,
+    neighbour: int | None = None,
+    normalized_text: str | None = None,
+) -> NewPhrase:
+    # `status`/`score`/`neighbour` (Unit 1, task 1.4): let filter tests seed
+    # `duplicate_confirmed` rows (paired score+neighbour, migration 0001's
+    # `phrases_metadata_paired`/`phrases_confirmed_has_neighbor` CHECKs) and
+    # NULL-score rows without touching every other call site's 2-arg form.
+    # `normalized_text` (optional, defaults to `text`): lets the text-filter
+    # tests store a value that differs from the display `text` -- needed for
+    # the case-folding regression case below, where `SavePhrase` would have
+    # already folded the display text before writing `normalized_text`.
     return NewPhrase(
         text=text,
-        normalized_text=text,
+        normalized_text=text if normalized_text is None else normalized_text,
         embedding=embedding,
-        similarity_score=None,
-        most_similar_phrase_id=None,
-        validation_status=ValidationStatus.UNIQUE,
+        similarity_score=score,
+        most_similar_phrase_id=neighbour,
+        validation_status=status,
         validated_at=datetime.now(UTC),
     )
 
@@ -329,6 +346,222 @@ class ListPageContractSuite:
         assert len(collected) == len(ids)
         assert len(set(collected)) == len(ids)  # none repeated
         assert set(collected) == set(ids)  # none missing
+
+    # --- Filter cases (Unit 1, task 1.4; design.md's `ListFilters`) -------
+
+    def test_list_page_filters_by_status_only(self, uow_factory: UnitOfWorkFactory) -> None:
+        with uow_factory() as uow:
+            unique_id = uow.repo.add(_new_phrase("agua", PROBE)).id
+            confirmed_id = uow.repo.add(
+                _new_phrase(
+                    "agua otra vez",
+                    PROBE,
+                    status=ValidationStatus.DUPLICATE_CONFIRMED,
+                    score=0.9,
+                    neighbour=unique_id,
+                )
+            ).id
+            uow.commit()
+
+        confirmed_filters = ListFilters(status=ValidationStatus.DUPLICATE_CONFIRMED)
+        with uow_factory(read_only=True) as uow:
+            page = uow.repo.list_page(limit=10, cursor=None, filters=confirmed_filters)
+            count = uow.repo.count_filtered(confirmed_filters)
+
+        assert [p.id for p in page.items] == [confirmed_id]
+        assert page.total == 1 == count
+        assert unique_id not in [p.id for p in page.items]
+
+    def test_list_page_filters_by_text_only(self, uow_factory: UnitOfWorkFactory) -> None:
+        ids = _seed(
+            uow_factory,
+            [
+                _new_phrase("comprar leche", PROBE),
+                _new_phrase("comprar pan", PROBE),
+            ],
+        )
+        with uow_factory(read_only=True) as uow:
+            page = uow.repo.list_page(limit=10, cursor=None, filters=ListFilters(text="leche"))
+        assert [p.id for p in page.items] == [ids[0]]
+
+    def test_list_page_text_filter_case_folding_matches_the_already_folded_stored_value(
+        self, uow_factory: UnitOfWorkFactory
+    ) -> None:
+        # Regression guard for design.md's "why LIKE, not ILIKE" rationale:
+        # `SavePhrase` normalizes with Python `casefold()` BEFORE writing,
+        # which folds "ß" to "ss" -- so `normalized_text` for an original
+        # "Straße" is already "strasse" by the time any repository sees it.
+        # `filters.text` arrives pre-folded the same way (D2). A plain,
+        # case-sensitive `LIKE`/`in` on these ALREADY-folded values must
+        # still find the row (first assertion); an un-folded raw "straße"
+        # query must NOT re-fold and match it (second assertion) -- proving
+        # neither adapter does its own casefolding, only the substring
+        # comparison the design specifies.
+        ids = _seed(
+            uow_factory,
+            [_new_phrase("Straße", PROBE, normalized_text="strasse")],
+        )
+        with uow_factory(read_only=True) as uow:
+            folded = uow.repo.list_page(limit=10, cursor=None, filters=ListFilters(text="strasse"))
+            unfolded = uow.repo.list_page(limit=10, cursor=None, filters=ListFilters(text="straße"))
+        assert [p.id for p in folded.items] == ids
+        assert unfolded.items == []
+
+    def test_list_page_text_filter_matches_wildcard_characters_literally(
+        self, uow_factory: UnitOfWorkFactory
+    ) -> None:
+        ids = _seed(
+            uow_factory,
+            [
+                _new_phrase("100% seguro", PROBE, normalized_text="100% seguro"),
+                _new_phrase("100x seguro", PROBE, normalized_text="100x seguro"),
+                _new_phrase("under_score", PROBE, normalized_text="under_score"),
+                _new_phrase("underxscore", PROBE, normalized_text="underxscore"),
+                _new_phrase(r"back\slash", PROBE, normalized_text=r"back\slash"),
+                _new_phrase("backXslash", PROBE, normalized_text="backXslash"),
+            ],
+        )
+        with uow_factory(read_only=True) as uow:
+            percent = uow.repo.list_page(limit=10, cursor=None, filters=ListFilters(text="0%"))
+            underscore = uow.repo.list_page(limit=10, cursor=None, filters=ListFilters(text="r_s"))
+            backslash = uow.repo.list_page(limit=10, cursor=None, filters=ListFilters(text="\\s"))
+        assert [p.id for p in percent.items] == [ids[0]]
+        assert [p.id for p in underscore.items] == [ids[2]]
+        assert [p.id for p in backslash.items] == [ids[4]]
+
+    def test_list_page_filters_by_min_score_only(self, uow_factory: UnitOfWorkFactory) -> None:
+        with uow_factory() as uow:
+            null_score_id = uow.repo.add(_new_phrase("sin score", PROBE)).id
+            below_id = uow.repo.add(
+                _new_phrase(
+                    "score bajo",
+                    PROBE,
+                    status=ValidationStatus.DUPLICATE_CONFIRMED,
+                    score=0.4,
+                    neighbour=null_score_id,
+                )
+            ).id
+            boundary_id = uow.repo.add(
+                _new_phrase(
+                    "score limite",
+                    PROBE,
+                    status=ValidationStatus.DUPLICATE_CONFIRMED,
+                    score=0.5,
+                    neighbour=null_score_id,
+                )
+            ).id
+            above_id = uow.repo.add(
+                _new_phrase(
+                    "score alto",
+                    PROBE,
+                    status=ValidationStatus.DUPLICATE_CONFIRMED,
+                    score=0.9,
+                    neighbour=null_score_id,
+                )
+            ).id
+            uow.commit()
+
+        with uow_factory(read_only=True) as uow:
+            page = uow.repo.list_page(limit=10, cursor=None, filters=ListFilters(min_score=0.5))
+
+        result_ids = {p.id for p in page.items}
+        assert result_ids == {boundary_id, above_id}  # >= boundary; NULL and below excluded
+        assert null_score_id not in result_ids
+        assert below_id not in result_ids
+
+    def test_list_page_filters_combine_with_and(self, uow_factory: UnitOfWorkFactory) -> None:
+        with uow_factory() as uow:
+            neighbour_id = uow.repo.add(_new_phrase("base", PROBE)).id
+            match_id = uow.repo.add(
+                _new_phrase(
+                    "leche fresca",
+                    PROBE,
+                    status=ValidationStatus.DUPLICATE_CONFIRMED,
+                    score=0.9,
+                    neighbour=neighbour_id,
+                    normalized_text="leche fresca",
+                )
+            ).id
+            # Fails text only:
+            uow.repo.add(
+                _new_phrase(
+                    "pan fresco",
+                    PROBE,
+                    status=ValidationStatus.DUPLICATE_CONFIRMED,
+                    score=0.9,
+                    neighbour=neighbour_id,
+                    normalized_text="pan fresco",
+                )
+            )
+            # Fails status only:
+            uow.repo.add(_new_phrase("leche entera", PROBE, normalized_text="leche entera"))
+            # Fails min_score only:
+            uow.repo.add(
+                _new_phrase(
+                    "leche descremada",
+                    PROBE,
+                    status=ValidationStatus.DUPLICATE_CONFIRMED,
+                    score=0.2,
+                    neighbour=neighbour_id,
+                    normalized_text="leche descremada",
+                )
+            )
+            uow.commit()
+
+        with uow_factory(read_only=True) as uow:
+            filters = ListFilters(
+                status=ValidationStatus.DUPLICATE_CONFIRMED, text="leche", min_score=0.5
+            )
+            page = uow.repo.list_page(limit=10, cursor=None, filters=filters)
+            count = uow.repo.count_filtered(filters)
+
+        assert [p.id for p in page.items] == [match_id]
+        assert page.total == 1 == count
+
+    def test_list_page_full_cursor_walk_under_a_filter(
+        self, uow_factory: UnitOfWorkFactory
+    ) -> None:
+        # Mirrors `test_list_page_pages_through_completely_with_no_gaps_or_repeats`
+        # for a FILTERED set: `total`/`count_filtered` stay pinned to the
+        # filtered size on every page, not the whole store, while unrelated
+        # rows outside the filter are never returned.
+        with uow_factory() as uow:
+            base_id = uow.repo.add(_new_phrase("base2", PROBE)).id
+            matching_ids = [
+                uow.repo.add(
+                    _new_phrase(
+                        f"n{i}",
+                        PROBE,
+                        status=ValidationStatus.DUPLICATE_CONFIRMED,
+                        score=0.7,
+                        neighbour=base_id,
+                    )
+                ).id
+                for i in range(11)
+            ]
+            for i in range(4):  # noise the filter must exclude
+                uow.repo.add(_new_phrase(f"unique-noise-{i}", PROBE))
+            uow.commit()
+
+        filters = ListFilters(status=ValidationStatus.DUPLICATE_CONFIRMED)
+        collected: list[int] = []
+        cursor: ListCursor | None = None
+        pages = 0
+        with uow_factory(read_only=True) as uow:
+            while True:
+                page = uow.repo.list_page(limit=4, cursor=cursor, filters=filters)
+                pages += 1
+                assert page.total == len(matching_ids) == uow.repo.count_filtered(filters)
+                collected.extend(p.id for p in page.items)
+                cursor = page.next_cursor
+                if not page.has_more:
+                    break
+
+        assert pages == 3  # 11 rows, page size 4 -> 4, 4, 3 -> 3 pages
+        assert len(collected) == len(matching_ids)
+        assert len(set(collected)) == len(matching_ids)
+        assert set(collected) == set(matching_ids)
+        assert base_id not in collected
 
 
 class RepositoryContractSuite(

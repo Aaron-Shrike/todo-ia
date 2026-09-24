@@ -101,6 +101,14 @@ export interface components {
         ErrorEnvelope: {
             error: components["schemas"]["ErrorDetail"];
         };
+        /**
+         * ValidationStatus
+         * @description Mirrors the `validation_status` CHECK constraint (migration 0001, the
+         *     Alembic revision that creates the `phrases` table -- see design.md's
+         *     "Data Model and Migrations").
+         * @enum {string}
+         */
+        ValidationStatus: "unique" | "duplicate_confirmed";
         /** _MatchesData */
         _MatchesData: {
             /** Has More */
@@ -262,6 +270,9 @@ export interface operations {
             query?: {
                 limit?: number | null;
                 cursor?: string | null;
+                status?: components["schemas"]["ValidationStatus"] | null;
+                q?: string | null;
+                min_score?: number | null;
             };
             header?: never;
             path?: never;

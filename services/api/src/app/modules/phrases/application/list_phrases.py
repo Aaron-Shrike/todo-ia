@@ -8,8 +8,15 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from app.modules.phrases.contracts import ListCursor, Phrase, UnitOfWorkFactory
+from app.modules.phrases.contracts import (
+    ListCursor,
+    ListFilters,
+    Phrase,
+    UnitOfWorkFactory,
+    ValidationStatus,
+)
 from app.modules.phrases.domain.list_cursor import decode_list_cursor, encode_list_cursor
+from app.modules.phrases.domain.normalization import comparison_form, display_form
 
 
 @dataclass(frozen=True)
@@ -28,14 +35,28 @@ class ListPhrases:
     def __init__(self, uow_factory: UnitOfWorkFactory) -> None:
         self._uow_factory = uow_factory
 
-    def __call__(self, *, limit: int, cursor: str | None) -> PhraseListView:
+    def __call__(
+        self,
+        *,
+        limit: int,
+        cursor: str | None,
+        status: ValidationStatus | None = None,
+        q: str | None = None,
+        min_score: float | None = None,
+    ) -> PhraseListView:
         list_cursor: ListCursor | None = None
         if cursor is not None:
             envelope = decode_list_cursor(cursor)  # raises InvalidListCursor on any violation
             list_cursor = ListCursor(created_at=envelope.created_at, id=envelope.id)
 
+        text_filter: str | None = None
+        if q is not None:
+            comparison = comparison_form(display_form(q))  # D2: blank -> None, casefolded
+            text_filter = comparison if comparison else None
+        filters = ListFilters(status=status, text=text_filter, min_score=min_score)
+
         with self._uow_factory(read_only=True) as uow:  # READ COMMITTED, always live
-            page = uow.repo.list_page(limit, list_cursor)
+            page = uow.repo.list_page(limit, list_cursor, filters=filters)
 
         next_cursor = (
             encode_list_cursor(created_at=page.next_cursor.created_at, id=page.next_cursor.id)

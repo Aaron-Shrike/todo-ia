@@ -45,6 +45,15 @@
         "title": "ErrorEnvelope",
         "type": "object"
       },
+      "ValidationStatus": {
+        "description": "Mirrors the `validation_status` CHECK constraint (migration 0001, the\nAlembic revision that creates the `phrases` table -- see design.md's\n\"Data Model and Migrations\").",
+        "enum": [
+          "unique",
+          "duplicate_confirmed"
+        ],
+        "title": "ValidationStatus",
+        "type": "string"
+      },
       "_MatchesData": {
         "properties": {
           "has_more": {
@@ -472,6 +481,56 @@
                 }
               ],
               "title": "Cursor"
+            }
+          },
+          {
+            "in": "query",
+            "name": "status",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "$ref": "#/components/schemas/ValidationStatus"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Status"
+            }
+          },
+          {
+            "in": "query",
+            "name": "q",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Q"
+            }
+          },
+          {
+            "in": "query",
+            "name": "min_score",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maximum": 1,
+                  "minimum": 0,
+                  "type": "number"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Min Score"
             }
           }
         ],

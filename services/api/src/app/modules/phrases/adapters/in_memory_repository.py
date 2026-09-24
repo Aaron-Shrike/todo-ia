@@ -26,9 +26,11 @@ from itertools import count
 from math import floor
 
 from app.modules.phrases.contracts import (
+    NO_FILTERS,
     DuplicateTextConflict,
     Isolation,
     ListCursor,
+    ListFilters,
     Match,
     MatchCursor,
     Neighbor,
@@ -44,6 +46,25 @@ from app.modules.similarity.contracts import KEY_EPSILON, Vector, cosine_distanc
 
 def _bucket(distance: float) -> int:
     return floor(distance / KEY_EPSILON)
+
+
+def _passes(row: Phrase, filters: ListFilters) -> bool:
+    """`list_page`/`count_filtered`'s row predicate (design.md's "Semantics
+    parity"). Mirrors the pgvector adapter's SQL `WHERE` exactly, including
+    SQL's three-valued NULL semantics for `min_score` (`NULL >= x` is
+    UNKNOWN -> excluded, never `None >= x`'s Python `TypeError`).
+    `filters.text` MUST already be in comparison form (D2) -- this method
+    does not re-normalize it, just like the pgvector adapter's `LIKE` does
+    not re-fold `normalized_text`."""
+    if filters.status is not None and row.validation_status is not filters.status:
+        return False
+    if filters.text is not None and filters.text not in row.normalized_text:
+        return False
+    if filters.min_score is not None and (
+        row.similarity_score is None or row.similarity_score < filters.min_score
+    ):
+        return False
+    return True
 
 
 def _validate_paired_metadata(phrase: NewPhrase) -> None:
@@ -141,8 +162,14 @@ class InMemoryPhraseRepository:
         rows = sorted(self._rows(), key=lambda row: (row.created_at, row.id), reverse=True)
         return rows[:limit]
 
-    def list_page(self, limit: int, cursor: ListCursor | None) -> PhraseListPage:
-        rows = sorted(self._rows(), key=lambda row: (row.created_at, row.id), reverse=True)
+    def list_page(
+        self, limit: int, cursor: ListCursor | None, *, filters: ListFilters = NO_FILTERS
+    ) -> PhraseListPage:
+        rows = sorted(
+            (row for row in self._rows() if _passes(row, filters)),
+            key=lambda row: (row.created_at, row.id),
+            reverse=True,
+        )
         if cursor is not None:
             position = (cursor.created_at, cursor.id)
             rows = [row for row in rows if (row.created_at, row.id) < position]
@@ -155,11 +182,17 @@ class InMemoryPhraseRepository:
             else None
         )
         return PhraseListPage(
-            items=items, total=len(self._rows()), next_cursor=next_cursor, has_more=has_more
+            items=items,
+            total=self.count_filtered(filters),
+            next_cursor=next_cursor,
+            has_more=has_more,
         )
 
+    def count_filtered(self, filters: ListFilters) -> int:
+        return sum(1 for row in self._rows() if _passes(row, filters))
+
     def count_all(self) -> int:
-        return len(self._rows())
+        return self.count_filtered(NO_FILTERS)
 
     def find_nearest(self, q: Vector) -> Neighbor | None:
         return self._nearest(q)
