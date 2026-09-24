@@ -35,6 +35,29 @@ def _seed(factory: InMemoryUnitOfWorkFactory, *entries: tuple[str, float]) -> No
         uow.commit()
 
 
+def _seed_one(
+    factory: InMemoryUnitOfWorkFactory,
+    *,
+    text: str,
+    normalized_text: str | None = None,
+    status: ValidationStatus = ValidationStatus.UNIQUE,
+    score: float | None = None,
+) -> None:
+    with factory() as uow:
+        uow.repo.add(
+            NewPhrase(
+                text=text,
+                normalized_text=normalized_text if normalized_text is not None else text,
+                embedding=vector_at_distance(0.05),
+                similarity_score=score,
+                most_similar_phrase_id=(1 if score is not None else None),
+                validation_status=status,
+                validated_at=datetime.now(UTC),
+            )
+        )
+        uow.commit()
+
+
 def test_empty_store_returns_an_empty_page() -> None:
     factory = InMemoryUnitOfWorkFactory()
     list_phrases = ListPhrases(factory)
@@ -85,3 +108,101 @@ def test_malformed_cursor_raises_invalid_list_cursor() -> None:
     list_phrases = ListPhrases(factory)
     with pytest.raises(InvalidListCursor):
         list_phrases(limit=10, cursor="not-a-cursor")
+
+
+# --- design.md D2: `q` normalization + `ListFilters` construction --------
+
+
+def test_status_filter_is_passed_through_to_the_repository() -> None:
+    factory = InMemoryUnitOfWorkFactory()
+    _seed_one(factory, text="a", status=ValidationStatus.UNIQUE)
+    _seed_one(factory, text="b", status=ValidationStatus.DUPLICATE_CONFIRMED, score=0.9)
+    list_phrases = ListPhrases(factory)
+    view = list_phrases(limit=10, cursor=None, status=ValidationStatus.DUPLICATE_CONFIRMED)
+    assert [p.text for p in view.items] == ["b"]
+    assert view.total == 1
+
+
+def test_none_status_means_no_filter() -> None:
+    factory = InMemoryUnitOfWorkFactory()
+    _seed_one(factory, text="a", status=ValidationStatus.UNIQUE)
+    _seed_one(factory, text="b", status=ValidationStatus.DUPLICATE_CONFIRMED, score=0.9)
+    list_phrases = ListPhrases(factory)
+    view = list_phrases(limit=10, cursor=None, status=None)
+    assert view.total == 2
+
+
+def test_q_is_normalized_to_comparison_form_before_filtering() -> None:
+    # `comparison_form(display_form("LECHE"))` == "leche" (D2) -- proves
+    # ListPhrases, not the repository, does the casefolding.
+    factory = InMemoryUnitOfWorkFactory()
+    _seed_one(factory, text="tengo leche fresca", normalized_text="tengo leche fresca")
+    _seed_one(factory, text="agua", normalized_text="agua")
+    list_phrases = ListPhrases(factory)
+    view = list_phrases(limit=10, cursor=None, q="LECHE")
+    assert [p.text for p in view.items] == ["tengo leche fresca"]
+    assert view.total == 1
+
+
+@pytest.mark.parametrize("blank", ["", "   ", None])
+def test_blank_or_none_q_is_treated_as_absent(blank: str | None) -> None:
+    factory = InMemoryUnitOfWorkFactory()
+    _seed_one(factory, text="a")
+    _seed_one(factory, text="b")
+    list_phrases = ListPhrases(factory)
+    view = list_phrases(limit=10, cursor=None, q=blank)
+    assert view.total == 2
+
+
+def test_min_score_filter_excludes_null_scores() -> None:
+    factory = InMemoryUnitOfWorkFactory()
+    _seed_one(
+        factory, text="confirmed", status=ValidationStatus.DUPLICATE_CONFIRMED, score=0.9
+    )
+    _seed_one(factory, text="unique", status=ValidationStatus.UNIQUE, score=None)
+    list_phrases = ListPhrases(factory)
+    view = list_phrases(limit=10, cursor=None, min_score=0.5)
+    assert [p.text for p in view.items] == ["confirmed"]
+    assert view.total == 1
+
+
+def test_none_min_score_means_no_filter() -> None:
+    factory = InMemoryUnitOfWorkFactory()
+    _seed_one(
+        factory, text="confirmed", status=ValidationStatus.DUPLICATE_CONFIRMED, score=0.9
+    )
+    _seed_one(factory, text="unique", status=ValidationStatus.UNIQUE, score=None)
+    list_phrases = ListPhrases(factory)
+    view = list_phrases(limit=10, cursor=None, min_score=None)
+    assert view.total == 2
+
+
+def test_filters_combine_with_and() -> None:
+    """A row matching `status` and `min_score` but NOT `q` must be excluded
+    -- proves `ListPhrases` builds ONE combined `ListFilters` (D1, AND
+    semantics), not three independently-applied filters."""
+    factory = InMemoryUnitOfWorkFactory()
+    _seed_one(
+        factory,
+        text="tengo leche fresca",
+        normalized_text="tengo leche fresca",
+        status=ValidationStatus.DUPLICATE_CONFIRMED,
+        score=0.9,
+    )
+    _seed_one(
+        factory,
+        text="tengo agua fresca",
+        normalized_text="tengo agua fresca",
+        status=ValidationStatus.DUPLICATE_CONFIRMED,
+        score=0.9,
+    )
+    list_phrases = ListPhrases(factory)
+    view = list_phrases(
+        limit=10,
+        cursor=None,
+        status=ValidationStatus.DUPLICATE_CONFIRMED,
+        q="LECHE",
+        min_score=0.5,
+    )
+    assert [p.text for p in view.items] == ["tengo leche fresca"]
+    assert view.total == 1

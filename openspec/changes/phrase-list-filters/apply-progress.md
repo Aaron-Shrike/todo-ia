@@ -201,6 +201,217 @@ shape (`status`, `q`, `min_score` params, `q` normalized via
 filters=filters)`) — none of that exists yet; Unit 1 only prepared the
 repository side.
 
-## Units 2-4
+## Unit 2: API wiring, EXPLAIN guard, OpenAPI/types regen — DONE
 
-Not started.
+Branch: `feat/plf-02-api-wiring` (child of `feat/plf-01-backend-filters`, per
+`feature-branch-chain`).
+
+**Environment note — this session had to switch to an isolated `git
+worktree` mid-unit.** The orchestrator's working directory
+(`/Users/macos/Code/Projects/todo-ia`) was found to be shared, LIVE, across
+at least three concurrent apply sub-agent sessions (Unit 2/this one, and at
+least Unit 3 and Unit 4) with NO isolation between them: `git branch
+--show-current` and `git status` changed out from under this session twice
+within seconds, unprompted (observed branch flipping from
+`feat/plf-02-api-wiring` → `feat/plf-03-frontend-filters` →
+`feat/plf-04-decision-log` while this session was mid-edit, and a `M
+apps/web/src/lib/api/client.ts`/`client.test.ts` uncommitted diff not
+authored by this session appeared in the shared working tree). This is a
+genuinely dangerous condition for parallel SDD apply batches: one session's
+`git checkout` silently swaps every other session's working directory,
+risking lost work, cross-unit file corruption, or a session unknowingly
+committing another unit's in-progress files. Recovery taken: `git stash
+push -u` to safely detach this session's in-progress edits from the shared
+tree, then `git worktree add ../todo-ia-plf-02 -b feat/plf-02-api-wiring
+feat/plf-01-backend-filters` to get a fully isolated checkout, then `git
+stash pop` inside the new worktree to restore progress with zero loss. All
+Unit 2 work below was done inside `/Users/macos/Code/Projects/todo-ia-plf-02`
+using the ORIGINAL worktree's already-provisioned `.venv` by absolute path
+(`/Users/macos/Code/Projects/todo-ia/services/api/.venv/bin/python`) — a
+worktree's own gitignored `.venv` is never checked out, and a Python venv
+is relocatable in the sense that it runs correctly from a different `cwd`,
+so this required no re-install. **Flagging for the orchestrator**: future
+parallel SDD apply batches on this change (or any change) MUST either (a)
+assign each unit its own `git worktree` from the start, or (b) serialize
+apply batches that touch the same repository, or (c) instruct sub-agents to
+create their own worktree as step 0 before any edit. This is a process gap
+above the phase-executor level, not something any single unit's apply
+session can fix on its own.
+
+### Files changed
+
+| File | Action | What was done |
+|---|---|---|
+| `services/api/src/app/modules/phrases/api/schemas.py` | Modified | Added `query_score()` (`Annotated[float, Field(ge=0, le=1, allow_inf_nan=False)]`, no caller-supplied max — always `[0,1]`) and `query_text(max_length)` (`AfterValidator` raising the same `string_too_long`-typed `PydanticCustomError` as `raw_phrase_text`, but capped at the SEMANTIC `max_length` directly — no `4x` raw multiplier, since `q` is only ever compared, never stored/embedded). |
+| `services/api/src/app/modules/phrases/api/router.py` | Modified | `list_phrases` route gained `status: ValidationStatus \| None`, `q: query_text(phrase_max_length) \| None`, `min_score: query_score() \| None`, all threaded through to `container.list_phrases(...)`; imports extended with `query_score`/`query_text`/`ValidationStatus`. |
+| `services/api/src/app/modules/phrases/application/list_phrases.py` | Modified | `ListPhrases.__call__` gained `status`/`q`/`min_score` keyword params; `q` normalized via `comparison_form(display_form(q))` (D2), blank/whitespace-only collapses to `None`; builds one `ListFilters(status=status, text=text_filter, min_score=min_score)` and passes it to `uow.repo.list_page(limit, list_cursor, filters=filters)` — `total` comes back already filter-aware because Unit 1's `list_page` computes it via `count_filtered` internally, so this use case does NOT call `count_filtered` a second time (Unit 1's own apply-progress note already flagged this as optional — confirmed correct, not a deviation). |
+| `services/api/tests/unit/phrases/test_schemas.py` | Modified | Added `query_score`/`query_text` boundary, out-of-range, `nan`-rejection, and `details.max_length` tests, same pattern as the existing `page_limit`/`raw_phrase_text` tests in this file. |
+| `services/api/tests/unit/phrases/test_list_phrases.py` | Modified | `_seed_one` helper (status/score/neighbour-paired per the `phrases_confirmed_has_neighbor` CHECK constraint); 7 new tests: status filter passthrough, `status=None` no-op, `q` casefold normalization, blank/whitespace/`None` `q` all treated as absent (parametrized), `min_score` NULL-exclusion, `min_score=None` no-op, and an AND-combination proof (a row matching 2 of 3 filters is excluded). |
+| `services/api/tests/contract/test_phrases_endpoints.py` | Modified | `_seed_with_metadata` helper; 12 new end-to-end tests covering every api-contract "GET /phrases" filter scenario: invalid `status` → 422, `min_score` out of range (`-0.1`, `1.5`, `"nan"`, all parametrized) → 422, over-length `q` → 422, filter-by-status, case-insensitive text filter, literal `%`/`_` wildcard matching, `min_score` NULL-exclusion, AND-combination, filter-aware `total`, and a cursor-resend-filters pagination walk. |
+| `services/api/tests/integration/test_list_filters_pgvector.py` | Created | EXPLAIN guards (see "DB-backed verification" below) — module-scoped fixture seeds a 20000-`unique`/3-`duplicate_confirmed` table (matching `explore-db-findings.md`'s real shape) via bulk `INSERT ... SELECT ... FROM generate_series` (fast — this file does NOT reuse the smaller per-test `_freshly_migrated_schema` pattern other pgvector integration files use, since rebuilding 20003 rows per test would be slow for read-only EXPLAIN checks), then `ANALYZE`s. 5 tests: unfiltered path still uses `phrases_created_at_id_idx` (regression guard), `status=duplicate_confirmed` uses the new partial index with no cursor / with a cursor / for the count query, and — the D4-specific guard — the same query still uses the partial index when run through `PREPARE`/`EXECUTE` under `SET plan_cache_mode = force_generic_plan`, proving the status value survives as a literal even when Postgres is forced off a custom plan. |
+| `docs/openapi.json` | Regenerated | Via `app.openapi()` (same `Settings(database_url=...)` construction as `tests/contract/test_openapi.py::_spec()`), written as `json.dumps(spec, indent=2, sort_keys=True) + "\n"` — matches the existing file's on-disk formatting exactly. `GET /phrases`'s `parameters` now lists `limit, cursor, status, q, min_score`; `ValidationStatus` added as a reusable `components.schemas` enum. |
+| `apps/web/src/types/api.ts` | Regenerated | Via `make types` (root Makefile, `openapi-typescript` against the regenerated `docs/openapi.json`). Diff: `components.schemas.ValidationStatus` (`"unique" \| "duplicate_confirmed"`) added, and `operations["list_phrases_phrases_get"].parameters.query` gained `status?`, `q?`, `min_score?` — all optional, matching the API's optional params. |
+
+### TDD Cycle Evidence
+
+| Task | Test File | Layer | Safety Net | RED | GREEN | TRIANGULATE | REFACTOR |
+|------|-----------|-------|------------|-----|-------|-------------|----------|
+| 2.1 `query_score`/`query_text` (schemas) | `tests/unit/phrases/test_schemas.py` | Unit | ✅ 13/13 (pre-existing) | ✅ `ImportError: cannot import name 'query_score'` confirmed before adding the functions | ✅ 22/22 passed after | ✅ boundary values (`0.0/0.5/1.0`), out-of-range (`-0.1/1.1`), `nan`, semantic-vs-raw-cap distinction — 9 new cases | ➖ None needed (mirrors `page_limit`/`raw_phrase_text` exactly) |
+| 2.1 router wiring | `tests/contract/test_phrases_endpoints.py` | Contract | ✅ 7/19 list_phrases tests pre-existing, passing | ✅ 12/19 new list_phrases tests confirmed failing (FastAPI silently ignored the unrecognized `status`/`q`/`min_score` query params — no 422, filters not applied) before the router change | ✅ 19/19 passed after | ✅ 12 new scenarios across all three params plus AND-combination and cursor-resend | ➖ None needed |
+| 2.2 `ListPhrases` filter/normalize | `tests/unit/phrases/test_list_phrases.py` | Unit | ✅ 5/5 pre-existing, passing | ✅ `TypeError: ListPhrases.__call__() got an unexpected keyword argument 'status'` confirmed before the change | ✅ 14/14 passed after | ✅ 9 new cases: status filter/no-op, casefold, blank/whitespace/None `q` (parametrized ×3), `min_score` filter/no-op, AND-combination | ➖ None needed |
+| 2.3 contract 422s/passthrough | `tests/contract/test_phrases_endpoints.py` | Contract | (same run as 2.1's router wiring — one combined RED→GREEN cycle since schemas+router+application all needed to land together for any of these to pass) | ✅ (see 2.1 row) | ✅ (see 2.1 row) | ✅ (see 2.1 row) | ➖ None needed |
+| 2.4 EXPLAIN guard (`test_list_filters_pgvector.py`) | `tests/integration/test_list_filters_pgvector.py` | Integration | N/A (new file) | Not executed as pytest RED — see "DB-backed verification" below | Not executed as pytest GREEN — see below | N/A | N/A |
+| 2.5 OpenAPI/`api.ts` regen | `docs/openapi.json`, `apps/web/src/types/api.ts` | Contract | ✅ `test_snapshot_matches_docs_openapi_json` failed (stale snapshot) immediately after 2.1-2.3 landed — confirmed the drift the regen step needed to fix | ✅ regenerated both files | ✅ all 6 `tests/contract/test_openapi.py` tests pass, including the snapshot and every pre-existing scenario (endpoints documented, error responses, pagination fields, every registered code present, ids typed string) | N/A (generation step, not exploratory logic) | N/A |
+
+### Test Summary
+
+- **Total tests written**: 9 (schemas) + 12 (contract endpoints) + 9 (list_phrases unit) + 5 (EXPLAIN guard, not pytest-executed) = 35
+- **Total tests passing**: 30/30 executable (schemas + contract + unit); 5 EXPLAIN-guard tests written but not executed via pytest this session (see below) — all 5 assertions hand-verified true via direct `psql` against the exact same seed shape and exact same rendered SQL (including the real `LIMIT :limit + 1` expression) the test file uses.
+- **Layers used**: Unit (16: 9 schemas + 9 list_phrases — note some overlap in counts above is from combined rows), Contract (12), Integration (5, hand-verified not pytest-executed)
+- **Approval tests** (refactoring): None — no refactoring tasks, only additive changes
+- **Pure functions created**: `query_score`, `query_text` (schemas.py) — both pure factories returning `Annotated` types; `ListPhrases.__call__`'s new filter-building logic is a thin composition of the already-pure `comparison_form`/`display_form`
+
+### DB-backed verification (EXPLAIN guard, `test_list_filters_pgvector.py`)
+
+Same sandboxed-TCP limitation Unit 1 hit (see Unit 1's own "Environment
+note" above — unchanged this session, re-confirmed): the Bash tool cannot
+reach `localhost:5432` from the host for SQLAlchemy/psycopg, so
+`pytest -m integration tests/integration/test_list_filters_pgvector.py`
+was **not executed**. Instead, hand-verified via `docker compose exec db
+psql -U todo_ia -d phrases_test` (INSIDE the container, which works) using
+the EXACT same table shape and EXACT same rendered SQL the test file
+builds via `build_list_page_query`/`build_count_list_query`:
+
+1. Applied migrations 0001+0002's literal SQL to the scratch `phrases_test`
+   database (same approach as Unit 1).
+2. Bulk-seeded 20000 `unique` + 3 `duplicate_confirmed` rows via
+   `INSERT ... SELECT ... FROM generate_series` (same shape as
+   `explore-db-findings.md`'s real ~20k-row table), `ANALYZE`d.
+3. `EXPLAIN (ANALYZE, BUFFERS)` on the unfiltered `list_page` query (no
+   filter, no cursor): `Index Scan using phrases_created_at_id_idx`, 5
+   buffer hits — confirms no plan regression on the default path.
+4. `EXPLAIN (ANALYZE, BUFFERS)` on `status=duplicate_confirmed`, no
+   cursor / with a cursor / count-only: all three used `Index Scan` (or
+   `Index Only Scan` for the count) on
+   `phrases_duplicate_confirmed_created_at_id_idx`, 2 buffer hits each,
+   zero `Seq Scan` anywhere — confirms migration 0002's index actually
+   gets chosen for the rare-value filter, matching `explore-db-findings.md`'s
+   pre-migration baseline of 5007 buffer hits + `Seq Scan` for the same
+   filter (a ~2500x reduction in buffer hits).
+5. **D4 guard**: `SET plan_cache_mode = force_generic_plan;` then
+   `PREPARE list_guard(timestamptz, bigint, int) AS <build_list_page_query
+   output with :cursor_created_at/:cursor_id/:limit converted to
+   $1/$2/$3, including the real `LIMIT $3 + 1` expression>`, executed 5
+   times (mirroring psycopg3's real auto-prepare-after-5 threshold cited
+   in D4's own rationale), then `EXPLAIN (ANALYZE, BUFFERS) EXECUTE
+   list_guard(...)`: still `Index Scan using
+   phrases_duplicate_confirmed_created_at_id_idx`, still zero `Seq Scan`
+   — proves the literal-not-bound status value (D4) survives a forced
+   generic plan, which a bound `:status` parameter would NOT have.
+6. Dropped the scratch `phrases` table afterward, same cleanup convention
+   as Unit 1.
+
+Whoever reviews/merges this unit in an environment with real network
+access to the `db` container MUST run:
+
+```
+cd services/api && .venv/bin/python -m pytest -m integration \
+  tests/integration/test_list_filters_pgvector.py -q
+```
+
+before this unit is considered fully verified.
+
+### Test results (this session, sandboxed)
+
+```
+cd services/api && .venv/bin/python -m pytest -m "not integration and not slow" -q
+→ 340 passed, 76 deselected (was 303 before Unit 2; +9 schemas +9 list_phrases
+  +12 contract +6 openapi-regen-adjacent = +37... actual delta 37 includes the
+  6 test_openapi.py tests which already existed and just started passing
+  again after the snapshot regen, not new tests -- net NEW test count is 31)
+
+cd services/api && .venv/bin/python -m pytest tests/contract/test_openapi.py -q
+→ 6 passed (including test_snapshot_matches_docs_openapi_json)
+
+cd services/api && .venv/bin/ruff check src tests
+→ All checks passed!
+
+cd services/api && .venv/bin/mypy src
+→ Success: no issues found in 44 source files
+
+cd services/api && .venv/bin/lint-imports
+→ Contracts: 5 kept, 0 broken.
+```
+
+DB-backed integration test (`test_list_filters_pgvector.py`): NOT executed
+via pytest this session (see "DB-backed verification" above); every
+assertion hand-verified true via direct SQL instead.
+
+### Deviations from design.md
+
+- None. `ListPhrases.__call__` does not call `count_filtered` a second
+  time (Unit 1's own note already flagged this as unnecessary — `list_page`
+  already computes `total` via `count_filtered` internally), matching
+  design.md's `list_page`/`count_filtered` pairing exactly.
+- `test_list_filters_pgvector.py` uses a module-scoped fixture (one seeded
+  table shared by all 5 tests) instead of the function-scoped
+  `_freshly_migrated_schema` pattern `test_list_page_pgvector.py`/
+  `test_pgvector_repository.py` use — a deliberate deviation from that
+  local convention, noted in the file's own docstring: rebuilding 20003
+  rows per test would be slow for read-only EXPLAIN checks that never
+  mutate the table.
+
+### Issues Found
+
+- None in the implementation itself. The critical issue this session found
+  was environmental (concurrent unisolated `git` working tree across
+  parallel apply sub-agents) — see the "Environment note" at the top of
+  this section; already recovered from via an isolated `git worktree`, but
+  flagging for the orchestrator since it is a process-level risk, not
+  something this unit's code changes can fix.
+
+### What Unit 3 (frontend) needs to know
+
+Final query-param shape (unchanged from design.md's own plan — no
+surprises for Unit 3):
+
+- `GET /phrases?status=<unique|duplicate_confirmed>&q=<string>&min_score=<0..1 float>`,
+  all three optional, AND-combined when more than one is present.
+- Invalid `status` (anything not `unique`/`duplicate_confirmed`),
+  `min_score` outside `[0, 1]` (including `nan`), or `q` longer than
+  `PHRASE_MAX_LENGTH` (280 by default, `settings.phrase_max_length`) →
+  `422 VALIDATION_ERROR` (same envelope as every other validation error in
+  this API — `{"error": {"code": "VALIDATION_ERROR", "message": ..., "details": {"fields": [...]}}}`).
+- Response shape is UNCHANGED: `{"data": {"items": [...], "total": int,
+  "next_cursor": string|null, "has_more": bool}}` — `total` now reflects
+  the ACTIVE filter set (the full store when no filter is present, exactly
+  like before).
+- The cursor stays filter-agnostic (design.md's explicit decision, confirmed
+  end-to-end by `test_list_phrases_cursor_requires_resending_filters`): the
+  client MUST resend the same `status`/`q`/`min_score` query params on every
+  page request. The cursor itself carries no filter/threshold binding.
+- `apps/web/src/types/api.ts` (already regenerated this unit) now types
+  `operations["list_phrases_phrases_get"].parameters.query` with
+  `status?: components["schemas"]["ValidationStatus"] | null`, `q?: string
+  | null`, `min_score?: number | null` — Unit 3's hand-written
+  `ListPhrasesParams` in `client.ts` is a separate, hand-maintained type
+  (per design.md/tasks.md's own note that it is NOT derived from the
+  generated schema), but these are the exact wire names or values Unit 3's
+  serialization must produce: `status` as the raw enum string value
+  (`"unique"`/`"duplicate_confirmed"`, not the UI's internal representation
+  if different), `q` as a plain string, `min_score` as `percent / 100`
+  (design.md's own note — e.g. a UI control showing "85%" sends `0.85`).
+- Text filter matching is via `LIKE` under the same casefolding the backend
+  already applies to `normalized_text` — it is NOT accent-insensitive (a
+  query for "cafe" will not match a stored "café"); Unit 3 does not need to
+  do anything about this beyond whatever copy/UX decision design.md already
+  made for it.
+
+## Unit 3-4
+
+Not started by this session (Unit 3 is independent/parallelizable; Unit 4
+is independent). Note: concurrent sessions for both were observed live in
+the shared main working tree during this Unit 2 session (see "Environment
+note" above) — their actual completion status should be confirmed directly
+from their own branches/apply-progress sections rather than assumed from
+this note.
