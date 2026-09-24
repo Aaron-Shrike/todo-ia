@@ -25,6 +25,8 @@ Notes:
 - Unit 4 (ADR-016 + decision-log test) is independent of Units 1-3 (docs + one assertion). Sequenced last to match the archived `phrase-validation` precedent (docs/ADRs cite already-shipped behaviour), not because of a hard dependency.
 - If any unit measures over 400 on the actual diff, split at the seam named in its Verify line rather than requesting `size:exception` first — same rule the archived change used.
 
+**Unit 2 `size:exception` (recorded during apply, orchestrator + user decision):** Unit 2's real diff measured ~614 non-generated lines (schemas + router + application + 3 test files), above the 400-line budget and above this unit's own ~460-560 estimate. `sdd-apply` reported no natural sub-seam: `query_score`/`query_text` (schemas), the router wiring, and `ListPhrases`'s filter/normalize logic all had to land together for any test in the unit to pass under strict TDD — splitting further would mean landing broken intermediate states. The user reviewed this tradeoff live and chose `size:exception` over an artificial split. PR 2 ships as-is, documented here as the accepted exception.
+
 ### Suggested Work Units
 
 | Unit | Goal | Likely PR | Notes |
