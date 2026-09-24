@@ -37,9 +37,11 @@ __all__ = [
     "DuplicateTextConflict",
     "Isolation",
     "ListCursor",
+    "ListFilters",
     "LockTimeout",
     "Match",
     "MatchCursor",
+    "NO_FILTERS",
     "Neighbor",
     "NewPhrase",
     "Page",
@@ -159,15 +161,37 @@ class ListCursor:
 
 @dataclass(frozen=True)
 class PhraseListPage:
-    """One page of `list_page` (newest first). `total` is the full row
-    count regardless of pagination — what the UI's "10/60" counter reads —
-    recomputed on every call rather than cached, since it changes as
-    phrases are saved."""
+    """One page of `list_page` (newest first). `total` is the row count of
+    the ACTIVE filter set (`NO_FILTERS` when unfiltered, the full row
+    count) — what the UI's "10/60" counter reads — recomputed on every
+    call rather than cached, since it changes as phrases are saved."""
 
     items: list[Phrase]
     total: int
     next_cursor: ListCursor | None
     has_more: bool
+
+
+@dataclass(frozen=True)
+class ListFilters:
+    """Optional narrowing for `list_page`/`count_filtered` (design.md D1):
+    `GET /phrases`'s `status`/`q`/`min_score` query params, combined with
+    AND semantics. `text` is already in COMPARISON form (`comparison_form`
+    applied by the application layer, D2) — adapters MUST NOT re-normalize
+    it. `min_score` compares with `>=`; a NULL `similarity_score` is
+    excluded, matching SQL three-valued NULL semantics (`NULL >= x` is
+    UNKNOWN)."""
+
+    status: ValidationStatus | None = None
+    text: str | None = None
+    min_score: float | None = None
+
+
+# Module-level constant, not `ListFilters()` inline at each call site --
+# avoids ruff B008 (mutable-looking default in a function signature) even
+# though this dataclass is frozen; also the single shared "no filter"
+# value every existing call site's default keeps working with.
+NO_FILTERS = ListFilters()
 
 
 class DuplicateTextConflict(Exception):
@@ -213,16 +237,27 @@ class PhraseRepository(Protocol):
 
     def list_recent(self, limit: int) -> list[Phrase]: ...  # newest first, no cursor
 
-    def list_page(self, limit: int, cursor: ListCursor | None) -> PhraseListPage:
+    def list_page(
+        self, limit: int, cursor: ListCursor | None, *, filters: ListFilters = NO_FILTERS
+    ) -> PhraseListPage:
         """Newest-first, keyset-paginated (`(created_at, id)` DESC) —
         `GET /phrases`'s real pagination, used alongside `total`'s own
-        `count_all`. `limit + 1` rows are considered internally to decide
-        `has_more`, same convention as `find_matches`."""
+        `count_filtered`. `limit + 1` rows are considered internally to
+        decide `has_more`, same convention as `find_matches`. `filters`
+        narrows the rows considered, combined with AND semantics;
+        `NO_FILTERS` (the default) matches every row, same as before
+        filters existed -- every pre-existing call site stays valid."""
+        ...
+
+    def count_filtered(self, filters: ListFilters) -> int:
+        """Row count of the ACTIVE filter set, independent of any page —
+        what `list_page`'s `total` field reports. `count_all()` is
+        `count_filtered(NO_FILTERS)`."""
         ...
 
     def count_all(self) -> int:
-        """Total stored phrase count, independent of any page — what
-        `list_page`'s `total` field reports."""
+        """Total stored phrase count, independent of any page —
+        `count_filtered(NO_FILTERS)`."""
         ...
 
     def find_nearest(self, q: Vector) -> Neighbor | None:
