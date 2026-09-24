@@ -212,6 +212,17 @@
   white-space: nowrap;
 }
 
+/* IntersectionObserver needs a non-zero-area target to reliably report
+ * "intersecting" — an empty element with no content/min-height collapses
+ * to height:0, which some browsers never fire an intersection for even
+ * when it's scrolled fully into view (confirmed live: infinite scroll
+ * silently stalled at page 1 until this was added). 1px is invisible
+ * (both sentinels are also aria-hidden) but gives the observer real area
+ * to detect. */
+.sentinel {
+  height: 1px;
+}
+
 .loadingMore {
   font-size: 0.85rem;
   color: var(--color-muted-foreground);

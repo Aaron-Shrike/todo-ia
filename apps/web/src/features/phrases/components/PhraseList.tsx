@@ -304,7 +304,12 @@ export const PhraseList = forwardRef<PhraseListHandle, PhraseListProps>(
             </ul>
 
             {hasMore && (
-              <div ref={setSentinelNode} data-testid="phrase-list-sentinel" />
+              <div
+                ref={setSentinelNode}
+                className={styles.sentinel}
+                data-testid="phrase-list-sentinel"
+                aria-hidden="true"
+              />
             )}
             {isLoadingMore && <p className={styles.loadingMore}>{copy.list.loadingMore}</p>}
             {loadMoreError && (
