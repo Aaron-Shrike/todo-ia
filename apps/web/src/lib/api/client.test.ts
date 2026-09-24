@@ -103,6 +103,41 @@ describe("createApiClient", () => {
       const [url] = fetchImpl.mock.calls[0];
       expect(url).toBe("http://api.test/phrases?limit=10&cursor=opaque-cursor");
     });
+
+    // design.md "Frontend": `ListPhrasesParams` gains `status`/`q`/`minScore`,
+    // serialized as `status`/`q`/`min_score` — matching the exact param
+    // names/shapes `GET /phrases` exposes (Unit 1/2's contract).
+    it("encodes status, q and min_score as query params", async () => {
+      const pageData = { items: [], total: 0, next_cursor: null, has_more: false };
+      const fetchImpl = vi.fn<typeof fetch>(async () =>
+        fakeResponse({ status: 200, body: { data: pageData } }),
+      );
+      const client = createApiClient({ baseUrl: "http://api.test", fetchImpl });
+
+      await client.listPhrases({
+        status: "duplicate_confirmed",
+        q: "leche",
+        minScore: 0.85,
+      });
+
+      const [url] = fetchImpl.mock.calls[0];
+      expect(url).toBe(
+        "http://api.test/phrases?status=duplicate_confirmed&q=leche&min_score=0.85",
+      );
+    });
+
+    it("sends no filter params when status/q/minScore are undefined", async () => {
+      const pageData = { items: [], total: 0, next_cursor: null, has_more: false };
+      const fetchImpl = vi.fn<typeof fetch>(async () =>
+        fakeResponse({ status: 200, body: { data: pageData } }),
+      );
+      const client = createApiClient({ baseUrl: "http://api.test", fetchImpl });
+
+      await client.listPhrases({});
+
+      const [url] = fetchImpl.mock.calls[0];
+      expect(url).toBe("http://api.test/phrases");
+    });
   });
 
   describe("listMatches", () => {

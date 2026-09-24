@@ -6,3 +6,10 @@
  * for clients that don't override `limit`) — this UI always overrides it.
  */
 export const MATCHES_PAGE_SIZE = 10;
+
+/**
+ * Debounce delay for the saved-list text filter (`q`), per phrase-ui spec's
+ * "Filter controls over the saved list": "a few hundred milliseconds".
+ * Status and min-score filters do NOT use this — they refetch immediately.
+ */
+export const LIST_FILTER_DEBOUNCE_MS = 300;

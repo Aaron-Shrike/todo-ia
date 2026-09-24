@@ -8,12 +8,15 @@ import {
   useState,
 } from "react";
 
-import type { PhraseApiClient } from "@/lib/api/client";
+import type { ListPhrasesParams, PhraseApiClient } from "@/lib/api/client";
 import type { components } from "@/types/api";
 import { copy } from "@/i18n/copy.es";
 
+import { LIST_FILTER_DEBOUNCE_MS } from "../constants";
 import { counterLabel } from "../counterLabel";
+import { useDebouncedValue } from "../hooks/useDebouncedValue";
 import { scoreLabel } from "../scoreLabel";
+import { PhraseListFilters, type StatusFilterValue } from "./PhraseListFilters";
 import styles from "./phrases.module.css";
 
 type PhraseOut = components["schemas"]["_PhraseOut"];
@@ -102,15 +105,54 @@ export const PhraseList = forwardRef<PhraseListHandle, PhraseListProps>(
     const [isLoadingMore, setIsLoadingMore] = useState(false);
     const [loadMoreError, setLoadMoreError] = useState(false);
 
+    // phrase-ui spec, "Filter controls over the saved list" / "Filtered
+    // counter and empty state" — filter state lives here, in the container;
+    // `PhraseListFilters` is purely presentational. `status`/`minScore`
+    // refetch immediately on change; only `qDraft` is debounced.
+    const [statusFilter, setStatusFilter] = useState<StatusFilterValue>("");
+    const [qDraft, setQDraft] = useState("");
+    const [minScore, setMinScore] = useState<number | null>(null);
+    const debouncedQ = useDebouncedValue(qDraft, LIST_FILTER_DEBOUNCE_MS);
+    // Clearing the text box applies at once; only non-blank typing waits for
+    // the debounce (design.md: "clearing the text box applies immediately;
+    // only typing waits").
+    const appliedQ = qDraft.trim() === "" ? "" : debouncedQ;
+
+    const applied: ListPhrasesParams = {
+      ...(statusFilter !== "" ? { status: statusFilter } : {}),
+      ...(appliedQ.trim() !== "" ? { q: appliedQ } : {}),
+      ...(minScore !== null ? { minScore } : {}),
+    };
+    const appliedKey = JSON.stringify(applied);
+    const hasActiveFilters = statusFilter !== "" || qDraft.trim() !== "" || minScore !== null;
+
+    // Kept current on every render, not just at request time: `refresh()`
+    // and `loadMore()` are called from callbacks (imperative handle,
+    // IntersectionObserver) that must always read the CURRENTLY active
+    // filters, never a value captured in a stale closure.
+    const filtersRef = useRef(applied);
+    filtersRef.current = applied;
+
     // Ref, not state: two intersection callbacks firing synchronously in the
     // same tick must not both pass the "already loading" guard before either
     // re-render could observe it (same reasoning as `useMatchesInfiniteScroll`).
     const inFlightMore = useRef(false);
 
+    // Guards a `listPhrases()` response against overwriting state from a
+    // NEWER request (design.md: "drops any response whose generation is
+    // stale") — a filter change while an older request is still in flight
+    // must never have its late response clobber the newer one's result.
+    const generation = useRef(0);
+
     async function refresh() {
+      const requestGeneration = ++generation.current;
+      inFlightMore.current = false;
+      setIsLoadingMore(false);
+      setLoadMoreError(false);
       setStatus("loading");
       try {
-        const page = await client.listPhrases();
+        const page = await client.listPhrases(filtersRef.current);
+        if (requestGeneration !== generation.current) return;
         setItems(page.items);
         setTotal(page.total);
         setCursor(page.next_cursor);
@@ -118,6 +160,7 @@ export const PhraseList = forwardRef<PhraseListHandle, PhraseListProps>(
         setLoadMoreError(false);
         setStatus("idle");
       } catch {
+        if (requestGeneration !== generation.current) return;
         // Loaded items remain untouched (phrase-ui spec, "Refresh fails
         // after a successful save": "loaded items remain") — only the
         // status flips, never the data.
@@ -127,13 +170,34 @@ export const PhraseList = forwardRef<PhraseListHandle, PhraseListProps>(
 
     useImperativeHandle(ref, () => ({ refresh }));
 
+    // `appliedKey`'s initial value (no filters active) always stringifies to
+    // the same key this ref starts with, so mount never fires a redundant
+    // refetch of the SSR-provided `initialPage` — same "key compare, not a
+    // first-run flag" approach design.md specifies (StrictMode-safe).
+    const fetchedKey = useRef(appliedKey);
+
+    useEffect(() => {
+      if (fetchedKey.current === appliedKey) return;
+      fetchedKey.current = appliedKey;
+      void refresh();
+      // eslint-disable-next-line react-hooks/exhaustive-deps -- refresh() always reads filtersRef.current/client via closure; appliedKey is the only value that should re-trigger it.
+    }, [appliedKey]);
+
+    function clearFilters() {
+      setStatusFilter("");
+      setQDraft("");
+      setMinScore(null);
+    }
+
     function loadMore() {
       if (inFlightMore.current || !hasMore || cursor === null) return;
+      const requestGeneration = generation.current;
       inFlightMore.current = true;
       setIsLoadingMore(true);
       setLoadMoreError(false);
-      client.listPhrases({ cursor }).then(
+      client.listPhrases({ ...filtersRef.current, cursor }).then(
         (page) => {
+          if (requestGeneration !== generation.current) return;
           inFlightMore.current = false;
           setIsLoadingMore(false);
           setItems((prev) => appendDeduped(prev, page.items));
@@ -142,6 +206,7 @@ export const PhraseList = forwardRef<PhraseListHandle, PhraseListProps>(
           setHasMore(page.has_more);
         },
         () => {
+          if (requestGeneration !== generation.current) return;
           inFlightMore.current = false;
           setIsLoadingMore(false);
           setLoadMoreError(true);
@@ -170,6 +235,17 @@ export const PhraseList = forwardRef<PhraseListHandle, PhraseListProps>(
 
     return (
       <section className={styles.listSection} aria-busy={status === "loading"}>
+        {/* phrase-ui spec, "Filter controls over the saved list": the filter
+            bar always renders — outside the items/error branches below. */}
+        <PhraseListFilters
+          status={statusFilter}
+          onStatusChange={setStatusFilter}
+          text={qDraft}
+          onTextChange={setQDraft}
+          minScore={minScore}
+          onMinScoreChange={setMinScore}
+        />
+
         {status === "error" && (
           <div className={styles.errorBox}>
             <p>{copy.list.loadError}</p>
@@ -190,7 +266,24 @@ export const PhraseList = forwardRef<PhraseListHandle, PhraseListProps>(
           // (`aria-busy` / the load-error block). Previously this only
           // excluded `error`, so a Reintentar click briefly showed "Aún no
           // hay frases guardadas." while the refetch was still in flight.
-          status === "idle" && <p className={styles.emptyState}>{copy.list.empty}</p>
+          status === "idle" &&
+          (hasActiveFilters ? (
+            // phrase-ui spec, "Filtered counter and empty state": a distinct
+            // message from the unfiltered empty state, with a one-click
+            // action that clears every active filter and reloads page 1.
+            <div className={styles.emptyStateFiltered}>
+              <p className={styles.emptyState}>{copy.list.emptyFiltered}</p>
+              <button
+                type="button"
+                className={`${styles.button} ${styles.buttonGhost}`}
+                onClick={clearFilters}
+              >
+                {copy.button.clearFilters}
+              </button>
+            </div>
+          ) : (
+            <p className={styles.emptyState}>{copy.list.empty}</p>
+          ))
         ) : (
           <>
             <p className={styles.listCounter}>{counterLabel(items.length, total)}</p>
