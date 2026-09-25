@@ -26,7 +26,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 
 from app.modules.phrases.domain.cursor import InvalidCursor
-from app.modules.phrases.domain.errors import EmptyPhraseText, PhraseTooLong
+from app.modules.phrases.domain.errors import EmptyPhraseText, PhraseNotFound, PhraseTooLong
 from app.modules.phrases.domain.list_cursor import InvalidListCursor
 from app.modules.similarity.domain.errors import EmbeddingTimeout, EmbeddingUnavailable
 
@@ -66,6 +66,7 @@ ERROR_REGISTRY: dict[type[Exception], ErrorMapping] = {
     InvalidListCursor: ErrorMapping(400, "INVALID_CURSOR"),
     EmptyPhraseText: ErrorMapping(422, "VALIDATION_ERROR"),
     PhraseTooLong: ErrorMapping(422, "VALIDATION_ERROR"),
+    PhraseNotFound: ErrorMapping(404, "PHRASE_NOT_FOUND"),
     EmbeddingUnavailable: ErrorMapping(503, "EMBEDDING_UNAVAILABLE"),
     EmbeddingTimeout: ErrorMapping(504, "EMBEDDING_TIMEOUT"),
 }
@@ -78,6 +79,7 @@ _DETAILS_BUILDERS: dict[type[Exception], Callable[[Exception], dict[str, object]
 _DEFAULT_MESSAGES: dict[str, str] = {
     "INVALID_CURSOR": "the cursor is malformed or does not match this query",
     "VALIDATION_ERROR": "request validation failed",
+    "PHRASE_NOT_FOUND": "no phrase with that id exists",
     "EMBEDDING_UNAVAILABLE": "the embedding provider is unavailable",
     "EMBEDDING_TIMEOUT": "the embedding provider timed out",
 }

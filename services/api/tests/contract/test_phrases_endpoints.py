@@ -431,3 +431,185 @@ def test_list_phrases_matches_cursor_rejected_as_400() -> None:
     response = client.get("/phrases", params={"cursor": _VALID_CURSOR})
     assert response.status_code == 400
     assert response.json()["error"]["code"] == "INVALID_CURSOR"
+
+
+# --- GET /phrases filter query params (Unit 2, api-contract spec) --------
+
+
+def _seed_with_metadata(
+    factory: object,
+    *,
+    text: str,
+    status: ValidationStatus = ValidationStatus.UNIQUE,
+    score: float | None = None,
+) -> None:
+    with factory() as uow:  # type: ignore[operator]
+        uow.repo.add(
+            NewPhrase(
+                text=text,
+                normalized_text=text,
+                embedding=vector_at_distance(0.05),
+                similarity_score=score,
+                most_similar_phrase_id=(1 if score is not None else None),
+                validation_status=status,
+                validated_at=datetime.now(UTC),
+            )
+        )
+        uow.commit()
+
+
+def test_list_phrases_invalid_status_is_422() -> None:
+    client, _, _ = _client()
+    response = client.get("/phrases", params={"status": "bogus"})
+    assert response.status_code == 422
+    assert response.json()["error"]["code"] == "VALIDATION_ERROR"
+
+
+@pytest.mark.parametrize("value", [-0.1, 1.5, "nan"])
+def test_list_phrases_min_score_out_of_range_is_422(value: object) -> None:
+    client, _, _ = _client()
+    response = client.get("/phrases", params={"min_score": value})
+    assert response.status_code == 422
+    assert response.json()["error"]["code"] == "VALIDATION_ERROR"
+
+
+def test_list_phrases_q_over_length_cap_is_422() -> None:
+    client, _, _ = _client()
+    settings = Settings(database_url="postgresql+psycopg://test:test@localhost:5432/test")
+    response = client.get("/phrases", params={"q": "a" * (settings.phrase_max_length + 1)})
+    assert response.status_code == 422
+    assert response.json()["error"]["code"] == "VALIDATION_ERROR"
+
+
+def test_list_phrases_filter_by_status() -> None:
+    client, _, factory = _client()
+    _seed_with_metadata(factory, text="a", status=ValidationStatus.UNIQUE)
+    _seed_with_metadata(
+        factory, text="b", status=ValidationStatus.DUPLICATE_CONFIRMED, score=0.9
+    )
+    response = client.get("/phrases", params={"status": "duplicate_confirmed"})
+    assert response.status_code == 200
+    data = response.json()["data"]
+    assert [item["text"] for item in data["items"]] == ["b"]
+    assert data["total"] == 1
+
+
+def test_list_phrases_filter_by_text_case_insensitive() -> None:
+    client, _, factory = _client()
+    _seed_with_metadata(factory, text="tengo leche fresca")
+    _seed_with_metadata(factory, text="tengo agua fresca")
+    response = client.get("/phrases", params={"q": "LECHE"})
+    assert response.status_code == 200
+    data = response.json()["data"]
+    assert [item["text"] for item in data["items"]] == ["tengo leche fresca"]
+    assert data["total"] == 1
+
+
+def test_list_phrases_q_matches_wildcard_characters_literally() -> None:
+    client, _, factory = _client()
+    _seed_with_metadata(factory, text="100% seguro")
+    _seed_with_metadata(factory, text="totalmente seguro")
+    response = client.get("/phrases", params={"q": "0%"})
+    assert response.status_code == 200
+    data = response.json()["data"]
+    assert [item["text"] for item in data["items"]] == ["100% seguro"]
+
+
+def test_list_phrases_min_score_excludes_null() -> None:
+    client, _, factory = _client()
+    _seed_with_metadata(
+        factory, text="confirmed", status=ValidationStatus.DUPLICATE_CONFIRMED, score=0.85
+    )
+    _seed_with_metadata(factory, text="unique", status=ValidationStatus.UNIQUE, score=None)
+    response = client.get("/phrases", params={"min_score": 0.5})
+    assert response.status_code == 200
+    data = response.json()["data"]
+    assert [item["text"] for item in data["items"]] == ["confirmed"]
+    assert data["total"] == 1
+
+
+def test_list_phrases_filters_combine_with_and() -> None:
+    client, _, factory = _client()
+    _seed_with_metadata(
+        factory,
+        text="tengo leche fresca",
+        status=ValidationStatus.DUPLICATE_CONFIRMED,
+        score=0.9,
+    )
+    _seed_with_metadata(
+        factory,
+        text="tengo agua fresca",
+        status=ValidationStatus.DUPLICATE_CONFIRMED,
+        score=0.9,
+    )
+    response = client.get(
+        "/phrases",
+        params={"status": "duplicate_confirmed", "q": "leche", "min_score": 0.5},
+    )
+    assert response.status_code == 200
+    data = response.json()["data"]
+    assert [item["text"] for item in data["items"]] == ["tengo leche fresca"]
+    assert data["total"] == 1
+
+
+def test_list_phrases_total_is_filter_aware() -> None:
+    client, _, factory = _client()
+    for i in range(20):
+        _seed_with_metadata(
+            factory, text=f"m{i}", status=ValidationStatus.DUPLICATE_CONFIRMED, score=0.9
+        )
+    for i in range(30):
+        _seed_with_metadata(factory, text=f"u{i}", status=ValidationStatus.UNIQUE)
+    response = client.get("/phrases", params={"status": "duplicate_confirmed", "limit": 5})
+    assert response.status_code == 200
+    data = response.json()["data"]
+    assert data["total"] == 20
+    assert len(data["items"]) == 5
+
+
+def test_list_phrases_cursor_requires_resending_filters() -> None:
+    client, _, factory = _client(phrases_page_size=2)
+    _seed_with_metadata(
+        factory, text="leche 1", status=ValidationStatus.DUPLICATE_CONFIRMED, score=0.9
+    )
+    _seed_with_metadata(
+        factory, text="leche 2", status=ValidationStatus.DUPLICATE_CONFIRMED, score=0.9
+    )
+    _seed_with_metadata(
+        factory, text="leche 3", status=ValidationStatus.DUPLICATE_CONFIRMED, score=0.9
+    )
+    _seed_with_metadata(factory, text="agua", status=ValidationStatus.UNIQUE)
+    first = client.get("/phrases", params={"q": "leche", "limit": 2})
+    assert first.status_code == 200
+    first_data = first.json()["data"]
+    assert first_data["has_more"] is True
+    second = client.get(
+        "/phrases", params={"q": "leche", "limit": 2, "cursor": first_data["next_cursor"]}
+    )
+    assert second.status_code == 200
+    second_data = second.json()["data"]
+    assert len(second_data["items"]) == 1
+    assert second_data["has_more"] is False
+    collected = {item["text"] for item in first_data["items"] + second_data["items"]}
+    assert collected == {"leche 1", "leche 2", "leche 3"}
+
+
+# --- GET /phrases/{id} -----------------------------------------------------
+
+
+def test_get_phrase_returns_the_matching_row() -> None:
+    client, _, factory = _client()
+    _seed(factory, ("a", 0.05), ("b", 0.10))  # ids 1, 2
+    response = client.get("/phrases/2")
+    assert response.status_code == 200
+    data = response.json()["data"]
+    assert data["id"] == "2"
+    assert data["text"] == "b"
+    assert set(data) == {"id", "text", "created_at", "validation"}
+
+
+def test_get_phrase_unknown_id_is_404() -> None:
+    client, _, _ = _client()
+    response = client.get("/phrases/999")
+    assert response.status_code == 404
+    assert response.json()["error"]["code"] == "PHRASE_NOT_FOUND"

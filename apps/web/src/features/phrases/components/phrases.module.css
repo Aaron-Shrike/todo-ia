@@ -212,6 +212,17 @@
   white-space: nowrap;
 }
 
+/* IntersectionObserver needs a non-zero-area target to reliably report
+ * "intersecting" — an empty element with no content/min-height collapses
+ * to height:0, which some browsers never fire an intersection for even
+ * when it's scrolled fully into view (confirmed live: infinite scroll
+ * silently stalled at page 1 until this was added). 1px is invisible
+ * (both sentinels are also aria-hidden) but gives the observer real area
+ * to detect. */
+.sentinel {
+  height: 1px;
+}
+
 .loadingMore {
   font-size: 0.85rem;
   color: var(--color-muted-foreground);
@@ -229,6 +240,49 @@
 
 .listSection {
   margin-top: var(--space-3);
+}
+
+.filterBar {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+  margin-bottom: var(--space-3);
+}
+
+.filterField {
+  display: flex;
+  flex-direction: column;
+  gap: 0.3rem;
+  min-width: 10rem;
+}
+
+.filterSelect,
+.filterInput {
+  background: var(--color-background);
+  color: var(--color-foreground);
+  border: 1px solid var(--color-border);
+  border-radius: 0.5rem;
+  padding: 0.5rem 0.7rem;
+  font-family: var(--font-sans);
+  font-size: 0.9rem;
+}
+
+.filterSelect:focus-visible,
+.filterInput:focus-visible {
+  border-color: var(--color-accent);
+  outline: 2px solid var(--color-ring);
+  outline-offset: 1px;
+}
+
+.clearFiltersButton {
+  margin: -0.5rem 0 var(--space-3);
+}
+
+.emptyStateFiltered {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: var(--space-2);
 }
 
 .listCounter {
@@ -254,14 +308,20 @@
 
 .listItem {
   display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  justify-content: space-between;
-  gap: 0.6rem;
+  flex-direction: column;
+  gap: 0.5rem;
   background: var(--color-card);
   border: 1px solid var(--color-border);
   border-radius: 0.6rem;
   padding: 0.75rem 1rem;
+}
+
+.listItemRow {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.6rem;
 }
 
 .listItemText {
@@ -275,10 +335,41 @@
   flex-shrink: 0;
 }
 
-.score {
+.comparePanel {
+  border-top: 1px solid var(--color-border);
+  padding-top: 0.5rem;
+  font-size: 0.9rem;
+  color: var(--color-muted-foreground);
+  display: flex;
+  flex-direction: column;
+  gap: 0.3rem;
+}
+
+.comparePanel strong {
+  color: var(--color-foreground);
+}
+
+/* The saved-list item's "Similitud: NN%" text doubles as the compare
+ * trigger (see PhraseList.tsx) -- a plain-text-looking button (reset
+ * border/background/font so it doesn't look like a UI control at rest,
+ * matching the badge's neighboring text), with a pointer cursor and an
+ * underline-on-hover so it still reads as clickable once you notice it. */
+.scoreButton {
+  background: none;
+  border: none;
+  padding: 0;
+  margin: 0;
+  font: inherit;
   font-family: var(--font-mono);
   font-size: 0.8rem;
   color: var(--color-muted-foreground);
+  cursor: pointer;
+}
+
+.scoreButton:hover,
+.scoreButton:focus-visible {
+  color: var(--color-accent);
+  text-decoration: underline;
 }
 
 .badge {

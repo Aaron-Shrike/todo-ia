@@ -21,7 +21,7 @@ todo-ia/
 ├── infra/                      # compose-adjacent assets: db init script, smoke test
 └── docs/
     ├── architecture.md         # this file
-    ├── decisions/              # exactly five beyond-brief ADRs (ADR-001..005)
+    ├── decisions/              # exactly six beyond-brief ADRs (ADR-001..005, ADR-016)
     │   └── technical/          # ten technical ADRs (ADR-006..015)
     ├── evidence/                # calibration.md, exact-scan-timings.md
     └── openapi.json            # snapshotted API contract

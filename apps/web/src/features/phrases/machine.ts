@@ -39,7 +39,7 @@ export type ValidateIntent = "validate" | "save";
 export type MachineState =
   | { status: "idle" }
   | { status: "validating"; intent: ValidateIntent }
-  | { status: "ok" }
+  | { status: "ok"; mostSimilar: ScoredPhrase | null }
   | { status: "duplicate"; details: DuplicateDetails }
   | { status: "revalidating" }
   | { status: "saving"; details: DuplicateDetails }
@@ -49,7 +49,7 @@ export type MachineEvent =
   | { type: "EDIT_TEXT" }
   | { type: "VALIDATE" }
   | { type: "SAVE" }
-  | { type: "VALIDATE_OK_UNIQUE" }
+  | { type: "VALIDATE_OK_UNIQUE"; mostSimilar: ScoredPhrase | null }
   | { type: "VALIDATE_OK_DUPLICATE"; details: DuplicateDetails }
   | { type: "SAVE_OK" }
   | { type: "CONFLICT"; details: DuplicateDetails }
@@ -107,10 +107,12 @@ export function phraseMachineReducer(
       if (event.type === "VALIDATE_OK_UNIQUE") {
         // Blind save (Guardar from idle): the validate call was only the
         // first leg — proceed straight to the authoritative save call
-        // ("Revalidando..."), never surfacing an intermediate "ok".
+        // ("Revalidando..."), never surfacing an intermediate "ok". That
+        // path has nothing to render, so `mostSimilar` is deliberately
+        // dropped rather than threaded through.
         return state.intent === "save"
           ? { status: "revalidating" }
-          : { status: "ok" };
+          : { status: "ok", mostSimilar: event.mostSimilar };
       }
       if (event.type === "VALIDATE_OK_DUPLICATE") {
         return { status: "duplicate", details: event.details };

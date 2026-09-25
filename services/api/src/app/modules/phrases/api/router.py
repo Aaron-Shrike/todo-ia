@@ -23,11 +23,13 @@ from app.modules.phrases.api.schemas import (
     error_responses,
     page_limit,
     query_limit,
+    query_score,
+    query_text,
     raw_phrase_text,
 )
 from app.modules.phrases.application._shared import MatchView, MostSimilarView, VerdictView
 from app.modules.phrases.container import PhrasesContainer
-from app.modules.phrases.contracts import Phrase
+from app.modules.phrases.contracts import Phrase, ValidationStatus
 
 # NOTE: the error envelope is built inline below, NOT via
 # `app.platform.errors.error_envelope`: that module imports
@@ -57,6 +59,7 @@ _MATCHES_ERRORS = error_responses(
     (504, "EMBEDDING_TIMEOUT"),
 )
 _LIST_ERRORS = error_responses((400, "INVALID_CURSOR"), (422, "VALIDATION_ERROR"))
+_GET_ERRORS = error_responses((404, "PHRASE_NOT_FOUND"))
 
 
 class _ScoredPhrase(BaseModel):
@@ -273,10 +276,15 @@ def build_phrases_router(
         request: Request,
         limit: query_limit(phrases_list_limit) | None = None,  # type: ignore[valid-type]
         cursor: str | None = None,
+        status: ValidationStatus | None = None,
+        q: query_text(phrase_max_length) | None = None,  # type: ignore[valid-type]
+        min_score: query_score() | None = None,  # type: ignore[valid-type]
     ) -> _PhraseListResponse:
         container: PhrasesContainer = request.app.state.phrases
         resolved_limit = limit if limit is not None else phrases_page_size
-        view = container.list_phrases(limit=resolved_limit, cursor=cursor)
+        view = container.list_phrases(
+            limit=resolved_limit, cursor=cursor, status=status, q=q, min_score=min_score
+        )
         return _PhraseListResponse(
             data=_PhraseListData(
                 items=[_phrase_out(p) for p in view.items],
@@ -285,5 +293,16 @@ def build_phrases_router(
                 has_more=view.has_more,
             )
         )
+
+    @router.get("/phrases/{phrase_id}", response_model=_PhraseResponse, responses=_GET_ERRORS)
+    def get_phrase(phrase_id: int, request: Request) -> _PhraseResponse:
+        """Single phrase by id -- `apps/web`'s "compare with the matched
+        phrase" panel resolves `validation.most_similar_phrase_id` through
+        this, since the list/save/validate responses only ever carry that
+        id, never the matched phrase's own text (design: avoid joining it
+        into every list row when most rows are never expanded)."""
+        container: PhrasesContainer = request.app.state.phrases
+        phrase = container.get_phrase(phrase_id)
+        return _PhraseResponse(data=_phrase_out(phrase))
 
     return router

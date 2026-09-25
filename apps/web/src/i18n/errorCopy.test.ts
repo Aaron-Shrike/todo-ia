@@ -15,6 +15,7 @@ import { copyForErrorCode, errorCopy } from "./errorCopy";
 const ALL_ERROR_CODES: ErrorCode[] = [
   "INVALID_CURSOR",
   "NOT_FOUND",
+  "PHRASE_NOT_FOUND",
   "METHOD_NOT_ALLOWED",
   "DUPLICATE_CONFIRMATION_REQUIRED",
   "PAYLOAD_TOO_LARGE",
